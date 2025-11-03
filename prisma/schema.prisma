@@ -1,0 +1,374 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model categories {
+  idCategorie BigInt     @id @default(autoincrement())
+  name        String     @db.VarChar(100)
+  providerId  BigInt?
+  providers   providers? @relation(fields: [providerId], references: [idProvider], onDelete: NoAction, onUpdate: NoAction, map: "fk_categories_providerId")
+  products    products[]
+
+  @@index([providerId], map: "fk_categories_providerId")
+}
+
+model products {
+  idProduct       BigInt      @id @default(autoincrement())
+  idProductExt    String?     @db.VarChar(255)
+  name            String      @db.VarChar(150)
+  description     String?     @db.Text
+  caracteristicas Json?
+  price           Decimal     @db.Decimal(10, 2)
+  stock           Int
+  sku             String?     @db.VarChar(255)
+  rating          Float?
+  image_url       Json?
+  categoryId      BigInt
+  providerId      BigInt
+  createdAt       DateTime?   @default(now()) @db.DateTime(0)
+  active          Int?        @default(1) @db.TinyInt
+  cartItems       cartItems[]
+  favorites       favorites[]
+  categories      categories  @relation(fields: [categoryId], references: [idCategorie], onDelete: NoAction, onUpdate: NoAction, map: "fk_categorieId_products")
+  providers       providers   @relation(fields: [providerId], references: [idProvider], onDelete: NoAction, onUpdate: NoAction, map: "fk_providerId_products")
+  reviews         reviews[]
+  sales           sales[]
+
+  @@index([categoryId], map: "fk_categorieId_products_idx")
+  @@index([providerId], map: "fk_providerId_products_idx")
+}
+
+model providers {
+  idProvider   BigInt       @id @default(autoincrement())
+  companyName  String       @db.VarChar(100)
+  contactEmail String?      @db.VarChar(100)
+  phone        String?      @db.VarChar(50)
+  address      String?      @db.Text
+  categories   categories[]
+  products     products[]
+}
+
+model users {
+  idUser         BigInt           @id @default(autoincrement())
+  name           String           @db.VarChar(100)
+  lastname       String?          @db.VarChar(100)
+  email          String           @db.VarChar(100)
+  password       String?          @db.VarChar(255)
+  role           users_role       @default(customer)
+  customerId     String?          @db.VarChar(255)
+  createdAT      DateTime?        @default(now()) @db.DateTime(0)
+  active         Int?             @default(1) @db.TinyInt
+  addresses      addresses[]
+  billing        billing[]
+  cards          cards[]
+  carts          carts[]
+  changepassword changepassword[]
+  favorites      favorites[]
+  order          order[]
+  resetpassword  resetpassword[]
+  sales          sales[]
+}
+
+model resetpassword {
+  idResetPassword BigInt    @id @default(autoincrement())
+  idUser          BigInt
+  refreshToken    String    @db.VarChar(255)
+  expiryToken     String    @db.VarChar(255)
+  createdAT       DateTime? @default(now()) @db.DateTime(0)
+  active          Boolean   @default(true)
+  users           users     @relation(fields: [idUser], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "resetpassword_ibfk_1")
+
+  @@index([idUser], map: "idUser")
+}
+
+model cartItems {
+  idCartItem BigInt   @id @default(autoincrement())
+  carId      BigInt
+  productId  BigInt
+  quantity   Int?
+  active     Int?     @default(1) @db.TinyInt
+  carts      carts    @relation(fields: [carId], references: [idCart], onDelete: NoAction, onUpdate: NoAction, map: "fk_card_id_cart")
+  products   products @relation(fields: [productId], references: [idProduct], onDelete: NoAction, onUpdate: NoAction, map: "fk_product_id_cart")
+
+  @@index([carId], map: "fk_card_id_cart_idx")
+  @@index([productId], map: "fk_product_id_cart_idx")
+  @@map("cart_items")
+}
+
+model carts {
+  idCart    BigInt        @id @default(autoincrement())
+  userId    BigInt
+  status    carts_status? @default(active)
+  createdAt DateTime?     @default(now()) @db.DateTime(0)
+  cartItems cartItems[]
+  users     users         @relation(fields: [userId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "fk_userId_car")
+
+  @@index([userId], map: "fk_userId_car_idx")
+}
+
+model changepassword {
+  idChangePassword BigInt    @id @default(autoincrement())
+  userId           BigInt
+  createdAt        DateTime? @default(now()) @db.DateTime(0)
+  users            users     @relation(fields: [userId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "changepassword_ibfk_1")
+
+  @@index([userId], map: "userId")
+}
+
+model addresses {
+  idAddress  BigInt      @id @default(autoincrement())
+  userId     BigInt
+  street     String?     @db.VarChar(255)
+  noExt      String      @db.VarChar(10)
+  noInt      String?     @db.VarChar(10)
+  cologne    String?     @db.VarChar(100)
+  city       String?     @db.VarChar(100)
+  state      String?     @db.VarChar(100)
+  country    String?     @db.VarChar(100)
+  postalCode String?     @db.VarChar(10)
+  phone1     String?     @db.VarChar(100)
+  phone2     String?     @db.VarChar(100)
+  createdAt  DateTime?   @default(now()) @db.DateTime(0)
+  updatedAt  DateTime?   @default(now()) @db.DateTime(0)
+  active     Int?        @default(1) @db.TinyInt
+  users      users       @relation(fields: [userId], references: [idUser], onDelete: Cascade, onUpdate: NoAction, map: "addresses_ibfk_1")
+  shipments  shipments[]
+
+  @@index([userId], map: "userId")
+}
+
+model billing {
+  idBilling    BigInt             @id @default(autoincrement())
+  userId       BigInt
+  companyName  String?            @db.VarChar(100)
+  rfc          String?            @db.VarChar(100)
+  cfdi         String?            @db.VarChar(50)
+  taxRegimen   String?            @db.VarChar(50)
+  methodPay    billing_methodPay?
+  codePostal   String?            @db.VarChar(10)
+  cologne      String?            @db.VarChar(50)
+  state        String?            @db.VarChar(100)
+  city         String?            @db.VarChar(100)
+  street       String?            @db.VarChar(100)
+  noExt        String?            @db.VarChar(50)
+  noInt        String?            @db.VarChar(50)
+  observations String?            @db.Text
+  country      billing_country?   @default(M_xico)
+  createdAt    DateTime?          @default(now()) @db.DateTime(0)
+  users        users              @relation(fields: [userId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "billing_ibfk_1")
+
+  @@index([userId], map: "userId")
+}
+
+model reviews {
+  idReview     BigInt    @id @default(autoincrement())
+  productId    BigInt
+  rating       Float?
+  title        String?   @db.VarChar(255)
+  description  String?   @db.VarChar(255)
+  date         DateTime? @db.DateTime(0)
+  reviewerName String?   @db.VarChar(100)
+  userId       BigInt?
+  products     products  @relation(fields: [productId], references: [idProduct], onDelete: NoAction, onUpdate: NoAction, map: "reviews_ibfk_1")
+
+  @@index([productId], map: "productId")
+}
+
+model favorites {
+  idFavorite  BigInt    @id @default(autoincrement())
+  userId      BigInt
+  productId   BigInt
+  favoritedAt DateTime? @default(now()) @db.DateTime(0)
+  active      Int?      @default(1) @db.TinyInt
+  users       users     @relation(fields: [userId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "favorites_ibfk_1")
+  products    products  @relation(fields: [productId], references: [idProduct], onDelete: NoAction, onUpdate: NoAction, map: "favorites_ibfk_2")
+
+  @@index([productId], map: "productId")
+  @@index([userId], map: "userId")
+}
+
+model cards {
+  idRegisterCard  BigInt    @id @default(autoincrement())
+  userId          BigInt?
+  cardId          String?   @db.VarChar(255)
+  lastFourDigits  String?   @db.VarChar(4)
+  brand           String?   @db.VarChar(250)
+  expirationMonth Int?
+  expirationYear  Int?
+  createdAt       DateTime? @default(now()) @db.Timestamp(0)
+  active          Int?      @default(1) @db.TinyInt
+  users           users?    @relation(fields: [userId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "cards_ibfk_1")
+
+  @@index([userId], map: "userId")
+}
+
+model order {
+  idOrder               BigInt                 @id @default(autoincrement())
+  userId                BigInt
+  totalAmount           Decimal                @db.Decimal(10, 2)
+  stripePaymentIntentId String?                @db.VarChar(255)
+  status                order_status?
+  paidAtOxxo            Int?
+  shipping_method       order_shipping_method?
+  pay_method            order_pay_method?
+  oxxo_reference        String?                @db.VarChar(255)
+  gatewayPaymentId      String?                @db.VarChar(255)
+  createdAt             DateTime?              @db.DateTime(0)
+  updatedAt             DateTime?              @db.DateTime(0)
+  requiredFactura       Int?                   @db.TinyInt
+  users                 users                  @relation(fields: [userId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "fk_userId_order")
+  refunds               refunds[]
+  sales                 sales[]
+  shipments             shipments[]
+
+  @@index([userId], map: "fk_userId_order_idx")
+}
+
+model shipments {
+  idShipment     BigInt            @id @default(autoincrement())
+  orderId        BigInt?
+  addressId      BigInt?
+  trackingNumber String?           @db.VarChar(255)
+  lastStatus     String?           @db.VarChar(255)
+  lastLocation   String?           @db.VarChar(255)
+  lastUpdated    DateTime?         @db.DateTime(0)
+  status         shipments_status?
+  createdAt      DateTime?         @db.DateTime(0)
+  order          order?            @relation(fields: [orderId], references: [idOrder], onDelete: NoAction, onUpdate: NoAction, map: "fk_order_id_shipments")
+  addresses      addresses?        @relation(fields: [addressId], references: [idAddress], onDelete: NoAction, onUpdate: NoAction, map: "fn_addressId_shipments")
+
+  @@index([orderId], map: "fk_order_id_shipments_idx")
+  @@index([addressId], map: "db_address_id_shipments_idx")
+}
+
+model refunds {
+  idRefund        BigInt          @id @default(autoincrement())
+  orderId         BigInt?
+  amount          Int?
+  reason          String?         @db.VarChar(255)
+  status          refunds_status?
+  gatewayRefundId String?         @db.VarChar(255)
+  createdAt       DateTime?       @default(now()) @db.DateTime(0)
+  updatedAt       DateTime?       @db.DateTime(0)
+  order           order?          @relation(fields: [orderId], references: [idOrder], onDelete: NoAction, onUpdate: NoAction, map: "refunds_ibfk_1")
+
+  @@index([orderId], map: "orderId")
+}
+
+model transfers {
+  idTransfer        BigInt            @id @default(autoincrement())
+  amount            Int?
+  currency          String?           @db.VarChar(50)
+  status            transfers_status?
+  gatewayTransferId String?           @db.VarChar(255)
+  createdAt         DateTime?         @default(now()) @db.DateTime(0)
+  updatedAt         DateTime?         @db.DateTime(0)
+}
+
+model marca {
+  idMarca     BigInt  @id @default(autoincrement())
+  name        String? @db.VarChar(255)
+  description String? @db.VarChar(255)
+  marcacol    String? @db.VarChar(45)
+}
+
+model sales {
+  idSale    BigInt        @id @default(autoincrement())
+  orderId   BigInt
+  productId BigInt
+  userId    BigInt
+  quantity  Int?
+  total     Decimal?      @db.Decimal(10, 2)
+  status    sales_status?
+  createdAt DateTime?     @default(now()) @db.DateTime(0)
+  order     order         @relation(fields: [orderId], references: [idOrder], onDelete: NoAction, onUpdate: NoAction, map: "fk_orderId_sales")
+  products  products      @relation(fields: [productId], references: [idProduct], onDelete: NoAction, onUpdate: NoAction, map: "fk_productId_sales")
+  users     users         @relation(fields: [userId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "fk_userId_sales")
+
+  @@index([orderId], map: "fk_orderId_sales_idx")
+  @@index([productId], map: "fk_productId_sales")
+  @@index([userId], map: "fk_userId_sales")
+}
+
+enum users_role {
+  customer
+  provider
+  admin
+}
+
+enum carts_status {
+  active
+  completed
+}
+
+enum billing_country {
+  M_xico @map("México")
+}
+
+enum transfers_status {
+  initiated
+  pending
+  succeeded
+  failed
+}
+
+enum order_status {
+  paid
+  pending
+  payment_pending
+  cancelled
+  rejected
+  refunded
+  charged_back
+}
+
+enum refunds_status {
+  succeeded
+  pending
+  failed
+}
+
+enum sales_status {
+  paid
+  pending
+  failed
+  cancelled
+}
+
+enum shipments_status {
+  entregado
+  cancelado
+  enviado
+  procesando
+}
+
+enum order_shipping_method {
+  sucursal
+  paqueteexpress
+  dhl
+  estafeta
+  envioLeon
+}
+
+enum order_pay_method {
+  oxxo
+  efectivo_sucursal
+  tarjeta_de_credito
+  tarjeta_de_debito
+  transferencia_bancaria
+  tarjeta_sucursal
+  mercadopago
+}
+
+enum billing_methodPay {
+  Efectivo
+  Tarjeta_de_Credito @map("Tarjeta de Credito")
+  Tarjeta_de_Debito  @map("Tarjeta de Debito")
+  Mercado_Pago       @map("Mercado Pago")
+}
