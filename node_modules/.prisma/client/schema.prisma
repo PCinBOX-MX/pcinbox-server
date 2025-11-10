@@ -29,19 +29,23 @@ model products {
   sku             String?     @db.VarChar(255)
   rating          Float?
   image_url       Json?
-  categoryId      BigInt
+  categoryId      BigInt?
+  marcaId         BigInt?
   providerId      BigInt
+  isPC            Int?        @db.TinyInt
   createdAt       DateTime?   @default(now()) @db.DateTime(0)
   active          Int?        @default(1) @db.TinyInt
   cartItems       cartItems[]
   favorites       favorites[]
-  categories      categories  @relation(fields: [categoryId], references: [idCategorie], onDelete: NoAction, onUpdate: NoAction, map: "fk_categorieId_products")
+  categories      categories? @relation(fields: [categoryId], references: [idCategorie], onDelete: NoAction, onUpdate: NoAction, map: "fk_categorieId_products")
+  marca           marca?      @relation(fields: [marcaId], references: [idMarca], onDelete: NoAction, onUpdate: NoAction, map: "fk_marcaId_products")
   providers       providers   @relation(fields: [providerId], references: [idProvider], onDelete: NoAction, onUpdate: NoAction, map: "fk_providerId_products")
   reviews         reviews[]
   sales           sales[]
 
   @@index([categoryId], map: "fk_categorieId_products_idx")
   @@index([providerId], map: "fk_providerId_products_idx")
+  @@index([marcaId], map: "fk_marcaId_products_idx")
 }
 
 model providers {
@@ -51,6 +55,7 @@ model providers {
   phone        String?      @db.VarChar(50)
   address      String?      @db.Text
   categories   categories[]
+  marca        marca[]
   products     products[]
 }
 
@@ -219,6 +224,7 @@ model order {
   pay_method            order_pay_method?
   oxxo_reference        String?                @db.VarChar(255)
   gatewayPaymentId      String?                @db.VarChar(255)
+  payment_plan          Int?
   createdAt             DateTime?              @db.DateTime(0)
   updatedAt             DateTime?              @db.DateTime(0)
   requiredFactura       Int?                   @db.TinyInt
@@ -272,10 +278,14 @@ model transfers {
 }
 
 model marca {
-  idMarca     BigInt  @id @default(autoincrement())
-  name        String? @db.VarChar(255)
-  description String? @db.VarChar(255)
-  marcacol    String? @db.VarChar(45)
+  idMarca     BigInt     @id @default(autoincrement())
+  name        String?    @db.VarChar(255)
+  description String?    @db.VarChar(255)
+  providerId  BigInt?
+  providers   providers? @relation(fields: [providerId], references: [idProvider], onDelete: NoAction, onUpdate: NoAction, map: "fk_marca_providerId")
+  products    products[]
+
+  @@index([providerId], map: "fk_marca_providerId_idx")
 }
 
 model sales {
@@ -364,11 +374,13 @@ enum order_pay_method {
   transferencia_bancaria
   tarjeta_sucursal
   mercadopago
+  esperando
 }
 
 enum billing_methodPay {
   Efectivo
-  Tarjeta_de_Credito @map("Tarjeta de Credito")
-  Tarjeta_de_Debito  @map("Tarjeta de Debito")
-  Mercado_Pago       @map("Mercado Pago")
+  Tarjeta_de_Credito     @map("Tarjeta de Credito")
+  Tarjeta_de_Debito      @map("Tarjeta de Debito")
+  Mercado_Pago           @map("Mercado Pago")
+  transferencia_bancaria
 }
