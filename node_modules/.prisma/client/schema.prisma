@@ -51,6 +51,7 @@ model providers {
   phone        String?      @db.VarChar(50)
   address      String?      @db.Text
   categories   categories[]
+  marca        marca[]
   products     products[]
 }
 
@@ -219,6 +220,7 @@ model order {
   pay_method            order_pay_method?
   oxxo_reference        String?                @db.VarChar(255)
   gatewayPaymentId      String?                @db.VarChar(255)
+  payment_plan          Int?
   createdAt             DateTime?              @db.DateTime(0)
   updatedAt             DateTime?              @db.DateTime(0)
   requiredFactura       Int?                   @db.TinyInt
@@ -272,10 +274,13 @@ model transfers {
 }
 
 model marca {
-  idMarca     BigInt  @id @default(autoincrement())
-  name        String? @db.VarChar(255)
-  description String? @db.VarChar(255)
-  marcacol    String? @db.VarChar(45)
+  idMarca     BigInt     @id @default(autoincrement())
+  name        String?    @db.VarChar(255)
+  description String?    @db.VarChar(255)
+  providerId  BigInt?
+  providers   providers? @relation(fields: [providerId], references: [idProvider], onDelete: NoAction, onUpdate: NoAction, map: "fk_marca_providerId")
+
+  @@index([providerId], map: "fk_marca_providerId_idx")
 }
 
 model sales {
@@ -364,11 +369,13 @@ enum order_pay_method {
   transferencia_bancaria
   tarjeta_sucursal
   mercadopago
+  esperando
 }
 
 enum billing_methodPay {
   Efectivo
-  Tarjeta_de_Credito @map("Tarjeta de Credito")
-  Tarjeta_de_Debito  @map("Tarjeta de Debito")
-  Mercado_Pago       @map("Mercado Pago")
+  Tarjeta_de_Credito     @map("Tarjeta de Credito")
+  Tarjeta_de_Debito      @map("Tarjeta de Debito")
+  Mercado_Pago           @map("Mercado Pago")
+  transferencia_bancaria
 }

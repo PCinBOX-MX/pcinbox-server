@@ -62,7 +62,12 @@ export const registerSales = async (req: CustomRequestI, res: Response) => {
 
     for (const sale of slcSales) {
       await prisma.products.update({
-        where: { idProduct: Number(sale.productId) },
+        where: {
+          idProduct: Number(sale.productId),
+          stock: {
+            gte: Number(sale.quantity!),
+          },
+        },
         data: {
           stock: { decrement: Number(sale.quantity) },
         },
