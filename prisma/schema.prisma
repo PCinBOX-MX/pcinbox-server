@@ -29,19 +29,23 @@ model products {
   sku             String?     @db.VarChar(255)
   rating          Float?
   image_url       Json?
-  categoryId      BigInt
+  categoryId      BigInt?
+  marcaId         BigInt?
   providerId      BigInt
+  isPC            Int?        @db.TinyInt
   createdAt       DateTime?   @default(now()) @db.DateTime(0)
   active          Int?        @default(1) @db.TinyInt
   cartItems       cartItems[]
   favorites       favorites[]
-  categories      categories  @relation(fields: [categoryId], references: [idCategorie], onDelete: NoAction, onUpdate: NoAction, map: "fk_categorieId_products")
+  categories      categories? @relation(fields: [categoryId], references: [idCategorie], onDelete: NoAction, onUpdate: NoAction, map: "fk_categorieId_products")
+  marca           marca?      @relation(fields: [marcaId], references: [idMarca], onDelete: NoAction, onUpdate: NoAction, map: "fk_marcaId_products")
   providers       providers   @relation(fields: [providerId], references: [idProvider], onDelete: NoAction, onUpdate: NoAction, map: "fk_providerId_products")
   reviews         reviews[]
   sales           sales[]
 
   @@index([categoryId], map: "fk_categorieId_products_idx")
   @@index([providerId], map: "fk_providerId_products_idx")
+  @@index([marcaId], map: "fk_marcaId_products_idx")
 }
 
 model providers {
@@ -279,6 +283,7 @@ model marca {
   description String?    @db.VarChar(255)
   providerId  BigInt?
   providers   providers? @relation(fields: [providerId], references: [idProvider], onDelete: NoAction, onUpdate: NoAction, map: "fk_marca_providerId")
+  products    products[]
 
   @@index([providerId], map: "fk_marca_providerId_idx")
 }
