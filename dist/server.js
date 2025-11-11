@@ -18,6 +18,7 @@ const review_route_1 = __importDefault(require("./routes/review/review.route"));
 const sales_route_1 = __importDefault(require("./routes/sales/sales.route"));
 const cookie_parser_1 = __importDefault(require("cookie-parser"));
 const path_1 = __importDefault(require("path"));
+const helmet_1 = __importDefault(require("helmet"));
 //const envFile = `.env.${process.env.NODE_ENV || "local"}`;
 dotenv_1.default.config({ path: ".env.prod" });
 const server = (0, express_1.default)();
@@ -34,6 +35,8 @@ const allowedOrigins = [
     "https://www.pcinbox.com.mx",
     "https://pcinbox-admin.vercel.app",
 ];
+server.use((0, helmet_1.default)());
+server.disable("x-powered-by");
 server.use((0, cors_1.default)({
     origin: allowedOrigins,
     credentials: true,
