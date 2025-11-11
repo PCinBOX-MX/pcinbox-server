@@ -7,3 +7,5 @@
 # Logs & misc
 *.log
 *.tsbuildinfo
+
+/node_modules
