@@ -50,7 +50,12 @@ const registerSales = async (req, res) => {
         }
         for (const sale of slcSales) {
             await prismaClient_1.prisma.products.update({
-                where: { idProduct: Number(sale.productId) },
+                where: {
+                    idProduct: Number(sale.productId),
+                    stock: {
+                        gte: Number(sale.quantity),
+                    },
+                },
                 data: {
                     stock: { decrement: Number(sale.quantity) },
                 },
