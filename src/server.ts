@@ -13,10 +13,12 @@ import routesReview from "./routes/review/review.route";
 import routesSales from "./routes/sales/sales.route";
 import cookieParser from "cookie-parser";
 import path from "path";
+import helmet from "helmet";
 
 //const envFile = `.env.${process.env.NODE_ENV || "local"}`;
 dotenv.config({ path: ".env.prod" });
 const server = express();
+
 server.set("view engine", "ejs");
 server.set("views", path.join(__dirname, "views"));
 server.set("trust proxy", 1);
@@ -31,6 +33,9 @@ const allowedOrigins = [
   "https://www.pcinbox.com.mx",
   "https://pcinbox-admin.vercel.app",
 ];
+
+server.use(helmet());
+server.disable("x-powered-by");
 
 server.use(
   cors({

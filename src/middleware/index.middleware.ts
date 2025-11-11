@@ -1,7 +1,7 @@
 import { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
-import CustomRequestI from "src/interfaces/customrequest.interface";
+import CustomRequestI from "../interfaces/customrequest.interface";
 import { prisma } from "./../db/prismaClient";
 
 // const envFile = `.env.${process.env.NODE_ENV || "local"}`;
