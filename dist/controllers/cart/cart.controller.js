@@ -44,6 +44,7 @@ const getCart = async (req, res) => {
             idProduct: item.products.idProduct.toString(),
             providerId: item.products.providerId.toString(),
             categoryId: item.products.categoryId.toString(),
+            marcaId: item.products.marcaId.toString(),
             quantity: item.quantity?.toString(),
         }))
             .filter((product) => product.quantity != "0");
