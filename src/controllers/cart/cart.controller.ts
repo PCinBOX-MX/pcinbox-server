@@ -45,6 +45,7 @@ export const getCart = async (req: CustomRequestI, res: Response) => {
         idProduct: item.products.idProduct.toString(),
         providerId: item.products.providerId.toString(),
         categoryId: item.products.categoryId.toString(),
+        marcaId: item.products.marcaId.toString(),
         quantity: item.quantity?.toString(),
       }))
       .filter((product: any) => product.quantity != "0");
