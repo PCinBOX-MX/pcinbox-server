@@ -41,13 +41,15 @@ const getCart = async (req, res) => {
         const serializedCartItems = cartItems
             .map((item) => ({
             ...item.products,
-            idProduct: item.products.idProduct.toString(),
-            providerId: item.products.providerId.toString(),
-            categoryId: item.products.categoryId.toString(),
-            marcaId: item.products.marcaId
-                ? item.products.marcaId.toString()
+            idProduct: String(item.products.idProduct),
+            providerId: item.products.providerId
+                ? String(item.products.providerId)
                 : null,
-            quantity: item.quantity?.toString(),
+            categoryId: item.products.categoryId
+                ? String(item.products.categoryId)
+                : null,
+            marcaId: item.products.marcaId ? String(item.products.marcaId) : null,
+            quantity: item.quantity != null ? String(item.quantity) : null,
         }))
             .filter((product) => product.quantity != "0");
         return res.status(200).json({
