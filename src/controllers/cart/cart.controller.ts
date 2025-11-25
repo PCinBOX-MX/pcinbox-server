@@ -42,13 +42,15 @@ export const getCart = async (req: CustomRequestI, res: Response) => {
     const serializedCartItems = cartItems
       .map((item: any) => ({
         ...item.products,
-        idProduct: item.products.idProduct.toString(),
-        providerId: item.products.providerId.toString(),
-        categoryId: item.products.categoryId.toString(),
-        marcaId: item.products.marcaId
-          ? item.products.marcaId.toString()
+        idProduct: String(item.products.idProduct),
+        providerId: item.products.providerId
+          ? String(item.products.providerId)
           : null,
-        quantity: item.quantity?.toString(),
+        categoryId: item.products.categoryId
+          ? String(item.products.categoryId)
+          : null,
+        marcaId: item.products.marcaId ? String(item.products.marcaId) : null,
+        quantity: item.quantity != null ? String(item.quantity) : null,
       }))
       .filter((product: any) => product.quantity != "0");
 
@@ -57,6 +59,7 @@ export const getCart = async (req: CustomRequestI, res: Response) => {
       data: serializedCartItems,
     });
   } catch (error: any) {
+    console.log(error.message);
     return res.status(500).json({
       ok: false,
       message: "Error interno del servidor",

@@ -9,13 +9,10 @@ datasource db {
 }
 
 model categories {
-  idCategorie BigInt     @id @default(autoincrement())
-  name        String     @db.VarChar(100)
-  providerId  BigInt?
-  providers   providers? @relation(fields: [providerId], references: [idProvider], onDelete: NoAction, onUpdate: NoAction, map: "fk_categories_providerId")
-  products    products[]
-
-  @@index([providerId], map: "fk_categories_providerId")
+  idCategorie    BigInt           @id @default(autoincrement())
+  name           String           @db.VarChar(100)
+  categoriamapeo categoriamapeo[]
+  products       products[]
 }
 
 model products {
@@ -27,6 +24,7 @@ model products {
   price           Decimal     @db.Decimal(10, 2)
   stock           Int
   sku             String?     @db.VarChar(255)
+  upc             String?     @db.VarChar(255)
   rating          Float?
   image_url       Json?
   categoryId      BigInt?
@@ -43,20 +41,20 @@ model products {
   reviews         reviews[]
   sales           sales[]
 
-  @@index([categoryId], map: "fk_categorieId_products_idx")
   @@index([providerId], map: "fk_providerId_products_idx")
   @@index([marcaId], map: "fk_marcaId_products_idx")
+  @@index([categoryId], map: "fk_categoriaId_products_idx")
 }
 
 model providers {
-  idProvider   BigInt       @id @default(autoincrement())
-  companyName  String       @db.VarChar(100)
-  contactEmail String?      @db.VarChar(100)
-  phone        String?      @db.VarChar(50)
-  address      String?      @db.Text
-  categories   categories[]
-  marca        marca[]
-  products     products[]
+  idProvider     BigInt           @id @default(autoincrement())
+  companyName    String           @db.VarChar(100)
+  contactEmail   String?          @db.VarChar(100)
+  phone          String?          @db.VarChar(50)
+  address        String?          @db.Text
+  categoriamapeo categoriamapeo[]
+  marcamapeo     marcamapeo[]
+  products       products[]
 }
 
 model users {
@@ -278,14 +276,11 @@ model transfers {
 }
 
 model marca {
-  idMarca     BigInt     @id @default(autoincrement())
-  name        String?    @db.VarChar(255)
-  description String?    @db.VarChar(255)
-  providerId  BigInt?
-  providers   providers? @relation(fields: [providerId], references: [idProvider], onDelete: NoAction, onUpdate: NoAction, map: "fk_marca_providerId")
+  idMarca     BigInt       @id @default(autoincrement())
+  name        String?      @db.VarChar(255)
+  description String?      @db.VarChar(255)
+  marcamapeo  marcamapeo[]
   products    products[]
-
-  @@index([providerId], map: "fk_marca_providerId_idx")
 }
 
 model sales {
@@ -304,6 +299,32 @@ model sales {
   @@index([orderId], map: "fk_orderId_sales_idx")
   @@index([productId], map: "fk_productId_sales")
   @@index([userId], map: "fk_userId_sales")
+}
+
+model categoriamapeo {
+  idCategoriaMapeo BigInt      @id @default(autoincrement())
+  nameExt          String      @db.VarChar(255)
+  providerId       BigInt?
+  categoriaLocalId BigInt?
+  createdAt        DateTime?   @default(now()) @db.DateTime(0)
+  categories       categories? @relation(fields: [categoriaLocalId], references: [idCategorie], onDelete: NoAction, onUpdate: NoAction, map: "fk_categoriamapeo_categoriasLocalId")
+  providers        providers?  @relation(fields: [providerId], references: [idProvider], onDelete: NoAction, onUpdate: NoAction, map: "fk_categoriamapeo_providerId")
+
+  @@index([categoriaLocalId], map: "fk_categoriamapeo_categoriasLocalId_idx")
+  @@index([providerId], map: "fk_categoriamapeo_providerId_idx")
+}
+
+model marcamapeo {
+  idMarcaMapeo BigInt    @id @default(autoincrement())
+  nameExt      String    @db.VarChar(255)
+  providerId   BigInt
+  marcaLocalId BigInt
+  createdAt    DateTime  @default(now()) @db.DateTime(0)
+  marca        marca     @relation(fields: [marcaLocalId], references: [idMarca], onDelete: NoAction, onUpdate: NoAction, map: "fk_marcamapeo_marcaLocalId")
+  providers    providers @relation(fields: [providerId], references: [idProvider], onDelete: NoAction, onUpdate: NoAction, map: "fk_marcamapeo_providerId")
+
+  @@index([providerId], map: "fk_maramapeo_providerId_idx")
+  @@index([marcaLocalId], map: "fk_marcamapeo_marcaLocalId_idx")
 }
 
 enum users_role {
