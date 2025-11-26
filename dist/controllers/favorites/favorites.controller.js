@@ -29,6 +29,7 @@ const getFavoritosUser = async (req, res) => {
                 idProduct: Number(item.products.idProduct),
                 categoryId: Number(item.products.categoryId),
                 providerId: Number(item.products.providerId),
+                marcaId: Number(item.products.marcaId),
             },
         }));
         return res.status(200).json({
@@ -99,6 +100,7 @@ const addFavorites = async (req, res) => {
                 idProduct: Number(item.products.idProduct),
                 categoryId: Number(item.products.categoryId),
                 providerId: Number(item.products.providerId),
+                marcaId: Number(item.products.marcaId),
             },
         }));
         return res.status(200).json({
@@ -166,6 +168,7 @@ const removeFavorites = async (req, rest) => {
                 idProduct: Number(item.products.idProduct),
                 categoryId: Number(item.products.categoryId),
                 providerId: Number(item.products.providerId),
+                marcaId: Number(item.products.marcaId),
             },
         }));
         return rest.status(200).json({

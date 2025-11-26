@@ -58,6 +58,7 @@ const getCart = async (req, res) => {
         });
     }
     catch (error) {
+        console.log(error.message);
         return res.status(500).json({
             ok: false,
             message: "Error interno del servidor",
