@@ -175,6 +175,7 @@ export const removeFavorites = async (req: CustomRequestI, rest: Response) => {
         idProduct: Number(item.products.idProduct),
         categoryId: Number(item.products.categoryId),
         providerId: Number(item.products.providerId),
+        marcaId: Number(item.products.marcaId),
       },
     }));
 
