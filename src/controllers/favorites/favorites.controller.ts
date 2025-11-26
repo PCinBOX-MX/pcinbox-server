@@ -27,6 +27,7 @@ export const getFavoritosUser = async (req: CustomRequestI, res: Response) => {
         idProduct: Number(item.products.idProduct),
         categoryId: Number(item.products.categoryId),
         providerId: Number(item.products.providerId),
+        marcaId: Number(item.products.marcaId),
       },
     }));
 
@@ -101,6 +102,7 @@ export const addFavorites = async (req: CustomRequestI, res: Response) => {
         idProduct: Number(item.products.idProduct),
         categoryId: Number(item.products.categoryId),
         providerId: Number(item.products.providerId),
+        marcaId: Number(item.products.marcaId),
       },
     }));
 
@@ -173,6 +175,7 @@ export const removeFavorites = async (req: CustomRequestI, rest: Response) => {
         idProduct: Number(item.products.idProduct),
         categoryId: Number(item.products.categoryId),
         providerId: Number(item.products.providerId),
+        marcaId: Number(item.products.marcaId),
       },
     }));
 

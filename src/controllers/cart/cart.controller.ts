@@ -59,6 +59,7 @@ export const getCart = async (req: CustomRequestI, res: Response) => {
       data: serializedCartItems,
     });
   } catch (error: any) {
+    console.log(error.message);
     return res.status(500).json({
       ok: false,
       message: "Error interno del servidor",
