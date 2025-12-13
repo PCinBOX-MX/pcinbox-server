@@ -133,8 +133,10 @@ INNER JOIN
   LEFT JOIN pcinbox_db.addresses a ON sh.addressId = a.idAddress 
 
 WHERE
-  o.userId = ${Number(idUser)}
+  o.userId = ${Number(idUser)} 
   ${status !== "allState" ? `AND sh.status = "${status}"` : ""}
+  AND o.pay_method != "esperando"
+  
 GROUP BY
 sh.idShipment,
   o.idOrder, 
