@@ -2,6 +2,7 @@ import { prisma } from "../../db/prismaClient";
 import { Response } from "express";
 import dotenv from "dotenv";
 import CustomRequestI from "./../../interfaces/customrequest.interface";
+import { parseBigInts } from "./../../services/index.service";
 
 dotenv.config({ path: ".env.prod" });
 export const getFavoritosUser = async (req: CustomRequestI, res: Response) => {
@@ -12,7 +13,11 @@ export const getFavoritosUser = async (req: CustomRequestI, res: Response) => {
         active: 1,
       },
       include: {
-        products: true,
+        products: {
+          include: {
+            reviews: true,
+          },
+        },
       },
     });
 
@@ -28,6 +33,7 @@ export const getFavoritosUser = async (req: CustomRequestI, res: Response) => {
         categoryId: Number(item.products.categoryId),
         providerId: Number(item.products.providerId),
         marcaId: Number(item.products.marcaId),
+        reviews: parseBigInts(item.products.reviews),
       },
     }));
 
