@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.removeFavorites = exports.addFavorites = exports.getFavoritosUser = void 0;
 const prismaClient_1 = require("../../db/prismaClient");
 const dotenv_1 = __importDefault(require("dotenv"));
+const index_service_1 = require("./../../services/index.service");
 dotenv_1.default.config({ path: ".env.prod" });
 const getFavoritosUser = async (req, res) => {
     try {
@@ -15,7 +16,11 @@ const getFavoritosUser = async (req, res) => {
                 active: 1,
             },
             include: {
-                products: true,
+                products: {
+                    include: {
+                        reviews: true,
+                    },
+                },
             },
         });
         const serializedFavorites = findFavoritesUser.map((item) => ({
@@ -30,6 +35,7 @@ const getFavoritosUser = async (req, res) => {
                 categoryId: Number(item.products.categoryId),
                 providerId: Number(item.products.providerId),
                 marcaId: Number(item.products.marcaId),
+                reviews: (0, index_service_1.parseBigInts)(item.products.reviews),
             },
         }));
         return res.status(200).json({
