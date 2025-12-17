@@ -93,7 +93,11 @@ export const addFavorites = async (req: CustomRequestI, res: Response) => {
         userId: req.idUser,
       },
       include: {
-        products: true,
+        products: {
+          include: {
+            reviews: true,
+          },
+        },
       },
     });
 
@@ -109,6 +113,7 @@ export const addFavorites = async (req: CustomRequestI, res: Response) => {
         categoryId: Number(item.products.categoryId),
         providerId: Number(item.products.providerId),
         marcaId: Number(item.products.marcaId),
+        reviews: parseBigInts(item.products.reviews),
       },
     }));
 
@@ -166,7 +171,11 @@ export const removeFavorites = async (req: CustomRequestI, rest: Response) => {
         userId: Number(req.idUser),
       },
       include: {
-        products: true,
+        products: {
+          include: {
+            reviews: true,
+          },
+        },
       },
     });
 
@@ -182,6 +191,7 @@ export const removeFavorites = async (req: CustomRequestI, rest: Response) => {
         categoryId: Number(item.products.categoryId),
         providerId: Number(item.products.providerId),
         marcaId: Number(item.products.marcaId),
+        reviews: parseBigInts(item.products.reviews),
       },
     }));
 
