@@ -92,7 +92,11 @@ const addFavorites = async (req, res) => {
                 userId: req.idUser,
             },
             include: {
-                products: true,
+                products: {
+                    include: {
+                        reviews: true,
+                    },
+                },
             },
         });
         const serializedFavorites = dataFinal.map((item) => ({
@@ -107,6 +111,7 @@ const addFavorites = async (req, res) => {
                 categoryId: Number(item.products.categoryId),
                 providerId: Number(item.products.providerId),
                 marcaId: Number(item.products.marcaId),
+                reviews: (0, index_service_1.parseBigInts)(item.products.reviews),
             },
         }));
         return res.status(200).json({
@@ -160,7 +165,11 @@ const removeFavorites = async (req, rest) => {
                 userId: Number(req.idUser),
             },
             include: {
-                products: true,
+                products: {
+                    include: {
+                        reviews: true,
+                    },
+                },
             },
         });
         let dataFinal = listFavoritesByUser.map((item) => ({
@@ -175,6 +184,7 @@ const removeFavorites = async (req, rest) => {
                 categoryId: Number(item.products.categoryId),
                 providerId: Number(item.products.providerId),
                 marcaId: Number(item.products.marcaId),
+                reviews: (0, index_service_1.parseBigInts)(item.products.reviews),
             },
         }));
         return rest.status(200).json({
