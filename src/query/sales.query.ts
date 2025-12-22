@@ -73,18 +73,22 @@ export const querySalesWithOrder = (idUser: any, idOrder: any) => {
       s.quantity,
       o.createdAt,
       o.status,
-      o.paidAtOxxo
+      o.paidAtOxxo,
+      sh.createdAt as updatedAt
 
     FROM 
       pcinbox_db.order o
     INNER JOIN 
       pcinbox_db.sales s ON o.idOrder = s.orderId
       INNER JOIN pcinbox_db.products p ON s.productId = p.idProduct  
+  
+      INNER JOIN pcinbox_db.shipments sh ON o.idOrder = sh.orderId
+
     WHERE 
       o.userId = ${idUser} and o.idOrder = ${idOrder}
   GROUP BY 
   o.idOrder, o.userId, o.pay_method, p.price, p.image_url, o.createdAt, p.description, p.name, s.quantity, o.status,
-  o.paidAtOxxo
+  o.paidAtOxxo, sh.createdAt
     ORDER BY 
       o.idOrder DESC;
   `;
