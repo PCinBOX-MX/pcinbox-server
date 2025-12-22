@@ -130,17 +130,28 @@ export const getSalesByUser = async (req: CustomRequestI, res: Response) => {
         .json({ ok: false, message: "Falta mandar el idOrder en el body" });
     }
 
-    const slcAllSalesUser: any = await prisma.$queryRawUnsafe(
-      querySalesWithOrder(req.idUser, idOrder)
-    );
+    const slcAllSalesUser = await prisma.order.findFirst({
+      where: {
+        idOrder: Number(idOrder),
+      },
+      include: {
+        shipments: {
+          include: {
+            addresses: true,
+          },
+        },
+        sales: {
+          include: {
+            products: true,
+          },
+        },
+      },
+    });
     return res.status(200).json({
       ok: true,
       message: "OK!",
       data: {
-        data:
-          slcAllSalesUser && slcAllSalesUser.length > 0
-            ? parseBigInts(slcAllSalesUser)
-            : [],
+        data: parseBigInts(slcAllSalesUser),
       },
     });
   } catch (error: any) {
