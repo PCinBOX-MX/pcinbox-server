@@ -5,5 +5,6 @@ const geonames_controller_1 = require("./../../controllers/geonames/geonames.con
 const index_middleware_1 = require("./../../middleware/index.middleware");
 const route = (0, express_1.Router)();
 route.post("/getAddressWithPostalCode", index_middleware_1.MiddleAuthRoute, geonames_controller_1.getAddressWithPostalCode);
+route.post("/ShippingByZone", index_middleware_1.MiddleAuthRoute, geonames_controller_1.ShippingByZone);
 exports.default = route;
 //# sourceMappingURL=geonames.route.js.map

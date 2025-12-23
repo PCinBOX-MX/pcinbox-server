@@ -1,1 +1,1 @@
-{"version":3,"file":"geonames.route.d.ts","sourceRoot":"","sources":["../../../src/routes/geonames/geonames.route.ts"],"names":[],"mappings":"AAIA,QAAA,MAAM,KAAK,4CAAW,CAAC;AAQvB,eAAe,KAAK,CAAC"}
+{"version":3,"file":"geonames.route.d.ts","sourceRoot":"","sources":["../../../src/routes/geonames/geonames.route.ts"],"names":[],"mappings":"AAOA,QAAA,MAAM,KAAK,4CAAW,CAAC;AAUvB,eAAe,KAAK,CAAC"}
