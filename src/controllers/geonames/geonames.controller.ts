@@ -1,6 +1,7 @@
 import dotenv from "dotenv";
 import axios from "axios";
 import { Request, Response } from "express";
+import { prisma } from "../../db/prismaClient";
 
 dotenv.config({ path: ".env.prod" });
 const apiGeoNames = axios.create({
@@ -33,6 +34,40 @@ export const getAddressWithPostalCode = async (req: Request, res: Response) => {
   } catch (error: any) {
     return res.status(500).json({
       ok: true,
+      message: "Error interno del servidor",
+      error: error.message,
+    });
+  }
+};
+
+export const ShippingByZone = async (req: Request, res: Response) => {
+  try {
+    const { destino } = req.body;
+
+    if (!destino) {
+      return res
+        .status(400)
+        .json({ ok: false, message: "Falta agregar el destino" });
+    }
+
+    let findZone = await prisma.shippingbyzone.findFirst({
+      where: {
+        name: destino,
+      },
+    });
+
+    return res.status(200).json({
+      ok: true,
+      data: findZone
+        ? {
+            costo: findZone?.price,
+            destino: destino,
+          }
+        : null,
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
       message: "Error interno del servidor",
       error: error.message,
     });
