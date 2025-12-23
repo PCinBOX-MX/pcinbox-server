@@ -16,28 +16,33 @@ model categories {
 }
 
 model products {
-  idProduct       BigInt      @id @default(autoincrement())
-  idProductExt    String?     @db.VarChar(255)
-  name            String      @db.VarChar(150)
-  description     String?     @db.Text
+  idProduct       BigInt          @id @default(autoincrement())
+  idProductExt    String?         @db.VarChar(255)
+  name            String          @db.VarChar(150)
+  description     String?         @db.Text
   caracteristicas Json?
-  price           Decimal     @db.Decimal(10, 2)
+  price           Decimal         @db.Decimal(10, 2)
   stock           Int
-  sku             String?     @db.VarChar(255)
-  upc             String?     @db.VarChar(255)
+  sku             String?         @db.VarChar(255)
+  upc             String?         @db.VarChar(255)
+  width           Float?
+  height          Float?
+  largo           Float?
+  peso            Float?
   rating          Float?
   image_url       Json?
   categoryId      BigInt?
   marcaId         BigInt?
   providerId      BigInt
-  isPC            Int?        @db.TinyInt
-  createdAt       DateTime?   @default(now()) @db.DateTime(0)
-  active          Int?        @default(1) @db.TinyInt
+  isPC            Int?            @db.TinyInt
+  createdAt       DateTime?       @default(now()) @db.DateTime(0)
+  active          Int?            @default(1) @db.TinyInt
   cartItems       cartItems[]
   favorites       favorites[]
-  categories      categories? @relation(fields: [categoryId], references: [idCategorie], onDelete: NoAction, onUpdate: NoAction, map: "fk_categorieId_products")
-  marca           marca?      @relation(fields: [marcaId], references: [idMarca], onDelete: NoAction, onUpdate: NoAction, map: "fk_marcaId_products")
-  providers       providers   @relation(fields: [providerId], references: [idProvider], onDelete: NoAction, onUpdate: NoAction, map: "fk_providerId_products")
+  product_stock   product_stock[]
+  categories      categories?     @relation(fields: [categoryId], references: [idCategorie], onDelete: NoAction, onUpdate: NoAction, map: "fk_categorieId_products")
+  marca           marca?          @relation(fields: [marcaId], references: [idMarca], onDelete: NoAction, onUpdate: NoAction, map: "fk_marcaId_products")
+  providers       providers       @relation(fields: [providerId], references: [idProvider], onDelete: NoAction, onUpdate: NoAction, map: "fk_providerId_products")
   reviews         reviews[]
   sales           sales[]
 
@@ -47,14 +52,16 @@ model products {
 }
 
 model providers {
-  idProvider     BigInt           @id @default(autoincrement())
-  companyName    String           @db.VarChar(100)
-  contactEmail   String?          @db.VarChar(100)
-  phone          String?          @db.VarChar(50)
-  address        String?          @db.Text
-  categoriamapeo categoriamapeo[]
-  marcamapeo     marcamapeo[]
-  products       products[]
+  idProvider         BigInt               @id @default(autoincrement())
+  companyName        String               @db.VarChar(100)
+  contactEmail       String?              @db.VarChar(100)
+  phone              String?              @db.VarChar(50)
+  address            String?              @db.Text
+  branches           branches[]
+  categoriamapeo     categoriamapeo[]
+  marcamapeo         marcamapeo[]
+  products           products[]
+  products_providers products_providers[]
 }
 
 model users {
@@ -63,6 +70,7 @@ model users {
   lastname       String?          @db.VarChar(100)
   email          String           @db.VarChar(100)
   password       String?          @db.VarChar(255)
+  phone          String?          @db.VarChar(45)
   role           users_role       @default(customer)
   customerId     String?          @db.VarChar(255)
   createdAT      DateTime?        @default(now()) @db.DateTime(0)
@@ -226,6 +234,7 @@ model order {
   createdAt             DateTime?              @db.DateTime(0)
   updatedAt             DateTime?              @db.DateTime(0)
   requiredFactura       Int?                   @db.TinyInt
+  active                Int?                   @default(1) @db.TinyInt
   users                 users                  @relation(fields: [userId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "fk_userId_order")
   refunds               refunds[]
   sales                 sales[]
@@ -327,6 +336,60 @@ model marcamapeo {
   @@index([marcaLocalId], map: "fk_marcamapeo_marcaLocalId_idx")
 }
 
+model branches {
+  idBranche     BigInt          @id @default(autoincrement())
+  name          String?         @db.VarChar(255)
+  city          String?         @db.VarChar(255)
+  providerId    BigInt
+  providers     providers       @relation(fields: [providerId], references: [idProvider], onDelete: NoAction, onUpdate: NoAction, map: "fk_providerId_branches")
+  product_stock product_stock[]
+
+  @@index([providerId], map: "fk_providerId_branches_idx")
+}
+
+model product_stock {
+  idProductStock BigInt   @id @default(autoincrement())
+  productId      BigInt
+  branchId       BigInt
+  stock          Int?
+  branches       branches @relation(fields: [branchId], references: [idBranche], onDelete: NoAction, onUpdate: NoAction, map: "fk_branchId_product_stock")
+  products       products @relation(fields: [productId], references: [idProduct], onDelete: NoAction, onUpdate: NoAction, map: "fk_productId_product_stock")
+
+  @@index([branchId], map: "fk_branchId_product_stock_idx")
+  @@index([productId], map: "fk_productId_product_stock")
+}
+
+model products_providers {
+  idProductProvider BigInt    @id @default(autoincrement())
+  idProductExt      String    @unique(map: "idProductExt_UNIQUE") @db.VarChar(255)
+  providerId        BigInt
+  name              String?   @db.VarChar(255)
+  description       String?   @db.VarChar(255)
+  price             Decimal?  @db.Decimal(10, 2)
+  stock             Int?
+  sku               String?   @db.VarChar(255)
+  image_url         Json?
+  upc               String?   @db.VarChar(255)
+  width             Float?
+  height            Float?
+  largo             Float?
+  peso              Float?
+  caracteristicas   Json?
+  isPC              Int?      @db.TinyInt
+  active            Int?      @db.TinyInt
+  dolares           Int?      @db.TinyInt
+  providers         providers @relation(fields: [providerId], references: [idProvider], onDelete: NoAction, onUpdate: NoAction, map: "fk_providerId_products_providers")
+
+  @@index([providerId], map: "fk_providerId_products_providers_idx")
+}
+
+model shippingbyzone {
+  idShippingByZone BigInt @id @default(autoincrement())
+  name             String @db.VarChar(255)
+  price            Float
+  active           Int?   @default(1) @db.TinyInt
+}
+
 enum users_role {
   customer
   provider
@@ -372,13 +435,6 @@ enum sales_status {
   cancelled
 }
 
-enum shipments_status {
-  entregado
-  cancelado
-  enviado
-  procesando
-}
-
 enum order_shipping_method {
   sucursal
   paqueteexpress
@@ -404,4 +460,12 @@ enum billing_methodPay {
   Tarjeta_de_Debito      @map("Tarjeta de Debito")
   Mercado_Pago           @map("Mercado Pago")
   transferencia_bancaria
+}
+
+enum shipments_status {
+  entregado
+  cancelado
+  enviado
+  procesando
+  disponible
 }
