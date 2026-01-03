@@ -390,6 +390,31 @@ model shippingbyzone {
   active           Int?   @default(1) @db.TinyInt
 }
 
+model link_pagos {
+  idLinkPago    Int                    @id @default(autoincrement())
+  userId        BigInt?
+  email         String?                @db.VarChar(255)
+  monto         Float?
+  description   String?                @db.Text
+  referencia    String?                @db.VarChar(255)
+  name          String?                @db.VarChar(255)
+  lastname      String?                @db.VarChar(255)
+  customerId    String?                @db.VarChar(255)
+  chargeId      String?                @db.VarChar(255)
+  products      Json?
+  linkPago      String?                @db.Text
+  status        link_pagos_status?     @default(payment_pending)
+  phone         String?                @db.VarChar(45)
+  newReferencia String?                @db.VarChar(255)
+  transaction   String?                @db.VarChar(255)
+  pay_method    link_pagos_pay_method?
+  createdAt     DateTime?              @default(now()) @db.DateTime(0)
+  expiredAt     DateTime?              @db.DateTime(0)
+  updatedAt     DateTime?              @db.DateTime(0)
+  statusShip    link_pagos_statusShip?
+  codeOxxo      String?                @db.Text
+}
+
 enum users_role {
   customer
   provider
@@ -468,4 +493,28 @@ enum shipments_status {
   enviado
   procesando
   disponible
+}
+
+enum link_pagos_status {
+  paid
+  payment_pending
+  failed
+  cancelled
+  expired
+}
+
+enum link_pagos_pay_method {
+  tarjeta_de_credito
+  tarjeta_de_debito
+  transferencia_bancaria
+  oxxo
+  esperando
+}
+
+enum link_pagos_statusShip {
+  entregado
+  disponible
+  enviado
+  cancelado
+  procesando
 }
