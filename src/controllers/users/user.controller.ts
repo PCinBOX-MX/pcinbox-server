@@ -84,6 +84,7 @@ export const Login = async (req: Request, res: Response) => {
         name: slcUser.name,
         lastname: slcUser.lastname,
         idUser: slcUser.idUser.toString(),
+        role: slcUser?.role,
       },
     });
   } catch (error: any) {

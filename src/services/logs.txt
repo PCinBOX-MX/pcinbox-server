@@ -25,3 +25,4 @@
     null
     null
 [24/11/2025, 6:43:32 p.m.] ❌ Error al obtener última foto: Error: socket hang up
+[23/12/2025, 5:38:02 p.m.] ❌ Error al obtener última foto: Error: connect ETIMEDOUT 52.23.130.57:443
