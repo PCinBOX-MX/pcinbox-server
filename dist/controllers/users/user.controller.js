@@ -70,6 +70,7 @@ const Login = async (req, res) => {
                 name: slcUser.name,
                 lastname: slcUser.lastname,
                 idUser: slcUser.idUser.toString(),
+                role: slcUser?.role,
             },
         });
     }
