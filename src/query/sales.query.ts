@@ -110,6 +110,7 @@ sh.idShipment,
   p.image_url,
   s.quantity,
   o.createdAt,
+  o.updatedAt,
   s.status,
   o.stripePaymentIntentId,
   sh.status AS statusEnvio,
@@ -154,7 +155,8 @@ sh.idShipment,
   o.stripePaymentIntentId, 
   sh.status,
   o.paidAtOxxo,
-  o.shipping_method
+  o.shipping_method,
+   o.updatedAt
 ORDER BY
   o.idOrder DESC;
 `;
