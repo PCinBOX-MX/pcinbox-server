@@ -20,7 +20,7 @@ export const getAddressWithPostalCode = async (req: Request, res: Response) => {
     }
 
     const response = await apiGeoNames.get(
-      `/postalCodeLookupJSON?postalcode=${postalCode}&country=MX`
+      `/postalCodeLookupJSON?postalcode=${postalCode}&country=MX`,
     );
 
     if (response.status == 200) {
@@ -50,9 +50,22 @@ export const ShippingByZone = async (req: Request, res: Response) => {
         .json({ ok: false, message: "Falta agregar el destino" });
     }
 
+    let slcAddress = await prisma.addresses.findFirst({
+      where: {
+        idAddress: Number(destino),
+        active: 1,
+      },
+    });
+
+    if (!slcAddress) {
+      return res
+        .status(400)
+        .json({ ok: false, message: "Dirección no encontrada" });
+    }
+
     let findZone = await prisma.shippingbyzone.findFirst({
       where: {
-        name: destino,
+        name: slcAddress?.city!,
       },
     });
 
