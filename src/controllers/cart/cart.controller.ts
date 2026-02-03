@@ -88,22 +88,26 @@ export const addProduct = async (req: CustomRequestI, res: Response) => {
   try {
     const { product, quantity, isDetails, storeId } = req.body;
 
+    // 1️⃣ Buscar carrito activo del usuario
     let cart = await prisma.carts.findFirst({
       where: {
         userId: Number(req?.idUser.toString()),
+        status: "active",
       },
     });
 
+    // 2️⃣ Crear carrito si no existe
     if (!cart) {
       cart = await prisma.carts.create({
         data: {
           userId: Number(req?.idUser.toString()),
           status: "active",
-          createdAt: fechaLocal.toISO(),
+          createdAt: new Date().toISOString(),
         },
       });
     }
 
+    // 3️⃣ Buscar item en carrito
     const existingItem = await prisma.cartItems.findFirst({
       where: {
         carId: Number(cart.idCart),
@@ -114,23 +118,18 @@ export const addProduct = async (req: CustomRequestI, res: Response) => {
     });
 
     if (existingItem) {
-      // 2. Si ya existe, actualizar la cantidad sumando
+      // 🔹 Si ya existe, actualizamos la cantidad directamente con la enviada
       await prisma.cartItems.update({
         where: {
           idCartItem: Number(existingItem.idCartItem),
         },
         data: {
           storeId: storeId ? Number(storeId) : null,
-          quantity:
-            existingItem.quantity == null
-              ? 1
-              : isDetails
-                ? Number(quantity)
-                : Number(existingItem.quantity) + Number(quantity),
+          quantity: Number(quantity), // usamos la cantidad que envía React
         },
       });
     } else {
-      // 3. Si no existe, crear nuevo item
+      // 🔹 Si no existe, creamos un nuevo item
       await prisma.cartItems.create({
         data: {
           carId: Number(cart.idCart),
@@ -143,9 +142,10 @@ export const addProduct = async (req: CustomRequestI, res: Response) => {
 
     return res.status(200).json({
       ok: true,
-      message: "Producto agregado",
+      message: "Producto agregado correctamente",
     });
   } catch (error: any) {
+    console.error(error);
     return res.status(500).json({
       ok: false,
       message: error.message,
