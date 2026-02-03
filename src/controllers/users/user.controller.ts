@@ -72,7 +72,7 @@ export const Login = async (req: Request, res: Response) => {
         idUser: slcUser.idUser.toString(),
         rol: slcUser.role,
       },
-      "3d"
+      "3d",
     );
 
     return res.status(200).json({
@@ -98,18 +98,32 @@ export const Login = async (req: Request, res: Response) => {
 
 export const Register = async (req: Request, res: Response) => {
   try {
-    const { name, lastname, email, password, rol } = req.body;
+    const {
+      name,
+      lastname,
+      email,
+      password,
+      rol,
+      phone,
+    }: {
+      name: string;
+      lastname: string;
+      email: string;
+      password: string;
+      rol: any;
+      phone: string;
+    } = req.body;
 
-    if (!name || !email || !password || !lastname)
+    if (!name || !email || !password || !lastname || !phone)
       return res
         .status(400)
-        .json({ ok: false, message: "Faltan campos en el body json" });
+        .json({ ok: false, message: "Completa los campos" });
 
     //Validamos que no este registrado el email entrante en la DB
 
     const isExistEmail = await prisma.users.findFirst({
       where: {
-        email: email,
+        email: email.toString().trim(),
       },
       select: {
         email: true,
@@ -119,7 +133,7 @@ export const Register = async (req: Request, res: Response) => {
     if (isExistEmail) {
       return res.status(400).json({
         ok: false,
-        message: `El correo ${email} ya está registrado o se desvinculó`,
+        message: `El correo ${email} ya está registrado o se desvinculó del sistema`,
       });
     }
 
@@ -134,15 +148,12 @@ export const Register = async (req: Request, res: Response) => {
         lastname: lastname,
         createdAT: fechaLocal.toISO(),
         role: !rol ? "customer" : rol,
+        phone: phone,
       },
     });
 
     try {
-      await SendEmailWelcomeUser(
-        `${name} ${lastname}`,
-        `${process.env.BASE_URL_APP}/principal`,
-        email
-      );
+      await SendEmailWelcomeUser(`${name} ${lastname}`, email);
     } catch (error: any) {
       //Notificar cuando no se haya enviado el correo
       writeErrorLogs(error);
@@ -208,8 +219,8 @@ export const LoginGoogle = async (req: Request, res: Response) => {
       try {
         await SendEmailWelcomeUser(
           `${name}`,
-          `${process.env.BASE_URL_APP}/principal`,
-          email
+
+          email,
         );
       } catch (error: any) {
         //Notificar cuando no se haya enviado el correo
@@ -231,7 +242,7 @@ export const LoginGoogle = async (req: Request, res: Response) => {
         idUser: slcUser.idUser.toString(),
         rol: slcUser.role,
       },
-      "3d"
+      "3d",
     );
 
     return res
@@ -338,7 +349,7 @@ export const ChangePassword = async (req: CustomRequestI, res: Response) => {
 
     let verifyCurrentPass = await verifyPassword(
       currentPassword,
-      findPassHas.password
+      findPassHas.password,
     );
 
     if (!verifyCurrentPass) {
