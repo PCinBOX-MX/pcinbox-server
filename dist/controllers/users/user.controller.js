@@ -85,15 +85,15 @@ const Login = async (req, res) => {
 exports.Login = Login;
 const Register = async (req, res) => {
     try {
-        const { name, lastname, email, password, rol } = req.body;
-        if (!name || !email || !password || !lastname)
+        const { name, lastname, email, password, rol, phone, } = req.body;
+        if (!name || !email || !password || !lastname || !phone)
             return res
                 .status(400)
-                .json({ ok: false, message: "Faltan campos en el body json" });
+                .json({ ok: false, message: "Completa los campos" });
         //Validamos que no este registrado el email entrante en la DB
         const isExistEmail = await prismaClient_1.prisma.users.findFirst({
             where: {
-                email: email,
+                email: email.toString().trim(),
             },
             select: {
                 email: true,
@@ -102,7 +102,7 @@ const Register = async (req, res) => {
         if (isExistEmail) {
             return res.status(400).json({
                 ok: false,
-                message: `El correo ${email} ya está registrado o se desvinculó`,
+                message: `El correo ${email} ya está registrado o se desvinculó del sistema`,
             });
         }
         //Encriptamos la password
@@ -115,10 +115,11 @@ const Register = async (req, res) => {
                 lastname: lastname,
                 createdAT: fechaLocal.toISO(),
                 role: !rol ? "customer" : rol,
+                phone: phone,
             },
         });
         try {
-            await (0, sendgrid_service_1.SendEmailWelcomeUser)(`${name} ${lastname}`, `${process.env.BASE_URL_APP}/principal`, email);
+            await (0, sendgrid_service_1.SendEmailWelcomeUser)(`${name} ${lastname}`, email);
         }
         catch (error) {
             //Notificar cuando no se haya enviado el correo
@@ -178,7 +179,7 @@ const LoginGoogle = async (req, res) => {
                 },
             });
             try {
-                await (0, sendgrid_service_1.SendEmailWelcomeUser)(`${name}`, `${process.env.BASE_URL_APP}/principal`, email);
+                await (0, sendgrid_service_1.SendEmailWelcomeUser)(`${name}`, email);
             }
             catch (error) {
                 //Notificar cuando no se haya enviado el correo
