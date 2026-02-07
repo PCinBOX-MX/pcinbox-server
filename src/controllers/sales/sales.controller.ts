@@ -90,7 +90,7 @@ export const registerSales = async (req: CustomRequestI, res: Response) => {
 export const getPedidosByUser = async (req: CustomRequestI, res: Response) => {
   try {
     const getAllPedidosByUser: any = await prisma.$queryRawUnsafe(
-      querySales({ idUser: Number(req.idUser) })
+      querySales({ idUser: Number(req.idUser) }),
     );
     return res.status(200).json({
       ok: true,
@@ -165,7 +165,7 @@ export const getSalesByUser = async (req: CustomRequestI, res: Response) => {
 
 export const historySalesByUser = async (
   req: CustomRequestI,
-  res: Response
+  res: Response,
 ) => {
   try {
     const slcUser = await prisma.users.findFirst({
@@ -182,7 +182,7 @@ export const historySalesByUser = async (
     }
 
     const history: any = await prisma.$queryRawUnsafe(
-      querySales({ idUser: req.idUser })
+      querySales({ idUser: req.idUser }),
     );
 
     return res.status(200).json({
@@ -212,15 +212,78 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
       });
     }
 
-    const record: any = await prisma.$queryRawUnsafe(
-      querySalesWithStatus(userId, status)
-    );
+    // const record: any = await prisma.$queryRawUnsafe(
+    //   querySalesWithStatus(userId, status)
+    // );
+
+    let orders = await prisma.order.findMany({
+      where: {
+        pay_method: {
+          not: "esperando",
+        },
+      },
+      orderBy: {
+        idOrder: "desc",
+      },
+      include: {
+        shipments: true,
+        sales: {
+          include: {
+            products: {
+              select: {
+                idProduct: true,
+                name: true,
+                description: true,
+                price: true,
+                image_url: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    let parserOrder = orders.map((order) => {
+      return {
+        idOrder: order.idOrder,
+        totalSales: order.sales.length,
+        createdAt: order?.createdAt,
+        updatedAt: order?.updatedAt,
+        payment_method: order.pay_method,
+        idUser: Number(order.userId),
+
+        products: order.sales.map((sale) => {
+          // buscar shipment que tenga el mismo productId (si tu Shipment lo tiene)
+          const shipmentForSale = order.shipments.find(
+            (sh) => sh.idShipment === sale.shipmentId,
+          );
+          return {
+            idShipment: shipmentForSale?.idShipment,
+            description: sale.products?.description,
+            price: sale?.products?.price,
+            idProduct: sale.products.idProduct,
+            name: sale.products.name,
+            quantity: sale.quantity,
+            statusShip: shipmentForSale?.status,
+            shipping_method: shipmentForSale?.shipping_method || null,
+            status: sale.status,
+            image_url: sale?.products?.image_url,
+            trackingNumber: shipmentForSale?.trackingNumber ?? null,
+            shippingType: shipmentForSale ? "envio" : "sucursal",
+          };
+        }),
+      };
+    });
 
     return res.status(200).json({
       ok: true,
       message: "OK!",
       data: {
-        data: record && record.length > 0 ? parseBigInts(record) : [],
+        data:
+          parserOrder && parserOrder.length > 0
+            ? parseBigInts(parserOrder)
+            : [],
+        //  data: record && record.length > 0 ? parseBigInts(record) : [],
       },
     });
   } catch (error: any) {
