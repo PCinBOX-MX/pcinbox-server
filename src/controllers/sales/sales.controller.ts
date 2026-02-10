@@ -226,7 +226,12 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
         idOrder: "desc",
       },
       include: {
-        shipments: true,
+        shipments: {
+          include: {
+            addresses: true,
+          },
+        },
+
         sales: {
           include: {
             products: {
@@ -252,24 +257,45 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
         payment_method: order.pay_method,
         idUser: Number(order.userId),
 
-        products: order.sales.map((sale) => {
+        products: order.sales.map((sale, indexSale) => {
           // buscar shipment que tenga el mismo productId (si tu Shipment lo tiene)
-          const shipmentForSale = order.shipments.find(
-            (sh) => sh.idShipment === sale.shipmentId,
-          );
+          // const shipmentForSale = order.shipments.find(
+          //   (sh) => Number(sh.idShipment) === Number(sale.shipmentId),
+          // );
           return {
-            idShipment: shipmentForSale?.idShipment,
+            idShipment: order?.shipments[indexSale]?.idShipment,
             description: sale.products?.description,
             price: sale?.products?.price,
             idProduct: sale.products.idProduct,
             name: sale.products.name,
             quantity: sale.quantity,
-            statusShip: shipmentForSale?.status,
-            shipping_method: shipmentForSale?.shipping_method || null,
+            statusShip: order.shipments[indexSale]?.status,
+            shipping_method: order?.shipments[indexSale]?.shipping_method,
             status: sale.status,
             image_url: sale?.products?.image_url,
-            trackingNumber: shipmentForSale?.trackingNumber ?? null,
-            shippingType: shipmentForSale ? "envio" : "sucursal",
+            trackingNumber: order?.shipments[indexSale]?.trackingNumber,
+            // shippingType: shipmentForSale ? "envio" : "sucursal",
+            address: order?.shipments[indexSale]?.addresses
+              ? {
+                  idAddress: Number(
+                    order?.shipments[indexSale].addresses?.idAddress,
+                  ),
+                  userId: Number(order?.shipments[indexSale].addresses?.userId),
+                  street: order?.shipments[indexSale].addresses?.street,
+                  noExt: order?.shipments[indexSale].addresses?.noExt,
+                  noInt: order?.shipments[indexSale].addresses?.noInt,
+                  cologne: order?.shipments[indexSale].addresses?.cologne,
+                  city: order?.shipments[indexSale].addresses?.city,
+                  state: order?.shipments[indexSale].addresses?.state,
+                  country: order?.shipments[indexSale].addresses?.country,
+                  postalCode: order?.shipments[indexSale].addresses?.postalCode,
+                  phone1: order?.shipments[indexSale].addresses?.phone1,
+                  phone2: order?.shipments[indexSale].addresses?.phone2,
+                  createdAt: order?.shipments[indexSale].addresses?.createdAt,
+                  updatedAt: order?.shipments[indexSale].addresses?.updatedAt,
+                  active: order?.shipments[indexSale].addresses?.active,
+                }
+              : null,
           };
         }),
       };
