@@ -100,68 +100,74 @@ exports.querySalesWithOrder = querySalesWithOrder;
 const querySalesWithStatus = (idUser, status) => {
     const query = `
 SELECT
-sh.idShipment,
+  sh.idShipment,
   o.idOrder,
   o.userId,
   COUNT(s.idSale) AS totalSales,
   SUM(s.total) AS totalAmount,
   o.pay_method,
-  p.idProduct,
-  p.name,
-  p.description,
-  p.price,
-  p.image_url,
-  s.quantity,
+  
+  JSON_ARRAYAGG(
+    JSON_OBJECT(
+      'idProduct', p.idProduct,
+      'name', p.name,
+      'description', p.description,
+      'price', p.price,
+      'image_url', p.image_url,
+      'quantity', s.quantity,
+      'status', s.status
+    )
+  ) AS products,
+
   o.createdAt,
   o.updatedAt,
-  s.status,
   o.stripePaymentIntentId,
   sh.status AS statusEnvio,
   o.paidAtOxxo,
-  a.street as street,
-  a.noExt as noExt,
-   a.noInt,
+  a.street,
+  a.noExt,
+  a.noInt,
   a.cologne,
   a.city,
-   a.state,
+  a.state,
   a.country,
   o.shipping_method
-FROM
-  pcinbox_db.order o
-INNER JOIN
-  pcinbox_db.sales s ON o.idOrder = s.orderId
-INNER JOIN
-  pcinbox_db.products p ON s.productId = p.idProduct
-INNER JOIN
-  pcinbox_db.shipments sh ON o.idOrder = sh.orderId
-  
-  LEFT JOIN pcinbox_db.addresses a ON sh.addressId = a.idAddress 
+
+FROM pcinbox_db.order o
+INNER JOIN pcinbox_db.sales s ON o.idOrder = s.orderId
+INNER JOIN pcinbox_db.products p ON s.productId = p.idProduct
+INNER JOIN pcinbox_db.shipments sh ON o.idOrder = sh.orderId
+LEFT JOIN pcinbox_db.shipments sh ON o.idOrder = sh.orderId
+
+LEFT JOIN pcinbox_db.addresses a ON sh.addressId = a.idAddress
 
 WHERE
-  o.userId = ${Number(idUser)} 
+  o.userId = ${Number(idUser)}
   ${status !== "allState" ? `AND sh.status = "${status}"` : ""}
   AND o.pay_method != "esperando"
-  
+
 GROUP BY
-sh.idShipment,
-  o.idOrder, 
-  o.userId, 
-  o.pay_method, 
-  p.idProduct, 
-  p.name, 
-  p.description, 
-  p.price, 
-  p.image_url, 
-  s.quantity, 
-  s.status, 
-  o.createdAt, 
-  o.stripePaymentIntentId, 
+  sh.idShipment,
+  o.idOrder,
+  o.userId,
+  o.pay_method,
+  o.createdAt,
+  o.updatedAt,
+  o.stripePaymentIntentId,
   sh.status,
   o.paidAtOxxo,
-  o.shipping_method,
-   o.updatedAt
+  a.street,
+  a.noExt,
+  a.noInt,
+  a.cologne,
+  a.city,
+  a.state,
+  a.country,
+  o.shipping_method
+
 ORDER BY
   o.idOrder DESC;
+
 `;
     return query;
 };

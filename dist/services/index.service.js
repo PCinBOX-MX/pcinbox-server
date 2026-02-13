@@ -6,12 +6,15 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.formatter = exports.writeErrorLogs = exports.signPayload = exports.verifyPassword = exports.hasPassword = void 0;
 exports.generateResetToken = generateResetToken;
 exports.parseBigInts = parseBigInts;
+exports.readExcelImageKit = readExcelImageKit;
 const bcrypt_1 = __importDefault(require("bcrypt"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const dotenv_1 = __importDefault(require("dotenv"));
 const nanoid_1 = require("nanoid");
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
+const axios_1 = __importDefault(require("axios"));
+const xlsx_1 = __importDefault(require("xlsx"));
 dotenv_1.default.config({ path: ".env.prod" });
 const hasPassword = async (password) => {
     const saltRounds = 10;
@@ -48,4 +51,15 @@ exports.formatter = new Intl.NumberFormat("es-MX", {
     style: "currency",
     currency: "MXN",
 });
+async function readExcelImageKit(url) {
+    const response = await axios_1.default.get(url, {
+        responseType: "arraybuffer",
+    });
+    // Leer el Excel desde el buffer
+    const workbook = xlsx_1.default.read(response.data, { type: "buffer" });
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    const data = xlsx_1.default.utils.sheet_to_json(sheet);
+    return data;
+}
 //# sourceMappingURL=index.service.js.map

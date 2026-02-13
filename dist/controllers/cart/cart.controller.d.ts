@@ -6,4 +6,5 @@ export declare const addProductFromStorage: (req: CustomRequestI, res: Response)
 export declare const removeProduct: (req: CustomRequestI, res: Response) => Promise<Response<any, Record<string, any>>>;
 export declare const removeAllCart: (req: CustomRequestI, res: Response) => Promise<Response<any, Record<string, any>>>;
 export declare const generateCotizacion: (req: CustomRequestI, res: Response) => Promise<Response<any, Record<string, any>> | undefined>;
+export declare const changeSucursal: (req: CustomRequestI, res: Response) => Promise<Response<any, Record<string, any>>>;
 //# sourceMappingURL=cart.controller.d.ts.map

@@ -5,4 +5,5 @@ export declare function generateResetToken(): string;
 export declare const writeErrorLogs: (error: any) => void;
 export declare function parseBigInts(obj: any): any;
 export declare const formatter: Intl.NumberFormat;
+export declare function readExcelImageKit(url: string): Promise<unknown[]>;
 //# sourceMappingURL=index.service.d.ts.map

@@ -47,9 +47,20 @@ const ShippingByZone = async (req, res) => {
                 .status(400)
                 .json({ ok: false, message: "Falta agregar el destino" });
         }
+        let slcAddress = await prismaClient_1.prisma.addresses.findFirst({
+            where: {
+                idAddress: Number(destino),
+                active: 1,
+            },
+        });
+        if (!slcAddress) {
+            return res
+                .status(400)
+                .json({ ok: false, message: "Dirección no encontrada" });
+        }
         let findZone = await prismaClient_1.prisma.shippingbyzone.findFirst({
             where: {
-                name: destino,
+                name: slcAddress?.city,
             },
         });
         return res.status(200).json({
