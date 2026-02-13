@@ -4,6 +4,8 @@ import dotenv from "dotenv";
 import { nanoid } from "nanoid";
 import fs from "fs";
 import path from "path";
+import axios from "axios";
+import xlsx from "xlsx";
 
 dotenv.config({ path: ".env.prod" });
 export const hasPassword = async (password: string): Promise<string> => {
@@ -14,14 +16,14 @@ export const hasPassword = async (password: string): Promise<string> => {
 
 export const verifyPassword = async (
   password: string,
-  hashed: string
+  hashed: string,
 ): Promise<boolean> => {
   return bcrypt.compare(password, hashed);
 };
 
 export const signPayload = (
   obj: object | Buffer | string,
-  expiresIn: number | any
+  expiresIn: number | any,
 ): string => {
   return jwt.sign(obj, process.env.KEY_JWT || "", { expiresIn: expiresIn });
 };
@@ -45,8 +47,8 @@ export const writeErrorLogs = (error: any) => {
 export function parseBigInts(obj: any) {
   return JSON.parse(
     JSON.stringify(obj, (key, value) =>
-      typeof value === "bigint" ? Number(value) : value
-    )
+      typeof value === "bigint" ? Number(value) : value,
+    ),
   );
 }
 
@@ -54,3 +56,19 @@ export const formatter = new Intl.NumberFormat("es-MX", {
   style: "currency",
   currency: "MXN",
 });
+
+export async function readExcelImageKit(url: string) {
+  const response = await axios.get(url, {
+    responseType: "arraybuffer",
+  });
+
+  // Leer el Excel desde el buffer
+  const workbook = xlsx.read(response.data, { type: "buffer" });
+
+  const sheetName = workbook.SheetNames[0];
+  const sheet = workbook.Sheets[sheetName!];
+
+  const data = xlsx.utils.sheet_to_json(sheet!);
+
+  return data;
+}

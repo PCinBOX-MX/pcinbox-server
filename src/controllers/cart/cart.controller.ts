@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 import { prisma } from "../../db/prismaClient";
 import { DateTime } from "luxon";
 import CustomRequestI from "./../../interfaces/customrequest.interface";
+import { parseBigInts } from "../../services/index.service";
 
 import ejs from "ejs";
 import path from "path";
@@ -25,7 +26,7 @@ export const getCart = async (req: CustomRequestI, res: Response) => {
       return res.status(200).json({
         ok: true,
         data: [],
-        message: "aun no ha creado su carrito de compras",
+        message: "Aun no ha creado su carrito de compras",
       });
     }
 
@@ -35,28 +36,43 @@ export const getCart = async (req: CustomRequestI, res: Response) => {
         active: 1,
       },
       include: {
-        products: true,
+        products: {
+          include: {
+            product_stock: {
+              include: {
+                branches: true,
+              },
+            },
+          },
+        },
       },
     });
 
     const serializedCartItems = cartItems
-      .map((item: any) => ({
-        ...item.products,
-        idProduct: String(item.products.idProduct),
-        providerId: item.products.providerId
-          ? String(item.products.providerId)
-          : null,
-        categoryId: item.products.categoryId
-          ? String(item.products.categoryId)
-          : null,
-        marcaId: item.products.marcaId ? String(item.products.marcaId) : null,
-        quantity: item.quantity != null ? String(item.quantity) : null,
-      }))
+      .map((item) => {
+        // const cartItem = item.carts?.cartItems?.find(
+        //   (cartProp) => Number(cartProp?.carId) === Number(item.carId),
+        // );
+
+        return {
+          ...item.products,
+          storeId: item.storeId,
+          idProduct: String(item.products.idProduct),
+          providerId: item.products.providerId
+            ? String(item.products.providerId)
+            : null,
+          categoryId: item.products.categoryId
+            ? String(item.products.categoryId)
+            : null,
+          marcaId: item.products.marcaId ? String(item.products.marcaId) : null,
+          quantity: item.quantity != null ? String(item.quantity) : null,
+        };
+      })
       .filter((product: any) => product.quantity != "0");
 
     return res.status(200).json({
       ok: true,
-      data: serializedCartItems,
+      data: parseBigInts(serializedCartItems),
     });
   } catch (error: any) {
     console.log(error.message);
@@ -70,63 +86,66 @@ export const getCart = async (req: CustomRequestI, res: Response) => {
 
 export const addProduct = async (req: CustomRequestI, res: Response) => {
   try {
-    const { product, quantity, price, isDetails } = req.body;
+    const { product, quantity, isDetails, storeId } = req.body;
 
+    // 1️⃣ Buscar carrito activo del usuario
     let cart = await prisma.carts.findFirst({
       where: {
         userId: Number(req?.idUser.toString()),
+        status: "active",
       },
     });
 
+    // 2️⃣ Crear carrito si no existe
     if (!cart) {
       cart = await prisma.carts.create({
         data: {
           userId: Number(req?.idUser.toString()),
           status: "active",
-          createdAt: fechaLocal.toISO(),
+          createdAt: new Date().toISOString(),
         },
       });
     }
 
+    // 3️⃣ Buscar item en carrito
     const existingItem = await prisma.cartItems.findFirst({
       where: {
         carId: Number(cart.idCart),
         productId: Number(product.idProduct),
+        storeId: Number(storeId),
         active: 1,
       },
     });
 
     if (existingItem) {
-      // 2. Si ya existe, actualizar la cantidad sumando
+      // 🔹 Si ya existe, actualizamos la cantidad directamente con la enviada
       await prisma.cartItems.update({
         where: {
           idCartItem: Number(existingItem.idCartItem),
         },
         data: {
-          quantity:
-            existingItem.quantity == null
-              ? 1
-              : isDetails
-              ? Number(quantity)
-              : Number(existingItem.quantity) + Number(quantity),
+          storeId: storeId ? Number(storeId) : null,
+          quantity: Number(quantity), // usamos la cantidad que envía React
         },
       });
     } else {
-      // 3. Si no existe, crear nuevo item
+      // 🔹 Si no existe, creamos un nuevo item
       await prisma.cartItems.create({
         data: {
           carId: Number(cart.idCart),
           productId: Number(product.idProduct),
           quantity: Number(quantity),
+          storeId: storeId ? Number(storeId) : null,
         },
       });
     }
 
     return res.status(200).json({
       ok: true,
-      message: "Producto agregado",
+      message: "Producto agregado correctamente",
     });
   } catch (error: any) {
+    console.error(error);
     return res.status(500).json({
       ok: false,
       message: error.message,
@@ -136,7 +155,7 @@ export const addProduct = async (req: CustomRequestI, res: Response) => {
 
 export const addProductFromStorage = async (
   req: CustomRequestI,
-  res: Response
+  res: Response,
 ) => {
   try {
     const { dataCart } = req.body;
@@ -187,7 +206,7 @@ export const addProductFromStorage = async (
             },
           });
         }
-      })
+      }),
     );
 
     return res.status(200).json({
@@ -302,7 +321,7 @@ export const removeAllCart = async (req: CustomRequestI, res: Response) => {
 
 export const generateCotizacion = async (
   req: CustomRequestI,
-  res: Response
+  res: Response,
 ) => {
   try {
     const { dataCart, name, lastname, email } = req.body;
@@ -326,7 +345,7 @@ export const generateCotizacion = async (
 
     const subtotal = dataCart.reduce(
       (acc: any, item: any) => acc + item.price * item.quantity,
-      0
+      0,
     );
 
     const plantillaHtml = await ejs.renderFile(pathHtml, {
@@ -360,21 +379,87 @@ export const generateCotizacion = async (
       {
         headers: {
           Authorization: `Basic ${Buffer.from(`:${pdfShiftApiKey}`).toString(
-            "base64"
+            "base64",
           )}`,
           "Content-Type": "application/json",
         },
         responseType: "arraybuffer", // Para recibir el PDF como un buffer de bytes
-      }
+      },
     );
 
     // 3. Envía el PDF recibido al cliente
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader(
       "Content-Disposition",
-      'attachment; filename="cotizacion.pdf"; charset=utf-8'
+      'attachment; filename="cotizacion.pdf"; charset=utf-8',
     );
     res.send(Buffer.from(pdfResponse.data)); // pdfResponse.data contiene el buffer del PDF
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      message: "Error interno del servidor",
+      error: error.message,
+    });
+  }
+};
+
+export const changeSucursal = async (req: CustomRequestI, res: Response) => {
+  try {
+    const { idProduct, storeId } = req.body;
+
+    if (!idProduct || !storeId) {
+      return res
+        .status(400)
+        .json({ ok: false, message: "Faltan campos por enviar" });
+    }
+
+    const findCart = await prisma.carts.findFirst({
+      where: {
+        userId: Number(req.idUser),
+        status: "active",
+      },
+    });
+
+    if (!findCart) {
+      return res
+        .status(400)
+        .json({ ok: false, message: "No se encontro su carrito de compras" });
+    }
+
+    const findCartItems = await prisma.cartItems.findFirst({
+      where: {
+        carId: Number(findCart.idCart),
+        active: 1,
+        productId: Number(idProduct),
+      },
+    });
+
+    if (!findCartItems) {
+      return res.status(400).json({
+        ok: false,
+        message: "Productos no encontrados en el carrito de compras",
+      });
+    }
+
+    await prisma.cartItems.update({
+      where: {
+        idCartItem: Number(findCartItems.idCartItem),
+      },
+      data: {
+        storeId: Number(storeId),
+      },
+    });
+
+    return res.status(200).json({
+      ok: false,
+      message: "Sucursal actualizada correctamente",
+      data: {
+        data: {
+          idCartItem: Number(findCartItems.idCartItem),
+          storeId: Number(storeId),
+        },
+      },
+    });
   } catch (error: any) {
     return res.status(500).json({
       ok: false,
