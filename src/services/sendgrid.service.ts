@@ -12,11 +12,11 @@ sgMail.setApiKey(process.env.KEY_SENDGRID || "");
 export const sendMail = async (
   resetLink: string,
   userName: string,
-  toEmail: string
+  toEmail: string,
 ) => {
   const pathHtml = path.resolve(
     __dirname,
-    "../../src/views/linkResetPasswordHtml.ejs"
+    "../../src/views/linkResetPasswordHtml.ejs",
   );
 
   if (!fs.existsSync(pathHtml)) {
@@ -49,12 +49,11 @@ export const sendMail = async (
 
 export const SendEmailWelcomeUser = async (
   nameUser: string,
-  linkApp: string,
-  toEmail: string
+  toEmail: string,
 ) => {
   const pathHtml = path.resolve(
     __dirname,
-    "../../src/views/welcomeUserHtml.ejs"
+    "../../src/views/welcomeUserHtml.ejs",
   );
 
   if (!fs.existsSync(pathHtml)) {
@@ -69,7 +68,7 @@ export const SendEmailWelcomeUser = async (
   const msg = {
     from: process.env.FROM_EMAIL || "",
     to: toEmail,
-    subject: "Bienvenido",
+    subject: `Bienvenido ${nameUser}`,
     text: "Te damos la bienvenida a PCinBOX Bajío",
     html: html,
   };
