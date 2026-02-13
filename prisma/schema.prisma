@@ -248,19 +248,21 @@ model order {
 }
 
 model shipments {
-  idShipment      BigInt                     @id @default(autoincrement())
-  orderId         BigInt?
-  addressId       BigInt?
-  trackingNumber  String?                    @db.VarChar(255)
-  lastStatus      String?                    @db.VarChar(255)
-  lastLocation    String?                    @db.VarChar(255)
-  lastUpdated     DateTime?                  @db.DateTime(0)
-  status          shipments_status?
-  storeId         Int?
-  shipping_method shipments_shipping_method?
-  createdAt       DateTime?                  @db.DateTime(0)
-  order           order?                     @relation(fields: [orderId], references: [idOrder], onDelete: NoAction, onUpdate: NoAction, map: "fk_order_id_shipments")
-  addresses       addresses?                 @relation(fields: [addressId], references: [idAddress], onDelete: NoAction, onUpdate: NoAction, map: "fn_addressId_shipments")
+  idShipment       BigInt                     @id @default(autoincrement())
+  orderId          BigInt?
+  addressId        BigInt?
+  trackingNumber   String?                    @db.VarChar(255)
+  lastStatus       String?                    @db.VarChar(255)
+  lastLocation     String?                    @db.VarChar(255)
+  lastUpdated      DateTime?                  @db.DateTime(0)
+  status           shipments_status?
+  storeId          Int?
+  shipping_method  shipments_shipping_method?
+  createdAt        DateTime?                  @db.DateTime(0)
+  requireInsurance Int?                       @db.TinyInt
+  sales            sales[]
+  order            order?                     @relation(fields: [orderId], references: [idOrder], onDelete: NoAction, onUpdate: NoAction, map: "fk_order_id_shipments")
+  addresses        addresses?                 @relation(fields: [addressId], references: [idAddress], onDelete: NoAction, onUpdate: NoAction, map: "fn_addressId_shipments")
 
   @@index([orderId], map: "fk_order_id_shipments_idx")
   @@index([addressId], map: "db_address_id_shipments_idx")
@@ -299,22 +301,26 @@ model marca {
 }
 
 model sales {
-  idSale     BigInt        @id @default(autoincrement())
-  orderId    BigInt
-  shipmentId BigInt?
-  productId  BigInt
-  userId     BigInt
-  quantity   Int?
-  total      Decimal?      @db.Decimal(10, 2)
-  status     sales_status?
-  createdAt  DateTime?     @default(now()) @db.DateTime(0)
-  order      order         @relation(fields: [orderId], references: [idOrder], onDelete: NoAction, onUpdate: NoAction, map: "fk_orderId_sales")
-  products   products      @relation(fields: [productId], references: [idProduct], onDelete: NoAction, onUpdate: NoAction, map: "fk_productId_sales")
-  users      users         @relation(fields: [userId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "fk_userId_sales")
+  idSale        BigInt        @id @default(autoincrement())
+  orderId       BigInt
+  shipmentId    BigInt?
+  productId     BigInt
+  userId        BigInt
+  purchaseId    String?       @db.VarChar(255)
+  invoiceNumber String?       @db.VarChar(255)
+  quantity      Int?
+  total         Decimal?      @db.Decimal(10, 2)
+  status        sales_status?
+  createdAt     DateTime?     @default(now()) @db.DateTime(0)
+  order         order         @relation(fields: [orderId], references: [idOrder], onDelete: NoAction, onUpdate: NoAction, map: "fk_orderId_sales")
+  products      products      @relation(fields: [productId], references: [idProduct], onDelete: NoAction, onUpdate: NoAction, map: "fk_productId_sales")
+  shipments     shipments?    @relation(fields: [shipmentId], references: [idShipment], onDelete: NoAction, onUpdate: NoAction, map: "fk_shipmentId_sales")
+  users         users         @relation(fields: [userId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "fk_userId_sales")
 
   @@index([orderId], map: "fk_orderId_sales_idx")
   @@index([productId], map: "fk_productId_sales")
   @@index([userId], map: "fk_userId_sales")
+  @@index([shipmentId], map: "fk_shipmentId_sales_idx")
 }
 
 model categoriamapeo {
@@ -373,6 +379,7 @@ model products_providers {
   name              String?   @db.VarChar(255)
   description       String?   @db.VarChar(255)
   price             Decimal?  @db.Decimal(10, 2)
+  profitMargin      Decimal?  @db.Decimal(10, 2)
   stock             Int?
   sku               String?   @db.VarChar(255)
   image_url         Json?
@@ -545,4 +552,5 @@ enum shipments_shipping_method {
   dhl
   estafeta
   envioLeon
+  sucursalExt
 }
