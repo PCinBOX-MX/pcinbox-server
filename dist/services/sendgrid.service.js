@@ -39,7 +39,7 @@ const sendMail = async (resetLink, userName, toEmail) => {
     }
 };
 exports.sendMail = sendMail;
-const SendEmailWelcomeUser = async (nameUser, linkApp, toEmail) => {
+const SendEmailWelcomeUser = async (nameUser, toEmail) => {
     const pathHtml = path_1.default.resolve(__dirname, "../../src/views/welcomeUserHtml.ejs");
     if (!fs_1.default.existsSync(pathHtml)) {
         throw new Error(`No se encontró la plantilla en: ${pathHtml}`);
@@ -51,7 +51,7 @@ const SendEmailWelcomeUser = async (nameUser, linkApp, toEmail) => {
     const msg = {
         from: process.env.FROM_EMAIL || "",
         to: toEmail,
-        subject: "Bienvenido",
+        subject: `Bienvenido ${nameUser}`,
         text: "Te damos la bienvenida a PCinBOX Bajío",
         html: html,
     };
