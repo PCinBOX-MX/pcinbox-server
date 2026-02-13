@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.updatedAddress = exports.removeAddress = exports.registerAddress = exports.hasAddressUser = void 0;
 const prismaClient_1 = require("../../db/prismaClient");
+const index_service_1 = require("./../../services/index.service");
 const dotenv_1 = __importDefault(require("dotenv"));
 dotenv_1.default.config({ path: ".env.prod" });
 const hasAddressUser = async (req, res) => {
@@ -48,6 +49,20 @@ const registerAddress = async (req, res) => {
             !phone1 ||
             !country) {
             return res.status(400).json({ ok: false, message: "Faltan campos" });
+        }
+        const dataRespExcelCP = await (0, index_service_1.readExcelImageKit)(process.env.URL_EXCEL_CP_PE || "");
+        if (dataRespExcelCP.length == 0) {
+            return res.status(500).json({
+                ok: false,
+                message: "Error al intentar leer el archivo de cobertura",
+            });
+        }
+        let findCP = dataRespExcelCP.find((cp) => cp["CODIGO POSTAL"] === codePostal.toString().trim());
+        if (findCP && findCP["COBERTURA"] === "ZONA PLUS") {
+            return res.status(400).json({
+                ok: false,
+                message: `No hay servicio de envío para este código postal ${codePostal}`,
+            });
         }
         const userId = Number(req.idUser);
         const existingAddresses = await prismaClient_1.prisma.addresses.findMany({
@@ -169,6 +184,20 @@ exports.removeAddress = removeAddress;
 const updatedAddress = async (req, res) => {
     try {
         const { city, codePostal, cologne, country, idAddress, noExt, noInt, phone1, phone2, state, street, } = req.body;
+        const dataRespExcelCP = await (0, index_service_1.readExcelImageKit)(process.env.URL_EXCEL_CP_PE || "");
+        if (dataRespExcelCP.length == 0) {
+            return res.status(500).json({
+                ok: false,
+                message: "Error al intentar leer el archivo de cobertura",
+            });
+        }
+        let findCP = dataRespExcelCP.find((cp) => cp["CODIGO POSTAL"] === codePostal.toString().trim());
+        if (findCP && findCP["COBERTURA"] === "ZONA PLUS") {
+            return res.status(400).json({
+                ok: false,
+                message: `No hay servicio de envío para este código postal ${codePostal}`,
+            });
+        }
         await prismaClient_1.prisma.addresses.update({
             data: {
                 city,
