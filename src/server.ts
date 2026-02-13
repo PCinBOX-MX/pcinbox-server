@@ -32,6 +32,9 @@ const allowedOrigins = [
   "http://localhost:3001",
   "https://www.pcinbox.com.mx",
   "https://pcinbox-admin.vercel.app",
+  "http://192.168.0.107:3000",
+  "https://colt-fierce-eugena.ngrok-free.dev",
+  "https://interpervasive-unbotanical-kinsley.ngrok-free.dev",
 ];
 
 server.use(helmet());
@@ -42,7 +45,7 @@ server.use(
     origin: allowedOrigins,
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-  })
+  }),
 );
 
 server.use((req, res, next) => {

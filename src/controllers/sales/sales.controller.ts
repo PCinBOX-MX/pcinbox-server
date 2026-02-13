@@ -90,7 +90,7 @@ export const registerSales = async (req: CustomRequestI, res: Response) => {
 export const getPedidosByUser = async (req: CustomRequestI, res: Response) => {
   try {
     const getAllPedidosByUser: any = await prisma.$queryRawUnsafe(
-      querySales({ idUser: Number(req.idUser) })
+      querySales({ idUser: Number(req.idUser) }),
     );
     return res.status(200).json({
       ok: true,
@@ -165,7 +165,7 @@ export const getSalesByUser = async (req: CustomRequestI, res: Response) => {
 
 export const historySalesByUser = async (
   req: CustomRequestI,
-  res: Response
+  res: Response,
 ) => {
   try {
     const slcUser = await prisma.users.findFirst({
@@ -182,7 +182,7 @@ export const historySalesByUser = async (
     }
 
     const history: any = await prisma.$queryRawUnsafe(
-      querySales({ idUser: req.idUser })
+      querySales({ idUser: req.idUser }),
     );
 
     return res.status(200).json({
@@ -212,15 +212,104 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
       });
     }
 
-    const record: any = await prisma.$queryRawUnsafe(
-      querySalesWithStatus(userId, status)
-    );
+    // const record: any = await prisma.$queryRawUnsafe(
+    //   querySalesWithStatus(userId, status)
+    // );
+
+    let orders = await prisma.order.findMany({
+      where: {
+        pay_method: {
+          not: "esperando",
+        },
+      },
+      orderBy: {
+        idOrder: "desc",
+      },
+      include: {
+        shipments: {
+          include: {
+            addresses: true,
+          },
+        },
+
+        sales: {
+          include: {
+            products: {
+              select: {
+                idProduct: true,
+                name: true,
+                description: true,
+                price: true,
+                image_url: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    let parserOrder = orders.map((order) => {
+      return {
+        idOrder: order.idOrder,
+        totalSales: order.sales.length,
+        createdAt: order?.createdAt,
+        updatedAt: order?.updatedAt,
+        payment_method: order.pay_method,
+        idUser: Number(order.userId),
+
+        products: order.sales.map((sale, indexSale) => {
+          // buscar shipment que tenga el mismo productId (si tu Shipment lo tiene)
+          // const shipmentForSale = order.shipments.find(
+          //   (sh) => Number(sh.idShipment) === Number(sale.shipmentId),
+          // );
+          return {
+            idShipment: order?.shipments[indexSale]?.idShipment,
+            description: sale.products?.description,
+            price: sale?.products?.price,
+            idProduct: sale.products.idProduct,
+            name: sale.products.name,
+            quantity: sale.quantity,
+            statusShip: order.shipments[indexSale]?.status,
+            shipping_method: order?.shipments[indexSale]?.shipping_method,
+            status: sale.status,
+            image_url: sale?.products?.image_url,
+            trackingNumber: order?.shipments[indexSale]?.trackingNumber,
+            // shippingType: shipmentForSale ? "envio" : "sucursal",
+            address: order?.shipments[indexSale]?.addresses
+              ? {
+                  idAddress: Number(
+                    order?.shipments[indexSale].addresses?.idAddress,
+                  ),
+                  userId: Number(order?.shipments[indexSale].addresses?.userId),
+                  street: order?.shipments[indexSale].addresses?.street,
+                  noExt: order?.shipments[indexSale].addresses?.noExt,
+                  noInt: order?.shipments[indexSale].addresses?.noInt,
+                  cologne: order?.shipments[indexSale].addresses?.cologne,
+                  city: order?.shipments[indexSale].addresses?.city,
+                  state: order?.shipments[indexSale].addresses?.state,
+                  country: order?.shipments[indexSale].addresses?.country,
+                  postalCode: order?.shipments[indexSale].addresses?.postalCode,
+                  phone1: order?.shipments[indexSale].addresses?.phone1,
+                  phone2: order?.shipments[indexSale].addresses?.phone2,
+                  createdAt: order?.shipments[indexSale].addresses?.createdAt,
+                  updatedAt: order?.shipments[indexSale].addresses?.updatedAt,
+                  active: order?.shipments[indexSale].addresses?.active,
+                }
+              : null,
+          };
+        }),
+      };
+    });
 
     return res.status(200).json({
       ok: true,
       message: "OK!",
       data: {
-        data: record && record.length > 0 ? parseBigInts(record) : [],
+        data:
+          parserOrder && parserOrder.length > 0
+            ? parseBigInts(parserOrder)
+            : [],
+        //  data: record && record.length > 0 ? parseBigInts(record) : [],
       },
     });
   } catch (error: any) {
