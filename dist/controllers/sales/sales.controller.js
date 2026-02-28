@@ -181,8 +181,8 @@ const historySalesByUser = async (req, res) => {
 exports.historySalesByUser = historySalesByUser;
 const filterSales = async (req, res) => {
     try {
-        const { userId, status } = req.body;
-        if (!status || !userId) {
+        const { status } = req.body;
+        if (!status) {
             return res.status(400).json({
                 ok: false,
                 message: "Faltan campos por enviar en el body",
@@ -193,6 +193,7 @@ const filterSales = async (req, res) => {
         // );
         let orders = await prismaClient_1.prisma.order.findMany({
             where: {
+                userId: Number(req.idUser),
                 pay_method: {
                     not: "esperando",
                 },
