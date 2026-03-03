@@ -50,7 +50,7 @@ server.use((req, res, next) => {
     next();
 });
 server.use(express_1.default.static(path_1.default.join(__dirname, "public")));
-server.use(express_1.default.json());
+server.use(express_1.default.json({ limit: "10mb" }));
 server.use(express_1.default.urlencoded({ extended: false }));
 server.use((0, cookie_parser_1.default)());
 //Routes
