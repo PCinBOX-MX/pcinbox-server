@@ -117,6 +117,7 @@ const getSalesByUser = async (req, res) => {
         const slcAllSalesUser = await prismaClient_1.prisma.order.findFirst({
             where: {
                 idOrder: Number(idOrder),
+                userId: Number(req.idUser),
             },
             include: {
                 shipments: {
