@@ -133,6 +133,7 @@ export const getSalesByUser = async (req: CustomRequestI, res: Response) => {
     const slcAllSalesUser = await prisma.order.findFirst({
       where: {
         idOrder: Number(idOrder),
+        userId: Number(req.idUser),
       },
       include: {
         shipments: {
