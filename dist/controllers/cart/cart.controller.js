@@ -84,7 +84,7 @@ const getCart = async (req, res) => {
 exports.getCart = getCart;
 const addProduct = async (req, res) => {
     try {
-        const { product, quantity, isDetails, storeId } = req.body;
+        const { idProduct, quantity, isDetails, storeId } = req.body;
         // 1️⃣ Buscar carrito activo del usuario
         let cart = await prismaClient_1.prisma.carts.findFirst({
             where: {
@@ -106,7 +106,7 @@ const addProduct = async (req, res) => {
         const existingItem = await prismaClient_1.prisma.cartItems.findFirst({
             where: {
                 carId: Number(cart.idCart),
-                productId: Number(product.idProduct),
+                productId: Number(idProduct),
                 storeId: Number(storeId),
                 active: 1,
             },
@@ -128,7 +128,7 @@ const addProduct = async (req, res) => {
             await prismaClient_1.prisma.cartItems.create({
                 data: {
                     carId: Number(cart.idCart),
-                    productId: Number(product.idProduct),
+                    productId: Number(idProduct),
                     quantity: Number(quantity),
                     storeId: storeId ? Number(storeId) : null,
                 },
