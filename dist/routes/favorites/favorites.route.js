@@ -7,5 +7,6 @@ const router = (0, express_1.Router)();
 router.get("/getFavoritesUser", index_middleware_1.MiddleAuthRoute, favorites_controller_1.getFavoritosUser);
 router.post("/addFavorites", index_middleware_1.MiddleAuthRoute, favorites_controller_1.addFavorites);
 router.post("/removeFavorites", index_middleware_1.MiddleAuthRoute, favorites_controller_1.removeFavorites);
+router.get("/getTotalFavorites", index_middleware_1.MiddleAuthRoute, favorites_controller_1.getTotalFavorites);
 exports.default = router;
 //# sourceMappingURL=favorites.route.js.map
