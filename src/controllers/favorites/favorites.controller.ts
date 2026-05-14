@@ -135,11 +135,11 @@ export const addFavorites = async (req: CustomRequestI, res: Response) => {
 
 export const removeFavorites = async (req: CustomRequestI, rest: Response) => {
   try {
-    const { idFavorite } = req.body;
+    const { idProduct } = req.body;
 
     let findFavorite = await prisma.favorites.findFirst({
       where: {
-        idFavorite: Number(idFavorite),
+        productId: Number(idProduct),
         userId: Number(req.idUser),
         active: 1,
       },
@@ -157,7 +157,7 @@ export const removeFavorites = async (req: CustomRequestI, rest: Response) => {
 
     await prisma.favorites.update({
       where: {
-        idFavorite: Number(idFavorite),
+        idFavorite: Number(findFavorite?.idFavorite),
         userId: Number(req.idUser),
       },
       data: {
@@ -207,6 +207,38 @@ export const removeFavorites = async (req: CustomRequestI, rest: Response) => {
       ok: false,
       message: "Error interno del servidor",
       error: error.message,
+    });
+  }
+};
+
+export const getTotalFavorites = async (req: CustomRequestI, res: Response) => {
+  try {
+    if (!req.idUser) {
+      return res.status(400).json({
+        ok: false,
+        message: "Id User no encontrado",
+      });
+    }
+
+    let totalFavorites = await prisma.favorites.count({
+      where: {
+        active: 1,
+        userId: Number(req.idUser),
+      },
+    });
+
+    return res.status(200).json({
+      ok: true,
+      message: "OK!",
+      data: {
+        totalFavorites,
+      },
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      message: "Error interno del servidor",
+      error: error.mesage,
     });
   }
 };
