@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.removeFavorites = exports.addFavorites = exports.getFavoritosUser = void 0;
+exports.getTotalFavorites = exports.removeFavorites = exports.addFavorites = exports.getFavoritosUser = void 0;
 const prismaClient_1 = require("../../db/prismaClient");
 const dotenv_1 = __importDefault(require("dotenv"));
 const index_service_1 = require("./../../services/index.service");
@@ -133,10 +133,10 @@ const addFavorites = async (req, res) => {
 exports.addFavorites = addFavorites;
 const removeFavorites = async (req, rest) => {
     try {
-        const { idFavorite } = req.body;
+        const { idProduct } = req.body;
         let findFavorite = await prismaClient_1.prisma.favorites.findFirst({
             where: {
-                idFavorite: Number(idFavorite),
+                productId: Number(idProduct),
                 userId: Number(req.idUser),
                 active: 1,
             },
@@ -152,7 +152,7 @@ const removeFavorites = async (req, rest) => {
         }
         await prismaClient_1.prisma.favorites.update({
             where: {
-                idFavorite: Number(idFavorite),
+                idFavorite: Number(findFavorite?.idFavorite),
                 userId: Number(req.idUser),
             },
             data: {
@@ -204,4 +204,35 @@ const removeFavorites = async (req, rest) => {
     }
 };
 exports.removeFavorites = removeFavorites;
+const getTotalFavorites = async (req, res) => {
+    try {
+        if (!req.idUser) {
+            return res.status(400).json({
+                ok: false,
+                message: "Id User no encontrado",
+            });
+        }
+        let totalFavorites = await prismaClient_1.prisma.favorites.count({
+            where: {
+                active: 1,
+                userId: Number(req.idUser),
+            },
+        });
+        return res.status(200).json({
+            ok: true,
+            message: "OK!",
+            data: {
+                totalFavorites,
+            },
+        });
+    }
+    catch (error) {
+        return res.status(500).json({
+            ok: false,
+            message: "Error interno del servidor",
+            error: error.mesage,
+        });
+    }
+};
+exports.getTotalFavorites = getTotalFavorites;
 //# sourceMappingURL=favorites.controller.js.map
