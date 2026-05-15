@@ -11,6 +11,7 @@ import { DateTime } from "luxon";
 import { uploadPhotoUser, getPhotoUserAWS } from "./../../imagekit/imagekit";
 import dotenv from "dotenv";
 import CustomRequestI from "./../../interfaces/customrequest.interface";
+import { sendEmailResend } from "../../services/resend.service";
 
 const fechaLocal = DateTime.now().setZone("America/Mexico_City");
 
@@ -153,7 +154,10 @@ export const Register = async (req: Request, res: Response) => {
     });
 
     try {
-      await SendEmailWelcomeUser(`${name} ${lastname}`, email);
+      //await SendEmailWelcomeUser(`${name} ${lastname}`, email);
+      await sendEmailResend(email, "Bienvenido a PCinBOX", "welcome-email-1", {
+        NAME: `${name} ${lastname}`,
+      });
     } catch (error: any) {
       //Notificar cuando no se haya enviado el correo
       writeErrorLogs(error);
@@ -217,11 +221,19 @@ export const LoginGoogle = async (req: Request, res: Response) => {
       });
 
       try {
-        await SendEmailWelcomeUser(
-          `${name}`,
-
+        await sendEmailResend(
           email,
+          "Bienvenido a PCinBOX",
+          "welcome-email-1",
+          {
+            NAME: name,
+          },
         );
+        // await SendEmailWelcomeUser(
+        //   `${name}`,
+
+        //   email,
+        // );
       } catch (error: any) {
         //Notificar cuando no se haya enviado el correo
         writeErrorLogs(error);
