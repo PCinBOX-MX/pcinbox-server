@@ -86,30 +86,6 @@ server.get("/", (req, res) => {
   res.send("Servidor funcionando correctamente");
 });
 
-server.get("/sendEmail", (req, res) => {
-  try {
-    sendEmailResend(
-      "alejandroparedessoto18@gmail.com",
-      "Bienvenido a PCinBOX",
-      "welcome-email-1",
-      {
-        NAME: "Alex Paredes",
-      },
-    );
-
-    return res.status(200).json({
-      ok: true,
-      message: "Correo enviado",
-    });
-  } catch (error: any) {
-    return res.status(500).json({
-      ok: false,
-      message: "Error",
-      error: error.message,
-    });
-  }
-});
-
 server.listen(Number(process.env.PORT) || 8000, () => {
   console.log(`Server running in the por ${process.env.SERVER_PORT || 8000}`);
   console.log(`Access front end ${allowedOrigins}`);
