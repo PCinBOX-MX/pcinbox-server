@@ -14,11 +14,13 @@ import routesSales from "./routes/sales/sales.route";
 import cookieParser from "cookie-parser";
 import path from "path";
 import helmet from "helmet";
+import { sendEmailResend } from "./services/resend.service";
 
 //const envFile = `.env.${process.env.NODE_ENV || "local"}`;
 dotenv.config({ path: ".env.prod" });
 const server = express();
 
+server.use(express.static(path.join(__dirname, "../public")));
 server.set("view engine", "ejs");
 server.set("views", path.join(__dirname, "views"));
 server.set("trust proxy", 1);
@@ -52,6 +54,17 @@ server.use((req, res, next) => {
   res.setHeader("Cache-Control", "no-store");
   next();
 });
+server.use((req, res, next) => {
+  res.setHeader(
+    "Content-Security-Policy",
+    "default-src 'self'; " +
+      "script-src 'self'; " +
+      "img-src 'self' https://ik.imagekit.io data:; " +
+      "style-src 'self' 'unsafe-inline';",
+  );
+
+  next();
+});
 server.use(express.static(path.join(__dirname, "public")));
 server.use(express.json({ limit: "10mb" }));
 server.use(express.urlencoded({ extended: false }));
@@ -71,6 +84,30 @@ server.use("/api/v1/sales", routesSales);
 
 server.get("/", (req, res) => {
   res.send("Servidor funcionando correctamente");
+});
+
+server.get("/sendEmail", (req, res) => {
+  try {
+    sendEmailResend(
+      "alejandroparedessoto18@gmail.com",
+      "Bienvenido a PCinBOX",
+      "welcome-email-1",
+      {
+        NAME: "Alex Paredes",
+      },
+    );
+
+    return res.status(200).json({
+      ok: true,
+      message: "Correo enviado",
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      message: "Error",
+      error: error.message,
+    });
+  }
 });
 
 server.listen(Number(process.env.PORT) || 8000, () => {
