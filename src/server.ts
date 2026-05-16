@@ -14,7 +14,6 @@ import routesSales from "./routes/sales/sales.route";
 import cookieParser from "cookie-parser";
 import path from "path";
 import helmet from "helmet";
-import { sendEmailResend } from "./services/resend.service";
 
 //const envFile = `.env.${process.env.NODE_ENV || "local"}`;
 dotenv.config({ path: ".env.prod" });
