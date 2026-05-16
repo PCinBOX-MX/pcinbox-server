@@ -12,7 +12,7 @@ export const sendEmailResend = async (
   variables: Record<string, string | number>,
 ): Promise<any> => {
   try {
-    const { data, error } = await resend.emails.send({
+    const { error } = await resend.emails.send({
       from: process.env.FROM_EMAIL || "",
       to: typeof to === "string" ? [to] : to,
       subject: subject,
@@ -21,8 +21,6 @@ export const sendEmailResend = async (
         variables,
       },
     });
-    console.log("error", error);
-    console.log("data", data);
     if (error) {
       return {
         status: 400,
