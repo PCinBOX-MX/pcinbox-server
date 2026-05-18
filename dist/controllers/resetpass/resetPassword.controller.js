@@ -7,10 +7,10 @@ exports.changePassword = exports.resFileLinkResetPass = exports.forgotPassword =
 const dotenv_1 = __importDefault(require("dotenv"));
 const prismaClient_1 = require("../../db/prismaClient");
 const index_service_1 = require("./../../services/index.service");
-const sendgrid_service_1 = require("./../../services/sendgrid.service");
 const path_1 = __importDefault(require("path"));
 const fs_1 = __importDefault(require("fs"));
 const date_fns_tz_1 = require("date-fns-tz");
+const resend_service_1 = require("../../services/resend.service");
 // const envFile = `.env.${process.env.NODE_ENV || "local"}`;
 dotenv_1.default.config({ path: ".env.prod" });
 const forgotPassword = async (req, res) => {
@@ -28,6 +28,7 @@ const forgotPassword = async (req, res) => {
                 name: true,
                 idUser: true,
                 password: true,
+                lastname: true,
             },
         });
         if (!slcUser) {
@@ -68,7 +69,11 @@ const forgotPassword = async (req, res) => {
         });
         const resetLink = `${process.env.SERVER}/api/v1/resetpassword/resFileLinkResetPass?token=${gnrResetToken}&idUser=${slcUser.idUser}`;
         try {
-            await (0, sendgrid_service_1.sendMail)(resetLink, slcUser.name, slcUser.email);
+            //await sendMail(resetLink, slcUser.name, slcUser.email);
+            await (0, resend_service_1.sendEmailResend)(slcUser.email, "Recuperar contraseña", "password-reset", {
+                RESETLINK: resetLink,
+                USERNAME: `${slcUser.name} ${slcUser.lastname || ""}`,
+            });
         }
         catch (error) {
             (0, index_service_1.writeErrorLogs)(error);

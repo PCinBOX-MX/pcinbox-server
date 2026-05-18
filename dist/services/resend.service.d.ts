@@ -1,0 +1,2 @@
+export declare const sendEmailResend: (to: string | string[], subject: string, idTemplate: string, variables: Record<string, string | number>) => Promise<any>;
+//# sourceMappingURL=resend.service.d.ts.map
