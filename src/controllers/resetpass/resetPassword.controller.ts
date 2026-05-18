@@ -11,6 +11,7 @@ import { sendMail } from "./../../services/sendgrid.service";
 import path from "path";
 import fs from "fs";
 import { format } from "date-fns-tz";
+import { sendEmailResend } from "../../services/resend.service";
 // const envFile = `.env.${process.env.NODE_ENV || "local"}`;
 dotenv.config({ path: ".env.prod" });
 export const forgotPassword = async (req: Request, res: Response) => {
@@ -30,6 +31,7 @@ export const forgotPassword = async (req: Request, res: Response) => {
         name: true,
         idUser: true,
         password: true,
+        lastname: true,
       },
     });
 
@@ -50,7 +52,7 @@ export const forgotPassword = async (req: Request, res: Response) => {
     //Validar si el usuario a solicitado 3 veces o mas el servicio de reseteo de contrasena
     const currentDate = new Date();
     const twentyFourHoursAgo = new Date(
-      currentDate.getTime() - 24 * 60 * 60 * 1000
+      currentDate.getTime() - 24 * 60 * 60 * 1000,
     );
 
     // Contar intentos de reseteo en las últimas 24 horas
@@ -81,7 +83,16 @@ export const forgotPassword = async (req: Request, res: Response) => {
     const resetLink = `${process.env.SERVER}/api/v1/resetpassword/resFileLinkResetPass?token=${gnrResetToken}&idUser=${slcUser.idUser}`;
 
     try {
-      await sendMail(resetLink, slcUser.name, slcUser.email);
+      //await sendMail(resetLink, slcUser.name, slcUser.email);
+      await sendEmailResend(
+        slcUser.email,
+        "Recuperar contraseña",
+        "password-reset",
+        {
+          RESETLINK: resetLink,
+          USERNAME: `${slcUser.name} ${slcUser.lastname || ""}`,
+        },
+      );
     } catch (error) {
       writeErrorLogs(error);
       return res.status(500).json({
@@ -123,7 +134,7 @@ export const resFileLinkResetPass = async (req: Request, res: Response) => {
   try {
     const pathHtml = path.resolve(
       __dirname,
-      "../../views/resetPasswordHtml.ejs"
+      "../../views/resetPasswordHtml.ejs",
     );
 
     if (!fs.existsSync(pathHtml)) {
