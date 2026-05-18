@@ -6,10 +6,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.removeAccount = exports.ChangePassword = exports.getPhotoUser = exports.uploadPhoto = exports.LoginGoogle = exports.Register = exports.Login = void 0;
 const prismaClient_1 = require("../../db/prismaClient");
 const index_service_1 = require("./../../services/index.service");
-const sendgrid_service_1 = require("../../services/sendgrid.service");
 const luxon_1 = require("luxon");
 const imagekit_1 = require("./../../imagekit/imagekit");
 const dotenv_1 = __importDefault(require("dotenv"));
+const resend_service_1 = require("../../services/resend.service");
 const fechaLocal = luxon_1.DateTime.now().setZone("America/Mexico_City");
 dotenv_1.default.config({ path: ".env.prod" });
 const Login = async (req, res) => {
@@ -119,7 +119,10 @@ const Register = async (req, res) => {
             },
         });
         try {
-            await (0, sendgrid_service_1.SendEmailWelcomeUser)(`${name} ${lastname}`, email);
+            //await SendEmailWelcomeUser(`${name} ${lastname}`, email);
+            await (0, resend_service_1.sendEmailResend)(email, "Bienvenido a PCinBOX", "welcome-email-1", {
+                NAME: `${name} ${lastname}`,
+            });
         }
         catch (error) {
             //Notificar cuando no se haya enviado el correo
@@ -179,7 +182,13 @@ const LoginGoogle = async (req, res) => {
                 },
             });
             try {
-                await (0, sendgrid_service_1.SendEmailWelcomeUser)(`${name}`, email);
+                await (0, resend_service_1.sendEmailResend)(email, "Bienvenido a PCinBOX", "welcome-email-1", {
+                    NAME: name,
+                });
+                // await SendEmailWelcomeUser(
+                //   `${name}`,
+                //   email,
+                // );
             }
             catch (error) {
                 //Notificar cuando no se haya enviado el correo

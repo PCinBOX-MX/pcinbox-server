@@ -22,6 +22,7 @@ const helmet_1 = __importDefault(require("helmet"));
 //const envFile = `.env.${process.env.NODE_ENV || "local"}`;
 dotenv_1.default.config({ path: ".env.prod" });
 const server = (0, express_1.default)();
+server.use(express_1.default.static(path_1.default.join(__dirname, "../public")));
 server.set("view engine", "ejs");
 server.set("views", path_1.default.join(__dirname, "views"));
 server.set("trust proxy", 1);
@@ -47,6 +48,13 @@ server.use((0, cors_1.default)({
 }));
 server.use((req, res, next) => {
     res.setHeader("Cache-Control", "no-store");
+    next();
+});
+server.use((req, res, next) => {
+    res.setHeader("Content-Security-Policy", "default-src 'self'; " +
+        "script-src 'self'; " +
+        "img-src 'self' https://ik.imagekit.io data:; " +
+        "style-src 'self' 'unsafe-inline';");
     next();
 });
 server.use(express_1.default.static(path_1.default.join(__dirname, "public")));
