@@ -19,6 +19,7 @@ import helmet from "helmet";
 dotenv.config({ path: ".env.prod" });
 const server = express();
 
+server.use(express.static(path.join(__dirname, "../public")));
 server.set("view engine", "ejs");
 server.set("views", path.join(__dirname, "views"));
 server.set("trust proxy", 1);
@@ -50,6 +51,17 @@ server.use(
 
 server.use((req, res, next) => {
   res.setHeader("Cache-Control", "no-store");
+  next();
+});
+server.use((req, res, next) => {
+  res.setHeader(
+    "Content-Security-Policy",
+    "default-src 'self'; " +
+      "script-src 'self'; " +
+      "img-src 'self' https://ik.imagekit.io data:; " +
+      "style-src 'self' 'unsafe-inline';",
+  );
+
   next();
 });
 server.use(express.static(path.join(__dirname, "public")));
