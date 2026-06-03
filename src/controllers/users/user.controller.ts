@@ -75,6 +75,14 @@ export const Login = async (req: Request, res: Response) => {
       "3d",
     );
 
+    // Obtener total de favoritos
+    const totalFavorites = await prisma.favorites.count({
+      where: {
+        userId: Number(slcUser.idUser),
+        active: 1,
+      },
+    });
+
     return res.status(200).json({
       ok: true,
       message: "Logueado!!",
@@ -85,6 +93,7 @@ export const Login = async (req: Request, res: Response) => {
         lastname: slcUser.lastname,
         idUser: slcUser.idUser.toString(),
         role: slcUser?.role,
+        totalFavorites,
       },
     });
   } catch (error: any) {
@@ -245,6 +254,14 @@ export const LoginGoogle = async (req: Request, res: Response) => {
       "3d",
     );
 
+    // Obtener total de favoritos
+    const totalFavorites = await prisma.favorites.count({
+      where: {
+        userId: Number(slcUser.idUser),
+        active: 1,
+      },
+    });
+
     return res
       .status(200)
 
@@ -258,6 +275,7 @@ export const LoginGoogle = async (req: Request, res: Response) => {
           lastname: slcUser.lastname,
           idUser: Number(slcUser.idUser.toString()),
           active: slcUser.active,
+          totalFavorites,
         },
       });
   } catch (error: any) {
