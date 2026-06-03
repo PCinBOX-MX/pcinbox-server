@@ -61,6 +61,13 @@ const Login = async (req, res) => {
             idUser: slcUser.idUser.toString(),
             rol: slcUser.role,
         }, "3d");
+        // Obtener total de favoritos
+        const totalFavorites = await prismaClient_1.prisma.favorites.count({
+            where: {
+                userId: Number(slcUser.idUser),
+                active: 1,
+            },
+        });
         return res.status(200).json({
             ok: true,
             message: "Logueado!!",
@@ -71,6 +78,7 @@ const Login = async (req, res) => {
                 lastname: slcUser.lastname,
                 idUser: slcUser.idUser.toString(),
                 role: slcUser?.role,
+                totalFavorites,
             },
         });
     }
@@ -208,6 +216,13 @@ const LoginGoogle = async (req, res) => {
             idUser: slcUser.idUser.toString(),
             rol: slcUser.role,
         }, "3d");
+        // Obtener total de favoritos
+        const totalFavorites = await prismaClient_1.prisma.favorites.count({
+            where: {
+                userId: Number(slcUser.idUser),
+                active: 1,
+            },
+        });
         return res
             .status(200)
             .json({
@@ -220,6 +235,7 @@ const LoginGoogle = async (req, res) => {
                 lastname: slcUser.lastname,
                 idUser: Number(slcUser.idUser.toString()),
                 active: slcUser.active,
+                totalFavorites,
             },
         });
     }
