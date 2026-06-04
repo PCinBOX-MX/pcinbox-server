@@ -84,6 +84,7 @@ model users {
   order          order[]
   resetpassword  resetpassword[]
   sales          sales[]
+  reservas       reservas[]
 }
 
 model resetpassword {
@@ -553,4 +554,26 @@ enum shipments_shipping_method {
   estafeta
   envioLeon
   sucursalExt
+}
+
+model reservas {
+  idReserva     BigInt    @id @default(autoincrement())
+  reference     String    @unique @db.VarChar(50)
+  service       String    @db.VarChar(100)
+  deviceType    String    @db.VarChar(50)
+  brand         String    @db.VarChar(100)
+  model         String    @db.VarChar(100)
+  description   String    @db.Text
+  date          DateTime  @db.Date
+  time          String    @db.VarChar(50)
+  contactName   String    @db.VarChar(255)
+  contactEmail  String    @db.VarChar(255)
+  contactPhone  String    @db.VarChar(50)
+  status        String    @default("pending") @db.VarChar(50)
+  userId        BigInt?
+  createdAt     DateTime? @default(now()) @db.DateTime(0)
+  updatedAt     DateTime? @updatedAt @db.DateTime(0)
+  users         users?    @relation(fields: [userId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "fk_userId_reservas")
+
+  @@index([userId], map: "fk_userId_reservas_idx")
 }
