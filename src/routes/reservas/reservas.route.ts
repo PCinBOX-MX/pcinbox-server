@@ -4,10 +4,14 @@ import {
   cancelReservation,
   rescheduleReservation,
   getUserReservations,
+  checkAvailability,
 } from "../../controllers/reservas/reservas.controller";
 import { MiddleAuthRoute } from "../../middleware/index.middleware";
 
 const router = Router();
+
+// Consulta de disponibilidad de horarios para un día específico
+router.get("/availability", checkAvailability);
 
 // Creación de reserva (público / token opcional)
 router.post("/create", createReservation);

@@ -55,6 +55,20 @@ export const createReservation = async (req: Request, res: Response) => {
     }
 
     const userId = getUserIdFromHeader(req);
+    const parsedDate = new Date(date);
+
+    // Validar disponibilidad antes de crear
+    const existingReservation = await prisma.reservas.findFirst({
+      where: {
+        date: parsedDate,
+        time,
+        status: { not: "cancelled" }
+      }
+    });
+
+    if (existingReservation) {
+      return res.status(400).json({ ok: false, message: "El horario seleccionado ya no está disponible para este día" });
+    }
 
     const newReservation = await prisma.reservas.create({
       data: {
@@ -64,7 +78,7 @@ export const createReservation = async (req: Request, res: Response) => {
         brand,
         model,
         description,
-        date: new Date(date),
+        date: parsedDate,
         time,
         contactName,
         contactEmail,
@@ -138,10 +152,28 @@ export const rescheduleReservation = async (req: Request, res: Response) => {
       return res.status(404).json({ ok: false, message: "Reserva no encontrada" });
     }
 
+    const parsedDate = new Date(date);
+
+    // Validar disponibilidad del nuevo slot (excluyendo la reserva que se está reprogramando)
+    const existingReservation = await prisma.reservas.findFirst({
+      where: {
+        date: parsedDate,
+        time,
+        status: { not: "cancelled" },
+        NOT: {
+          reference: reference
+        }
+      }
+    });
+
+    if (existingReservation) {
+      return res.status(400).json({ ok: false, message: "El nuevo horario seleccionado ya está ocupado" });
+    }
+
     const updated = await prisma.reservas.update({
       where: { reference },
       data: {
-        date: new Date(date),
+        date: parsedDate,
         time,
         status: "pending",
       },
@@ -186,6 +218,56 @@ export const getUserReservations = async (req: CustomRequestI, res: Response) =>
       ok: false,
       message: "Error interno del servidor",
       error: error.message,
+    });
+  }
+};
+
+export const checkAvailability = async (req: Request, res: Response) => {
+  try {
+    const { date } = req.query;
+
+    if (!date || typeof date !== "string") {
+      return res.status(400).json({ ok: false, message: "La fecha es requerida y debe ser un texto válido" });
+    }
+
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    if (!dateRegex.test(date)) {
+      return res.status(400).json({ ok: false, message: "El formato de fecha debe ser YYYY-MM-DD" });
+    }
+
+    const parsedDate = new Date(date);
+    if (isNaN(parsedDate.getTime())) {
+      return res.status(400).json({ ok: false, message: "Fecha inválida" });
+    }
+
+    const activeReservations = await prisma.reservas.findMany({
+      where: {
+        date: parsedDate,
+        status: { not: "cancelled" }
+      }
+    });
+
+    const timeSlots = ["12:00 PM", "01:00 PM", "02:00 PM", "03:00 PM", "04:00 PM"];
+    
+    const slotsMap = timeSlots.map(time => {
+      const isOccupied = activeReservations.some(r => r.time === time);
+      return {
+        time,
+        available: !isOccupied,
+        spotsLeft: isOccupied ? 0 : 1
+      };
+    });
+
+    return res.status(200).json({
+      ok: true,
+      date,
+      slots: slotsMap
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      message: "Error al consultar disponibilidad",
+      error: error.message
     });
   }
 };
