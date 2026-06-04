@@ -82,9 +82,9 @@ model users {
   changepassword changepassword[]
   favorites      favorites[]
   order          order[]
+  reservas       reservas[]
   resetpassword  resetpassword[]
   sales          sales[]
-  reservas       reservas[]
 }
 
 model resetpassword {
@@ -406,28 +406,39 @@ model shippingbyzone {
 }
 
 model link_pagos {
-  idLinkPago    Int                    @id @default(autoincrement())
-  userId        BigInt?
-  email         String?                @db.VarChar(255)
-  monto         Float?
-  description   String?                @db.Text
-  referencia    String?                @db.VarChar(255)
-  name          String?                @db.VarChar(255)
-  lastname      String?                @db.VarChar(255)
-  customerId    String?                @db.VarChar(255)
-  chargeId      String?                @db.VarChar(255)
-  products      Json?
-  linkPago      String?                @db.Text
-  status        link_pagos_status?     @default(payment_pending)
-  phone         String?                @db.VarChar(45)
-  newReferencia String?                @db.VarChar(255)
-  transaction   String?                @db.VarChar(255)
-  pay_method    link_pagos_pay_method?
-  createdAt     DateTime?              @default(now()) @db.DateTime(0)
-  expiredAt     DateTime?              @db.DateTime(0)
-  updatedAt     DateTime?              @db.DateTime(0)
-  statusShip    link_pagos_statusShip?
-  codeOxxo      String?                @db.Text
+  idLinkPago      Int                         @id @default(autoincrement())
+  email           String?                     @db.VarChar(255)
+  monto           Float?
+  description     String?                     @db.Text
+  referencia      String?                     @db.VarChar(255)
+  name            String?                     @db.VarChar(255)
+  lastname        String?                     @db.VarChar(255)
+  customerId      String?                     @db.VarChar(255)
+  products        Json?
+  linkMP          String?                     @db.Text
+  linkOP          String?                     @db.Text
+  status          link_pagos_status?          @default(payment_pending)
+  phone           String?                     @db.Text
+  transactionMP   String?                     @db.Text
+  transactionOP   String?                     @db.Text
+  pay_method      link_pagos_pay_method?
+  createdAt       DateTime?                   @default(now()) @db.DateTime(0)
+  expiredAt       DateTime?                   @db.DateTime(0)
+  updatedAt       DateTime?                   @db.DateTime(0)
+  statusShip      link_pagos_statusShip?
+  state           String?                     @db.VarChar(255)
+  city            String?                     @db.VarChar(255)
+  street          String?                     @db.Text
+  noExt           String?                     @db.Text
+  noInt           String?                     @db.Text
+  cologne         String?                     @db.Text
+  codePostal      Int?
+  deliveryType    link_pagos_deliveryType?
+  payment_plan    Int?
+  deliveryService link_pagos_deliveryService?
+  purchaseId      String?                     @db.Text
+  invoiceNumber   String?                     @db.Text
+  guia            String?                     @db.Text
 }
 
 model purchases {
@@ -441,6 +452,28 @@ model purchases {
   order       order?    @relation(fields: [idOrder], references: [idOrder], onDelete: NoAction, onUpdate: NoAction, map: "fk_purchases_idOrder")
 
   @@index([idOrder], map: "fk_purchases_idOrder_idx")
+}
+
+model reservas {
+  idReserva    BigInt              @id @default(autoincrement())
+  reference    String              @unique(map: "uk_reservas_reference") @db.VarChar(50)
+  service      String              @db.VarChar(100)
+  deviceType   reservas_deviceType
+  brand        String              @db.VarChar(100)
+  model        String              @db.VarChar(100)
+  description  String              @db.Text
+  date         DateTime            @db.Date
+  time         String              @db.VarChar(50)
+  contactName  String              @db.VarChar(255)
+  contactEmail String              @db.VarChar(255)
+  contactPhone String              @db.VarChar(50)
+  status       String              @default("pending") @db.VarChar(50)
+  userId       BigInt?
+  createdAt    DateTime?           @default(now()) @db.DateTime(0)
+  updatedAt    DateTime?           @default(now()) @updatedAt @db.DateTime(0)
+  users        users?              @relation(fields: [userId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "fk_userId_reservas")
+
+  @@index([userId], map: "idx_reservas_userId")
 }
 
 enum users_role {
@@ -523,22 +556,6 @@ enum shipments_status {
   disponible
 }
 
-enum link_pagos_status {
-  paid
-  payment_pending
-  failed
-  cancelled
-  expired
-}
-
-enum link_pagos_pay_method {
-  tarjeta_de_credito
-  tarjeta_de_debito
-  transferencia_bancaria
-  oxxo
-  esperando
-}
-
 enum link_pagos_statusShip {
   entregado
   disponible
@@ -556,24 +573,37 @@ enum shipments_shipping_method {
   sucursalExt
 }
 
-model reservas {
-  idReserva     BigInt    @id @default(autoincrement())
-  reference     String    @unique @db.VarChar(50)
-  service       String    @db.VarChar(100)
-  deviceType    String    @db.VarChar(50)
-  brand         String    @db.VarChar(100)
-  model         String    @db.VarChar(100)
-  description   String    @db.Text
-  date          DateTime  @db.Date
-  time          String    @db.VarChar(50)
-  contactName   String    @db.VarChar(255)
-  contactEmail  String    @db.VarChar(255)
-  contactPhone  String    @db.VarChar(50)
-  status        String    @default("pending") @db.VarChar(50)
-  userId        BigInt?
-  createdAt     DateTime? @default(now()) @db.DateTime(0)
-  updatedAt     DateTime? @updatedAt @db.DateTime(0)
-  users         users?    @relation(fields: [userId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "fk_userId_reservas")
+enum reservas_deviceType {
+  Laptop
+  PC
+}
 
-  @@index([userId], map: "fk_userId_reservas_idx")
+enum link_pagos_status {
+  paid
+  payment_pending
+  failed
+  cancelled
+  expired
+  charged_back
+  rejected
+  refunded
+}
+
+enum link_pagos_pay_method {
+  tarjeta_de_credito
+  tarjeta_de_debito
+  transferencia_bancaria
+  oxxo
+  esperando
+  mercadopago
+}
+
+enum link_pagos_deliveryType {
+  sucursal
+  domicilio
+}
+
+enum link_pagos_deliveryService {
+  Estafeta
+  Paquete_Express @map("Paquete Express")
 }
