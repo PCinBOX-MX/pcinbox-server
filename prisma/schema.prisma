@@ -468,6 +468,7 @@ model reservas {
   contactEmail String              @db.VarChar(255)
   contactPhone String              @db.VarChar(50)
   status       String              @default("pending") @db.VarChar(50)
+  cancelReason String?             @db.Text
   userId       BigInt?
   createdAt    DateTime?           @default(now()) @db.DateTime(0)
   updatedAt    DateTime?           @default(now()) @updatedAt @db.DateTime(0)
