@@ -362,14 +362,48 @@ export const getUserReservations = async (req: CustomRequestI, res: Response) =>
     }
 
     const page = parseInt(req.query.page as string) || 1;
-    const limit = parseInt(req.query.limit as string) || 5;
+    const limit = parseInt(req.query.limit as string) || 15;
     const skip = (page - 1) * limit;
+
+    const status = req.query.status as string;
+    const search = req.query.search as string;
+    const date = req.query.date as string;
+    const startDate = req.query.startDate as string;
+    const endDate = req.query.endDate as string;
+
+    const whereClause: any = {
+      userId: BigInt(req.idUser),
+    };
+
+    if (status && status !== "all") {
+      whereClause.status = status;
+    }
+
+    if (startDate || endDate) {
+      whereClause.date = {};
+      if (startDate) {
+        whereClause.date.gte = new Date(startDate);
+      }
+      if (endDate) {
+        whereClause.date.lte = new Date(endDate);
+      }
+    } else if (date) {
+      whereClause.date = new Date(date);
+    }
+
+    if (search) {
+      whereClause.OR = [
+        { reference: { contains: search } },
+        { brand: { contains: search } },
+        { model: { contains: search } },
+        { service: { contains: search } },
+        { description: { contains: search } },
+      ];
+    }
 
     const [reservations, total] = await prisma.$transaction([
       prisma.reservas.findMany({
-        where: {
-          userId: BigInt(req.idUser),
-        },
+        where: whereClause,
         orderBy: {
           date: "desc",
         },
@@ -377,9 +411,7 @@ export const getUserReservations = async (req: CustomRequestI, res: Response) =>
         take: limit,
       }),
       prisma.reservas.count({
-        where: {
-          userId: BigInt(req.idUser),
-        },
+        where: whereClause,
       }),
     ]);
 
