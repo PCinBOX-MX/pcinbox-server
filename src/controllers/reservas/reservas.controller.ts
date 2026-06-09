@@ -4,6 +4,7 @@ import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
 import CustomRequestI from "../../interfaces/customrequest.interface";
 import { parseBigInts } from "../../services/index.service";
+import { sendEmailResend } from "../../services/resend.service";
 
 dotenv.config({ path: ".env.prod" });
 
@@ -20,6 +21,43 @@ const getUserIdFromHeader = (req: Request): number | null => {
   } catch (err) {
     return null;
   }
+};
+
+// Helper para comprobar si un día es feriado oficial en México
+const isHoliday = (date: Date): boolean => {
+  const year = date.getFullYear();
+  const month = date.getMonth(); // 0 = Ene, 1 = Feb, etc.
+  const day = date.getDate();
+  const dayOfWeek = date.getDay(); // 0 = Dom, 1 = Lun, ..., 6 = Sáb
+
+  // 1 de Enero (Año Nuevo)
+  if (month === 0 && day === 1) return true;
+
+  // Primer lunes de Febrero (Día de la Constitución)
+  if (month === 1 && dayOfWeek === 1 && day >= 1 && day <= 7) return true;
+
+  // Tercer lunes de Marzo (Natalicio de Benito Juárez)
+  if (month === 2 && dayOfWeek === 1 && day >= 15 && day <= 21) return true;
+
+  // 1 de Mayo (Día del Trabajo)
+  if (month === 4 && day === 1) return true;
+
+  // 16 de Septiembre (Día de la Independencia)
+  if (month === 8 && day === 16) return true;
+
+  // Tercer lunes de Noviembre (Día de la Revolución)
+  if (month === 10 && dayOfWeek === 1 && day >= 15 && day <= 21) return true;
+
+  // 25 de Diciembre (Navidad)
+  if (month === 11 && day === 25) return true;
+
+  // Transmisión del Poder Ejecutivo Federal (1 de octubre cada 6 años)
+  if (month === 9 && day === 1 && (year === 2024 || year === 2030 || year === 2036)) return true;
+
+  // 2 de Noviembre (Día de Muertos - Inhábil común)
+  if (month === 10 && day === 2) return true;
+
+  return false;
 };
 
 export const createReservation = async (req: Request, res: Response) => {
@@ -57,6 +95,35 @@ export const createReservation = async (req: Request, res: Response) => {
     const userId = getUserIdFromHeader(req);
     const parsedDate = new Date(date);
 
+    // Validar que un mismo usuario no pueda agendar más de un horario por día
+    if (userId) {
+      const existingUserReservationOnDay = await prisma.reservas.findFirst({
+        where: {
+          userId: BigInt(userId),
+          date: parsedDate,
+          status: { not: "cancelled" }
+        }
+      });
+
+      if (existingUserReservationOnDay) {
+        return res.status(400).json({
+          ok: false,
+          message: "Ya tienes una reservación activa agendada para este día. Máximo una reservación por día."
+        });
+      }
+    }
+
+    // Validar que no sea fin de semana (Sábado o Domingo)
+    const dayOfWeek = parsedDate.getDay();
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+      return res.status(400).json({ ok: false, message: "No se labora en fines de semana" });
+    }
+
+    // Validar que no sea día feriado (inhábil)
+    if (isHoliday(parsedDate)) {
+      return res.status(400).json({ ok: false, message: "La fecha seleccionada corresponde a un día feriado (inhábil)" });
+    }
+
     // Validar disponibilidad antes de crear
     const existingReservation = await prisma.reservas.findFirst({
       where: {
@@ -87,11 +154,41 @@ export const createReservation = async (req: Request, res: Response) => {
       },
     });
 
-    return res.status(201).json({
-      ok: true,
-      message: "Reserva creada con éxito",
-      data: parseBigInts(newReservation),
-    });
+    if (newReservation) {
+      await sendEmailResend(
+        "alejandroparedessoto18@gmail.com",
+        "Reservacion de cita para mantenimiento",
+        "reservation-client", {
+        USERNAME: newReservation.contactName,
+        FOLIO: newReservation.reference,
+        DATE: newReservation.createdAt?.toDateString()!,
+        TIME: newReservation.time,
+        DEVICE: newReservation.deviceType,
+        SERVICE: newReservation.service
+      })
+
+      await sendEmailResend(
+        "alejandroparedessoto18@gmail.com",
+        "Reservacion de cita para mantenimiento",
+        "reservation-admin", {
+        USERNAME: newReservation.contactName,
+        EMAIL: newReservation.contactEmail,
+        PHONE: newReservation.contactPhone,
+        FOLIO: newReservation.reference,
+        DATE: newReservation.createdAt?.toDateString()!,
+        TIME: newReservation.time,
+        DEVICE: newReservation.deviceType,
+        SERVICE: newReservation.service
+      })
+
+      return res.status(201).json({
+        ok: true,
+        message: "Reserva creada con éxito",
+        data: parseBigInts(newReservation),
+      });
+    }
+
+
   } catch (error: any) {
     return res.status(500).json({
       ok: false,
@@ -103,7 +200,7 @@ export const createReservation = async (req: Request, res: Response) => {
 
 export const cancelReservation = async (req: Request, res: Response) => {
   try {
-    const { reference } = req.body;
+    const { reference, cancelReason } = req.body;
 
     if (!reference) {
       return res.status(400).json({ ok: false, message: "Referencia requerida" });
@@ -119,7 +216,10 @@ export const cancelReservation = async (req: Request, res: Response) => {
 
     const updated = await prisma.reservas.update({
       where: { reference },
-      data: { status: "cancelled" },
+      data: {
+        status: "cancelled",
+        cancelReason: cancelReason || "Cancelada por el cliente"
+      },
     });
 
     return res.status(200).json({
@@ -154,6 +254,38 @@ export const rescheduleReservation = async (req: Request, res: Response) => {
 
     const parsedDate = new Date(date);
 
+    // Validar que no sea fin de semana (Sábado o Domingo)
+    const dayOfWeek = parsedDate.getDay();
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+      return res.status(400).json({ ok: false, message: "No se labora en fines de semana" });
+    }
+
+    // Validar que no sea día feriado (inhábil)
+    if (isHoliday(parsedDate)) {
+      return res.status(400).json({ ok: false, message: "La fecha seleccionada corresponde a un día feriado (inhábil)" });
+    }
+
+    // Validar que el usuario no tenga otra reserva activa en el nuevo día
+    const userId = findReservation.userId;
+    if (userId) {
+      const existingUserReservationOnDay = await prisma.reservas.findFirst({
+        where: {
+          userId: userId,
+          date: parsedDate,
+          status: { not: "cancelled" },
+          NOT: {
+            reference: reference
+          }
+        }
+      });
+      if (existingUserReservationOnDay) {
+        return res.status(400).json({
+          ok: false,
+          message: "Ya tienes otra reservación activa agendada para el día seleccionado. Máximo una reservación por día."
+        });
+      }
+    }
+
     // Validar disponibilidad del nuevo slot (excluyendo la reserva que se está reprogramando)
     const existingReservation = await prisma.reservas.findFirst({
       where: {
@@ -179,11 +311,41 @@ export const rescheduleReservation = async (req: Request, res: Response) => {
       },
     });
 
-    return res.status(200).json({
-      ok: true,
-      message: "Reserva reprogramada con éxito",
-      data: parseBigInts(updated),
-    });
+    if (updated) {
+
+      await sendEmailResend(
+        "alejandroparedessoto18@gmail.com",
+        "Reserva reprogramada con éxito",
+        "reservation-client", {
+        USERNAME: updated.contactName,
+        FOLIO: updated.reference,
+        DATE: updated.createdAt?.toDateString()!,
+        TIME: updated.time,
+        DEVICE: updated.deviceType,
+        SERVICE: updated.service
+      })
+
+      await sendEmailResend(
+        "alejandroparedessoto18@gmail.com",
+        "Reserva reprogramada con éxito",
+        "reservation-admin", {
+        USERNAME: updated.contactName,
+        EMAIL: updated.contactEmail,
+        PHONE: updated.contactPhone,
+        FOLIO: updated.reference,
+        DATE: updated.createdAt?.toDateString()!,
+        TIME: updated.time,
+        DEVICE: updated.deviceType,
+        SERVICE: updated.service
+      })
+      return res.status(201).json({
+        ok: true,
+        message: "Reserva reprogramada con éxito",
+        data: parseBigInts(updated),
+      });
+    }
+
+
   } catch (error: any) {
     return res.status(500).json({
       ok: false,
@@ -199,19 +361,38 @@ export const getUserReservations = async (req: CustomRequestI, res: Response) =>
       return res.status(400).json({ ok: false, message: "Usuario no autenticado" });
     }
 
-    const userReservations = await prisma.reservas.findMany({
-      where: {
-        userId: BigInt(req.idUser),
-      },
-      orderBy: {
-        date: "asc",
-      },
-    });
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 5;
+    const skip = (page - 1) * limit;
+
+    const [reservations, total] = await prisma.$transaction([
+      prisma.reservas.findMany({
+        where: {
+          userId: BigInt(req.idUser),
+        },
+        orderBy: {
+          date: "desc",
+        },
+        skip,
+        take: limit,
+      }),
+      prisma.reservas.count({
+        where: {
+          userId: BigInt(req.idUser),
+        },
+      }),
+    ]);
 
     return res.status(200).json({
       ok: true,
       message: "Reservaciones del usuario",
-      data: parseBigInts(userReservations),
+      data: parseBigInts(reservations),
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
     });
   } catch (error: any) {
     return res.status(500).json({
@@ -240,6 +421,26 @@ export const checkAvailability = async (req: Request, res: Response) => {
       return res.status(400).json({ ok: false, message: "Fecha inválida" });
     }
 
+    const dayOfWeek = parsedDate.getDay();
+    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+    const isDayHoliday = isHoliday(parsedDate);
+
+    const timeSlots = ["11:00 AM", "02:00 PM", "05:00 PM"];
+
+    if (isWeekend || isDayHoliday) {
+      const slotsMap = timeSlots.map(time => ({
+        time,
+        available: false,
+        spotsLeft: 0
+      }));
+      return res.status(200).json({
+        ok: true,
+        date,
+        slots: slotsMap,
+        message: isWeekend ? "Fin de semana (No laboral)" : "Día feriado (Inhábil)"
+      });
+    }
+
     const activeReservations = await prisma.reservas.findMany({
       where: {
         date: parsedDate,
@@ -247,8 +448,6 @@ export const checkAvailability = async (req: Request, res: Response) => {
       }
     });
 
-    const timeSlots = ["12:00 PM", "01:00 PM", "02:00 PM", "03:00 PM", "04:00 PM"];
-    
     const slotsMap = timeSlots.map(time => {
       const isOccupied = activeReservations.some(r => r.time === time);
       return {
@@ -267,6 +466,215 @@ export const checkAvailability = async (req: Request, res: Response) => {
     return res.status(500).json({
       ok: false,
       message: "Error al consultar disponibilidad",
+      error: error.message
+    });
+  }
+};
+
+export const getReservationByReference = async (req: Request, res: Response) => {
+  try {
+    const { reference } = req.params;
+
+    if (!reference) {
+      return res.status(400).json({ ok: false, message: "Referencia requerida" });
+    }
+
+    const reservation = await prisma.reservas.findUnique({
+      where: { reference }
+    });
+
+    if (!reservation) {
+      return res.status(404).json({ ok: false, message: "Reserva no encontrada" });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      data: parseBigInts(reservation)
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      message: "Error al obtener la reserva",
+      error: error.message
+    });
+  }
+};
+
+export const getReservationByRef = async (req: Request, res: Response) => {
+  try {
+    const { reference } = req.params;
+
+    if (!reference) {
+      return res.status(400).json({ ok: false, message: "Referencia requerida" });
+    }
+
+    const reservation = await prisma.reservas.findUnique({
+      where: { reference },
+    });
+
+    if (!reservation) {
+      return res.status(404).json({ ok: false, message: "Reserva no encontrada" });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      message: "Detalle de reservación",
+      data: parseBigInts(reservation),
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      message: "Error interno del servidor",
+      error: error.message,
+    });
+  }
+};
+
+export const getAdminReservations = async (req: CustomRequestI, res: Response) => {
+  try {
+    const adminUser = await prisma.users.findUnique({
+      where: { idUser: Number(req.idUser) },
+      select: { role: true }
+    });
+
+    if (!adminUser || adminUser.role !== "admin") {
+      return res.status(403).json({ ok: false, message: "Acceso denegado. Se requieren permisos de administrador." });
+    }
+
+    const page = Number(req.query.page) || 1;
+    const limit = Number(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    const status = req.query.status as string;
+    const search = req.query.search as string;
+    const date = req.query.date as string;
+
+    const whereClause: any = {};
+
+    if (status && status !== "all") {
+      whereClause.status = status;
+    }
+
+    if (date) {
+      whereClause.date = new Date(date);
+    }
+
+    if (search) {
+      whereClause.OR = [
+        { reference: { contains: search } },
+        { contactName: { contains: search } },
+        { contactEmail: { contains: search } },
+        { contactPhone: { contains: search } },
+        { brand: { contains: search } },
+        { model: { contains: search } },
+        { service: { contains: search } }
+      ];
+    }
+
+    const [total, data] = await prisma.$transaction([
+      prisma.reservas.count({ where: whereClause }),
+      prisma.reservas.findMany({
+        where: whereClause,
+        orderBy: [
+          { date: "desc" },
+          { time: "desc" }
+        ],
+        skip,
+        take: limit,
+      })
+    ]);
+
+    const totalPages = Math.ceil(total / limit);
+
+    return res.status(200).json({
+      ok: true,
+      message: "Listado de reservas de administración",
+      data: parseBigInts(data),
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages
+      }
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      message: "Error al obtener reservas del sistema",
+      error: error.message
+    });
+  }
+};
+
+export const updateReservationStatus = async (req: CustomRequestI, res: Response) => {
+  try {
+    const adminUser = await prisma.users.findUnique({
+      where: { idUser: Number(req.idUser) },
+      select: { role: true }
+    });
+
+    if (!adminUser || adminUser.role !== "admin") {
+      return res.status(403).json({ ok: false, message: "Acceso denegado. Se requieren permisos de administrador." });
+    }
+
+    const { reference, status, cancelReason } = req.body;
+
+    if (!reference || !status) {
+      return res.status(400).json({ ok: false, message: "Referencia y estatus requeridos" });
+    }
+
+    const existingReservation = await prisma.reservas.findUnique({
+      where: { reference }
+    });
+
+    if (!existingReservation) {
+      return res.status(404).json({ ok: false, message: "Reserva no encontrada" });
+    }
+
+    const updated = await prisma.reservas.update({
+      where: { reference },
+      data: {
+        status,
+        ...(status === "cancelled" && cancelReason ? { cancelReason } : {})
+      }
+    });
+
+    // Enviar notificación por correo silenciosamente usando Resend si el estado cambió
+    try {
+      if (updated && updated.contactEmail) {
+        let emailSubject = "Actualización de tu cita de mantenimiento";
+        let statusText = "Pendiente";
+        if (status === "completed") statusText = "Completada";
+        else if (status === "in_process") statusText = "En Proceso";
+        else if (status === "cancelled") statusText = "Cancelada";
+
+        await sendEmailResend(
+          updated.contactEmail,
+          `${emailSubject} - Cita ${statusText}`,
+          "reservation-client",
+          {
+            USERNAME: updated.contactName,
+            FOLIO: updated.reference,
+            DATE: updated.date ? new Date(updated.date).toLocaleDateString() : "",
+            TIME: updated.time,
+            DEVICE: updated.deviceType,
+            SERVICE: `${updated.service} (Estatus: ${statusText})`
+          }
+        );
+      }
+    } catch (emailErr) {
+      console.error("Error al enviar notificación de cambio de estatus por correo:", emailErr);
+    }
+
+    return res.status(200).json({
+      ok: true,
+      message: "Estatus de reserva actualizado correctamente",
+      data: parseBigInts(updated)
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      message: "Error interno del servidor",
       error: error.message
     });
   }
