@@ -580,6 +580,8 @@ export const getAdminReservations = async (req: CustomRequestI, res: Response) =
     const status = req.query.status as string;
     const search = req.query.search as string;
     const date = req.query.date as string;
+    const startDate = req.query.startDate as string;
+    const endDate = req.query.endDate as string;
 
     const whereClause: any = {};
 
@@ -587,7 +589,15 @@ export const getAdminReservations = async (req: CustomRequestI, res: Response) =
       whereClause.status = status;
     }
 
-    if (date) {
+    if (startDate || endDate) {
+      whereClause.date = {};
+      if (startDate) {
+        whereClause.date.gte = new Date(startDate);
+      }
+      if (endDate) {
+        whereClause.date.lte = new Date(endDate);
+      }
+    } else if (date) {
       whereClause.date = new Date(date);
     }
 
