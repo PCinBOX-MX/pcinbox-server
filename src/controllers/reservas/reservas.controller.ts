@@ -405,7 +405,7 @@ export const getUserReservations = async (req: CustomRequestI, res: Response) =>
       prisma.reservas.findMany({
         where: whereClause,
         orderBy: {
-          date: "desc",
+          createdAt: "desc",
         },
         skip,
         take: limit,
@@ -618,8 +618,7 @@ export const getAdminReservations = async (req: CustomRequestI, res: Response) =
       prisma.reservas.findMany({
         where: whereClause,
         orderBy: [
-          { date: "desc" },
-          { time: "desc" }
+          { createdAt: "desc" }
         ],
         skip,
         take: limit,
@@ -671,6 +670,10 @@ export const updateReservationStatus = async (req: CustomRequestI, res: Response
 
     if (!existingReservation) {
       return res.status(404).json({ ok: false, message: "Reserva no encontrada" });
+    }
+
+    if (existingReservation.status === "cancelled") {
+      return res.status(400).json({ ok: false, message: "No se puede cambiar el estatus de una reserva ya cancelada." });
     }
 
     const updated = await prisma.reservas.update({
