@@ -133,7 +133,7 @@ const createReservation = async (req, res) => {
             },
         });
         if (newReservation) {
-            await (0, resend_service_1.sendEmailResend)("alejandroparedessoto18@gmail.com", "Reservacion de cita para mantenimiento", "reservation-client", {
+            await (0, resend_service_1.sendEmailResend)(newReservation.contactEmail, "Reservacion de cita para mantenimiento", "reservation-client", {
                 USERNAME: newReservation.contactName,
                 FOLIO: newReservation.reference,
                 DATE: newReservation.createdAt?.toDateString(),
@@ -141,7 +141,7 @@ const createReservation = async (req, res) => {
                 DEVICE: newReservation.deviceType,
                 SERVICE: newReservation.service
             });
-            await (0, resend_service_1.sendEmailResend)("alejandroparedessoto18@gmail.com", "Reservacion de cita para mantenimiento", "reservation-admin", {
+            await (0, resend_service_1.sendEmailResend)("admon@pcinbox.com.mx", "Reservacion de cita para mantenimiento", "reservation-admin", {
                 USERNAME: newReservation.contactName,
                 EMAIL: newReservation.contactEmail,
                 PHONE: newReservation.contactPhone,
@@ -266,7 +266,7 @@ const rescheduleReservation = async (req, res) => {
             },
         });
         if (updated) {
-            await (0, resend_service_1.sendEmailResend)("alejandroparedessoto18@gmail.com", "Reserva reprogramada con éxito", "reservation-client", {
+            await (0, resend_service_1.sendEmailResend)(updated.contactEmail, "Reserva reprogramada con éxito", "reservation-client", {
                 USERNAME: updated.contactName,
                 FOLIO: updated.reference,
                 DATE: updated.createdAt?.toDateString(),
@@ -274,7 +274,7 @@ const rescheduleReservation = async (req, res) => {
                 DEVICE: updated.deviceType,
                 SERVICE: updated.service
             });
-            await (0, resend_service_1.sendEmailResend)("alejandroparedessoto18@gmail.com", "Reserva reprogramada con éxito", "reservation-admin", {
+            await (0, resend_service_1.sendEmailResend)("admon@pcinbox.com.mx", "Reserva reprogramada con éxito", "reservation-admin", {
                 USERNAME: updated.contactName,
                 EMAIL: updated.contactEmail,
                 PHONE: updated.contactPhone,
