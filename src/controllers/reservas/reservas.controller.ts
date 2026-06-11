@@ -156,7 +156,7 @@ export const createReservation = async (req: Request, res: Response) => {
 
     if (newReservation) {
       await sendEmailResend(
-        "alejandroparedessoto18@gmail.com",
+        newReservation.contactEmail,
         "Reservacion de cita para mantenimiento",
         "reservation-client", {
         USERNAME: newReservation.contactName,
@@ -168,7 +168,7 @@ export const createReservation = async (req: Request, res: Response) => {
       })
 
       await sendEmailResend(
-        "alejandroparedessoto18@gmail.com",
+        "admon@pcinbox.com.mx",
         "Reservacion de cita para mantenimiento",
         "reservation-admin", {
         USERNAME: newReservation.contactName,
@@ -314,7 +314,7 @@ export const rescheduleReservation = async (req: Request, res: Response) => {
     if (updated) {
 
       await sendEmailResend(
-        "alejandroparedessoto18@gmail.com",
+        updated.contactEmail,
         "Reserva reprogramada con éxito",
         "reservation-client", {
         USERNAME: updated.contactName,
@@ -326,7 +326,7 @@ export const rescheduleReservation = async (req: Request, res: Response) => {
       })
 
       await sendEmailResend(
-        "alejandroparedessoto18@gmail.com",
+        "admon@pcinbox.com.mx",
         "Reserva reprogramada con éxito",
         "reservation-admin", {
         USERNAME: updated.contactName,
