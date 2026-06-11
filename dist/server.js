@@ -16,6 +16,7 @@ const billing_route_1 = __importDefault(require("./routes/address/billing.route"
 const favorites_route_1 = __importDefault(require("./routes/favorites/favorites.route"));
 const review_route_1 = __importDefault(require("./routes/review/review.route"));
 const sales_route_1 = __importDefault(require("./routes/sales/sales.route"));
+const reservas_route_1 = __importDefault(require("./routes/reservas/reservas.route"));
 const cookie_parser_1 = __importDefault(require("cookie-parser"));
 const path_1 = __importDefault(require("path"));
 const helmet_1 = __importDefault(require("helmet"));
@@ -72,6 +73,7 @@ server.use("/api/v1/billing", billing_route_1.default);
 server.use("/api/v1/favorites", favorites_route_1.default);
 server.use("/api/v1/review", review_route_1.default);
 server.use("/api/v1/sales", sales_route_1.default);
+server.use("/api/v1/reservas", reservas_route_1.default);
 server.get("/", (req, res) => {
     res.send("Servidor funcionando correctamente");
 });
