@@ -451,7 +451,7 @@ export const changeSucursal = async (req: CustomRequestI, res: Response) => {
     });
 
     return res.status(200).json({
-      ok: false,
+      ok: true,
       message: "Sucursal actualizada correctamente",
       data: {
         data: {

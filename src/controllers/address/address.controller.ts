@@ -169,13 +169,14 @@ export const removeAddress = async (req: CustomRequestI, res: Response) => {
     let slcAddress = await prisma.addresses.findFirst({
       where: {
         idAddress: idAddress,
+        userId: Number(req.idUser),
       },
     });
 
     if (!slcAddress) {
       return res.status(400).json({
         ok: false,
-        message: "Domicilio no encontrado",
+        message: "Domicilio no encontrado o no pertenece a su usuario",
       });
     }
 
@@ -250,6 +251,20 @@ export const updatedAddress = async (req: CustomRequestI, res: Response) => {
       return res.status(400).json({
         ok: false,
         message: `No hay servicio de envío para este código postal ${codePostal}`,
+      });
+    }
+
+    let slcAddress = await prisma.addresses.findFirst({
+      where: {
+        idAddress: idAddress,
+        userId: Number(req.idUser),
+      },
+    });
+
+    if (!slcAddress) {
+      return res.status(400).json({
+        ok: false,
+        message: "Domicilio no encontrado o no pertenece a su usuario",
       });
     }
 
