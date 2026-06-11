@@ -442,7 +442,13 @@ export const removeAccount = async (req: CustomRequestI, res: Response) => {
     }
 
     if (pass != "") {
-      const veryPass: boolean = await verifyPassword(pass, slcUser.password!);
+      if (!slcUser.password) {
+        return res.status(400).json({
+          ok: false,
+          message: "Esta cuenta fue creada con Google y no tiene contraseña. Intente desvincularla sin enviar contraseña.",
+        });
+      }
+      const veryPass: boolean = await verifyPassword(pass, slcUser.password);
 
       if (!veryPass) {
         return res.status(400).json({
