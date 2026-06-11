@@ -37,3 +37,5 @@
 [11/2/2026, 2:42:45 p.m.] ❌ Error al obtener última foto: Error: getaddrinfo ENOTFOUND api.imagekit.io
 [11/2/2026, 4:42:26 p.m.] ❌ Error al obtener última foto: Error: getaddrinfo ENOTFOUND api.imagekit.io
 [26/2/2026, 1:42:26 p.m.] ❌ Error al obtener última foto: Error: connect ETIMEDOUT 52.23.130.57:443
+[5/6/2026, 1:02:45 p.m.] ❌ Error al obtener última foto: Error: connect ETIMEDOUT 52.23.130.57:443
+[5/6/2026, 1:03:05 p.m.] ❌ Error al obtener última foto: Error: connect ETIMEDOUT 52.23.130.57:443
