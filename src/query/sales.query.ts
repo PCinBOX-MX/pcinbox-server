@@ -142,6 +142,7 @@ WHERE
   o.userId = ${Number(idUser)}
   ${status !== "allState" ? `AND sh.status = "${status}"` : ""}
   AND o.pay_method != "esperando"
+  AND o.status != "payment_pending"
 
 GROUP BY
   sh.idShipment,
