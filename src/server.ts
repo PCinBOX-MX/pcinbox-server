@@ -37,6 +37,7 @@ const allowedOrigins = [
   "http://192.168.0.107:3000",
   "https://colt-fierce-eugena.ngrok-free.dev",
   "https://interpervasive-unbotanical-kinsley.ngrok-free.dev",
+  "https://bd26-177-245-224-110.ngrok-free.app",
 ];
 
 server.use(helmet());
