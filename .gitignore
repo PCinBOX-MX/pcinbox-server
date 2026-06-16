@@ -1,6 +1,9 @@
 # Env files
 .env
 .env.*  # cubre .env.prod, .env.local, etc.
+.env
+.env.local
+.env.prod
 
 
 
