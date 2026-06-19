@@ -244,8 +244,28 @@ model order {
   refunds               refunds[]
   sales                 sales[]
   shipments             shipments[]
+  techsmart_orders      techsmart_orders?
 
   @@index([userId], map: "fk_userId_order_idx")
+}
+
+model techsmart_orders {
+  idTechsmartOrder BigInt                  @id @default(autoincrement())
+  idOrder          BigInt                  @unique
+  folioPedido      String?                 @db.VarChar(100)
+  xmlPedido        String?                 @db.LongText
+  guiaPedido       String?                 @db.VarChar(255)
+  nombrePaqueteria String?                 @db.VarChar(100)
+  folioFactura     String?                 @db.VarChar(100)
+  fechaFactura     String?                 @db.VarChar(50)
+  plazoFactura     String?                 @db.VarChar(50)
+  status           techsmart_orders_status @default(pending)
+  wsError          String?                 @db.Text
+  createdAt        DateTime                @default(now()) @db.DateTime(0)
+  updatedAt        DateTime                @updatedAt @db.DateTime(0)
+  order            order                   @relation(fields: [idOrder], references: [idOrder], onDelete: Cascade, onUpdate: NoAction, map: "fk_techsmart_orders_idOrder")
+
+  @@index([idOrder], map: "fk_techsmart_orders_idOrder_idx")
 }
 
 model shipments {
@@ -607,4 +627,12 @@ enum link_pagos_deliveryType {
 enum link_pagos_deliveryService {
   Estafeta
   Paquete_Express @map("Paquete Express")
+}
+
+enum techsmart_orders_status {
+  pending
+  sent
+  guide_linked
+  invoiced
+  failed
 }

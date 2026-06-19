@@ -146,6 +146,7 @@ export const getSalesByUser = async (req: CustomRequestI, res: Response) => {
             products: true,
           },
         },
+        techsmart_orders: true,
       },
     });
     return res.status(200).json({
@@ -211,6 +212,15 @@ function mapOrdersToHistoryResponse(orders: any[]) {
     payment_method: order.pay_method,
     orderStatus: order.status,
     idUser: Number(order.userId),
+    techsmartOrder: order.techsmart_orders
+      ? {
+          folioPedido: order.techsmart_orders.folioPedido,
+          guiaPedido: order.techsmart_orders.guiaPedido,
+          folioFactura: order.techsmart_orders.folioFactura,
+          status: order.techsmart_orders.status,
+          wsError: order.techsmart_orders.wsError,
+        }
+      : null,
     products: order.sales.map((sale: any, indexSale: number) => ({
       idShipment: order?.shipments[indexSale]?.idShipment,
       description: sale.products?.description,
@@ -218,11 +228,15 @@ function mapOrdersToHistoryResponse(orders: any[]) {
       idProduct: sale.products.idProduct,
       name: sale.products.name,
       quantity: sale.quantity,
+      providerId: sale.products?.providerId,
       statusShip: order.shipments[indexSale]?.status,
       shipping_method: order?.shipments[indexSale]?.shipping_method,
       status: sale.status,
       image_url: sale?.products?.image_url,
-      trackingNumber: order?.shipments[indexSale]?.trackingNumber,
+      trackingNumber:
+        order?.shipments[indexSale]?.trackingNumber ||
+        order?.techsmart_orders?.guiaPedido ||
+        null,
       address: order?.shipments[indexSale]?.addresses
         ? {
             idAddress: Number(
@@ -249,6 +263,7 @@ function mapOrdersToHistoryResponse(orders: any[]) {
 }
 
 const historyOrderInclude = {
+  techsmart_orders: true,
   shipments: {
     include: {
       addresses: true,
@@ -263,6 +278,7 @@ const historyOrderInclude = {
           description: true,
           price: true,
           image_url: true,
+          providerId: true,
         },
       },
     },
