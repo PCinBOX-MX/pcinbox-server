@@ -399,7 +399,7 @@ const changeSucursal = async (req, res) => {
             },
         });
         return res.status(200).json({
-            ok: false,
+            ok: true,
             message: "Sucursal actualizada correctamente",
             data: {
                 data: {

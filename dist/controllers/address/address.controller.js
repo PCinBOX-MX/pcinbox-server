@@ -138,12 +138,13 @@ const removeAddress = async (req, res) => {
         let slcAddress = await prismaClient_1.prisma.addresses.findFirst({
             where: {
                 idAddress: idAddress,
+                userId: Number(req.idUser),
             },
         });
         if (!slcAddress) {
             return res.status(400).json({
                 ok: false,
-                message: "Domicilio no encontrado",
+                message: "Domicilio no encontrado o no pertenece a su usuario",
             });
         }
         await prismaClient_1.prisma.addresses.update({
@@ -196,6 +197,18 @@ const updatedAddress = async (req, res) => {
             return res.status(400).json({
                 ok: false,
                 message: `No hay servicio de envío para este código postal ${codePostal}`,
+            });
+        }
+        let slcAddress = await prismaClient_1.prisma.addresses.findFirst({
+            where: {
+                idAddress: idAddress,
+                userId: Number(req.idUser),
+            },
+        });
+        if (!slcAddress) {
+            return res.status(400).json({
+                ok: false,
+                message: "Domicilio no encontrado o no pertenece a su usuario",
             });
         }
         await prismaClient_1.prisma.addresses.update({
