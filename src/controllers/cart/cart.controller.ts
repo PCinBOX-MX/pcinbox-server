@@ -81,9 +81,10 @@ export const getCart = async (req: CustomRequestI, res: Response) => {
 
     const serializedCartItems = cartItems
       .map((item) => {
-        // const cartItem = item.carts?.cartItems?.find(
-        //   (cartProp) => Number(cartProp?.carId) === Number(item.carId),
-        // );
+        const quantity = Number(item.quantity ?? 0);
+        const unitPrice = Number(item.products.price ?? 0);
+        const lineTotal =
+          Math.round((unitPrice * quantity + Number.EPSILON) * 100) / 100;
 
         return {
           ...item.products,
@@ -97,13 +98,32 @@ export const getCart = async (req: CustomRequestI, res: Response) => {
             : null,
           marcaId: item.products.marcaId ? String(item.products.marcaId) : null,
           quantity: item.quantity != null ? String(item.quantity) : null,
+          lineTotal,
         };
       })
       .filter((product: any) => product.quantity != "0");
 
+    const availableItems = serializedCartItems.filter(
+      (product: any) => Number(product.stock) !== 0,
+    );
+
+    const subtotal = availableItems.reduce(
+      (acc: number, item: any) => acc + Number(item.lineTotal ?? 0),
+      0,
+    );
+
+    const itemCount = availableItems.reduce(
+      (acc: number, item: any) => acc + Number(item.quantity ?? 0),
+      0,
+    );
+
     return res.status(200).json({
       ok: true,
       data: parseBigInts(serializedCartItems),
+      summary: {
+        subtotal: Math.round((subtotal + Number.EPSILON) * 100) / 100,
+        itemCount,
+      },
     });
   } catch (error: any) {
     console.log(error.message);

@@ -130,6 +130,7 @@ const getSalesByUser = async (req, res) => {
                         products: true,
                     },
                 },
+                techsmart_orders: true,
             },
         });
         return res.status(200).json({
@@ -180,106 +181,152 @@ const historySalesByUser = async (req, res) => {
     }
 };
 exports.historySalesByUser = historySalesByUser;
+function mapOrdersToHistoryResponse(orders) {
+    return orders.map((order) => ({
+        idOrder: order.idOrder,
+        totalSales: order.sales.length,
+        createdAt: order?.createdAt,
+        updatedAt: order?.updatedAt,
+        payment_method: order.pay_method,
+        orderStatus: order.status,
+        idUser: Number(order.userId),
+        techsmartOrder: order.techsmart_orders
+            ? {
+                folioPedido: order.techsmart_orders.folioPedido,
+                guiaPedido: order.techsmart_orders.guiaPedido,
+                folioFactura: order.techsmart_orders.folioFactura,
+                status: order.techsmart_orders.status,
+                wsError: order.techsmart_orders.wsError,
+            }
+            : null,
+        products: order.sales.map((sale, indexSale) => ({
+            idShipment: order?.shipments[indexSale]?.idShipment,
+            description: sale.products?.description,
+            price: sale?.products?.price,
+            idProduct: sale.products.idProduct,
+            name: sale.products.name,
+            quantity: sale.quantity,
+            providerId: sale.products?.providerId,
+            statusShip: order.shipments[indexSale]?.status,
+            shipping_method: order?.shipments[indexSale]?.shipping_method,
+            status: sale.status,
+            image_url: sale?.products?.image_url,
+            trackingNumber: order?.shipments[indexSale]?.trackingNumber ||
+                order?.techsmart_orders?.guiaPedido ||
+                null,
+            address: order?.shipments[indexSale]?.addresses
+                ? {
+                    idAddress: Number(order?.shipments[indexSale].addresses?.idAddress),
+                    userId: Number(order?.shipments[indexSale].addresses?.userId),
+                    street: order?.shipments[indexSale].addresses?.street,
+                    noExt: order?.shipments[indexSale].addresses?.noExt,
+                    noInt: order?.shipments[indexSale].addresses?.noInt,
+                    cologne: order?.shipments[indexSale].addresses?.cologne,
+                    city: order?.shipments[indexSale].addresses?.city,
+                    state: order?.shipments[indexSale].addresses?.state,
+                    country: order?.shipments[indexSale].addresses?.country,
+                    postalCode: order?.shipments[indexSale].addresses?.postalCode,
+                    phone1: order?.shipments[indexSale].addresses?.phone1,
+                    phone2: order?.shipments[indexSale].addresses?.phone2,
+                    createdAt: order?.shipments[indexSale].addresses?.createdAt,
+                    updatedAt: order?.shipments[indexSale].addresses?.updatedAt,
+                    active: order?.shipments[indexSale].addresses?.active,
+                }
+                : null,
+        })),
+    }));
+}
+const historyOrderInclude = {
+    techsmart_orders: true,
+    shipments: {
+        include: {
+            addresses: true,
+        },
+    },
+    sales: {
+        include: {
+            products: {
+                select: {
+                    idProduct: true,
+                    name: true,
+                    description: true,
+                    price: true,
+                    image_url: true,
+                    providerId: true,
+                },
+            },
+        },
+    },
+};
+function buildHistoryOrdersWhere(userId, filters) {
+    const where = {
+        userId,
+        pay_method: { not: "esperando" },
+        status: { not: "payment_pending" },
+    };
+    if (filters.status && filters.status !== "allState") {
+        where.shipments = { some: { status: filters.status } };
+    }
+    if (filters.startDate && filters.endDate) {
+        const start = new Date(filters.startDate);
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(filters.endDate);
+        end.setHours(23, 59, 59, 999);
+        where.createdAt = { gte: start, lte: end };
+    }
+    const search = filters.searchProduct?.trim();
+    if (search) {
+        where.sales = {
+            some: {
+                products: {
+                    name: { contains: search },
+                },
+            },
+        };
+    }
+    return where;
+}
 const filterSales = async (req, res) => {
     try {
-        const { status } = req.body;
+        const { status, page = 1, limit = 6, startDate, endDate, searchProduct } = req.body;
         if (!status) {
             return res.status(400).json({
                 ok: false,
                 message: "Faltan campos por enviar en el body",
             });
         }
-        // const record: any = await prisma.$queryRawUnsafe(
-        //   querySalesWithStatus(userId, status)
-        // );
-        let orders = await prismaClient_1.prisma.order.findMany({
-            where: {
-                userId: Number(req.idUser),
-                pay_method: {
-                    not: "esperando",
-                },
-            },
-            orderBy: {
-                idOrder: "desc",
-            },
-            include: {
-                shipments: {
-                    include: {
-                        addresses: true,
-                    },
-                },
-                sales: {
-                    include: {
-                        products: {
-                            select: {
-                                idProduct: true,
-                                name: true,
-                                description: true,
-                                price: true,
-                                image_url: true,
-                            },
-                        },
-                    },
-                },
-            },
+        const pageNumber = Math.max(1, Number(page) || 1);
+        const pageSize = Math.min(20, Math.max(1, Number(limit) || 6));
+        const userId = Number(req.idUser);
+        const where = buildHistoryOrdersWhere(userId, {
+            status,
+            startDate,
+            endDate,
+            searchProduct,
         });
-        let parserOrder = orders.map((order) => {
-            return {
-                idOrder: order.idOrder,
-                totalSales: order.sales.length,
-                createdAt: order?.createdAt,
-                updatedAt: order?.updatedAt,
-                payment_method: order.pay_method,
-                idUser: Number(order.userId),
-                products: order.sales.map((sale, indexSale) => {
-                    // buscar shipment que tenga el mismo productId (si tu Shipment lo tiene)
-                    // const shipmentForSale = order.shipments.find(
-                    //   (sh) => Number(sh.idShipment) === Number(sale.shipmentId),
-                    // );
-                    return {
-                        idShipment: order?.shipments[indexSale]?.idShipment,
-                        description: sale.products?.description,
-                        price: sale?.products?.price,
-                        idProduct: sale.products.idProduct,
-                        name: sale.products.name,
-                        quantity: sale.quantity,
-                        statusShip: order.shipments[indexSale]?.status,
-                        shipping_method: order?.shipments[indexSale]?.shipping_method,
-                        status: sale.status,
-                        image_url: sale?.products?.image_url,
-                        trackingNumber: order?.shipments[indexSale]?.trackingNumber,
-                        // shippingType: shipmentForSale ? "envio" : "sucursal",
-                        address: order?.shipments[indexSale]?.addresses
-                            ? {
-                                idAddress: Number(order?.shipments[indexSale].addresses?.idAddress),
-                                userId: Number(order?.shipments[indexSale].addresses?.userId),
-                                street: order?.shipments[indexSale].addresses?.street,
-                                noExt: order?.shipments[indexSale].addresses?.noExt,
-                                noInt: order?.shipments[indexSale].addresses?.noInt,
-                                cologne: order?.shipments[indexSale].addresses?.cologne,
-                                city: order?.shipments[indexSale].addresses?.city,
-                                state: order?.shipments[indexSale].addresses?.state,
-                                country: order?.shipments[indexSale].addresses?.country,
-                                postalCode: order?.shipments[indexSale].addresses?.postalCode,
-                                phone1: order?.shipments[indexSale].addresses?.phone1,
-                                phone2: order?.shipments[indexSale].addresses?.phone2,
-                                createdAt: order?.shipments[indexSale].addresses?.createdAt,
-                                updatedAt: order?.shipments[indexSale].addresses?.updatedAt,
-                                active: order?.shipments[indexSale].addresses?.active,
-                            }
-                            : null,
-                    };
-                }),
-            };
-        });
+        const [orders, total] = await Promise.all([
+            prismaClient_1.prisma.order.findMany({
+                where,
+                orderBy: { idOrder: "desc" },
+                skip: (pageNumber - 1) * pageSize,
+                take: pageSize,
+                include: historyOrderInclude,
+            }),
+            prismaClient_1.prisma.order.count({ where }),
+        ]);
+        const parserOrder = mapOrdersToHistoryResponse(orders);
+        const totalPages = total > 0 ? Math.ceil(total / pageSize) : 0;
         return res.status(200).json({
             ok: true,
             message: "OK!",
             data: {
-                data: parserOrder && parserOrder.length > 0
-                    ? (0, index_service_1.parseBigInts)(parserOrder)
-                    : [],
-                //  data: record && record.length > 0 ? parseBigInts(record) : [],
+                data: parserOrder.length > 0 ? (0, index_service_1.parseBigInts)(parserOrder) : [],
+                pagination: {
+                    page: pageNumber,
+                    limit: pageSize,
+                    total,
+                    totalPages,
+                },
             },
         });
     }
