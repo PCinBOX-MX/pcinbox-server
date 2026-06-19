@@ -13,6 +13,37 @@ import axios from "axios";
 const fechaLocal = DateTime.now().setZone("America/Mexico_City");
 // const envFile = `.env.${process.env.NODE_ENV || "local"}`;
 dotenv.config({ path: ".env.prod" });
+
+async function resolveAvailableStock(
+  productId: number,
+  storeId?: number | null,
+) {
+  const product = await prisma.products.findFirst({
+    where: { idProduct: productId, active: 1 },
+    select: { idProduct: true, active: true, stock: true },
+  });
+
+  if (!product) {
+    return { available: 0, product: null };
+  }
+
+  if (storeId) {
+    const branchStock = await prisma.product_stock.findFirst({
+      where: {
+        productId,
+        branchId: Number(storeId),
+      },
+      select: { stock: true },
+    });
+
+    if (branchStock?.stock != null) {
+      return { available: branchStock.stock, product };
+    }
+  }
+
+  return { available: product.stock, product };
+}
+
 export const getCart = async (req: CustomRequestI, res: Response) => {
   try {
     const cart = await prisma.carts.findFirst({
@@ -87,6 +118,33 @@ export const getCart = async (req: CustomRequestI, res: Response) => {
 export const addProduct = async (req: CustomRequestI, res: Response) => {
   try {
     const { idProduct, quantity, isDetails, storeId } = req.body;
+    const requestedQty = Number(quantity);
+
+    if (!Number.isFinite(requestedQty) || requestedQty < 1) {
+      return res.status(400).json({
+        ok: false,
+        message: "Cantidad inválida",
+      });
+    }
+
+    const { available, product } = await resolveAvailableStock(
+      Number(idProduct),
+      storeId ? Number(storeId) : null,
+    );
+
+    if (!product) {
+      return res.status(404).json({
+        ok: false,
+        message: "Producto no encontrado o inactivo",
+      });
+    }
+
+    if (requestedQty > available) {
+      return res.status(400).json({
+        ok: false,
+        message: `Stock insuficiente. Disponible: ${available}`,
+      });
+    }
 
     // 1️⃣ Buscar carrito activo del usuario
     let cart = await prisma.carts.findFirst({
@@ -118,14 +176,20 @@ export const addProduct = async (req: CustomRequestI, res: Response) => {
     });
 
     if (existingItem) {
-      // 🔹 Si ya existe, actualizamos la cantidad directamente con la enviada
+      if (requestedQty > available) {
+        return res.status(400).json({
+          ok: false,
+          message: `Stock insuficiente. Disponible: ${available}`,
+        });
+      }
+
       await prisma.cartItems.update({
         where: {
           idCartItem: Number(existingItem.idCartItem),
         },
         data: {
           storeId: storeId ? Number(storeId) : null,
-          quantity: Number(quantity), // usamos la cantidad que envía React
+          quantity: requestedQty,
         },
       });
     } else {
@@ -134,7 +198,7 @@ export const addProduct = async (req: CustomRequestI, res: Response) => {
         data: {
           carId: Number(cart.idCart),
           productId: Number(idProduct),
-          quantity: Number(quantity),
+          quantity: requestedQty,
           storeId: storeId ? Number(storeId) : null,
         },
       });
@@ -178,6 +242,20 @@ export const addProductFromStorage = async (
 
     await Promise.all(
       dataCart.map(async (item: any) => {
+        const requestedQty = Number(item.quantity);
+        if (!Number.isFinite(requestedQty) || requestedQty < 1) {
+          throw new Error(`Cantidad inválida para producto ${item.idProduct}`);
+        }
+
+        const { available, product } = await resolveAvailableStock(
+          Number(item.idProduct),
+          item.storeId ? Number(item.storeId) : null,
+        );
+
+        if (!product) {
+          throw new Error(`Producto ${item.idProduct} no encontrado o inactivo`);
+        }
+
         const existingItem = await prisma.cartItems.findFirst({
           where: {
             carId: Number(cart.idCart),
@@ -186,13 +264,23 @@ export const addProductFromStorage = async (
           },
         });
 
+        const totalQty = existingItem
+          ? Number(existingItem.quantity) + requestedQty
+          : requestedQty;
+
+        if (totalQty > available) {
+          throw new Error(
+            `Stock insuficiente para producto ${item.idProduct}. Disponible: ${available}`,
+          );
+        }
+
         if (existingItem) {
           await prisma.cartItems.update({
             where: {
               idCartItem: existingItem.idCartItem,
             },
             data: {
-              quantity: existingItem.quantity! + Number(item.quantity),
+              quantity: totalQty,
             },
           });
         } else {
@@ -200,8 +288,8 @@ export const addProductFromStorage = async (
             data: {
               carId: Number(cart.idCart),
               productId: Number(item.idProduct),
-              quantity: Number(item.quantity),
-
+              quantity: requestedQty,
+              storeId: item.storeId ? Number(item.storeId) : null,
               active: 1,
             },
           });
