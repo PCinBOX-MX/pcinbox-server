@@ -38,6 +38,7 @@ const allowedOrigins = [
   "https://colt-fierce-eugena.ngrok-free.dev",
   "https://interpervasive-unbotanical-kinsley.ngrok-free.dev",
   "https://bd26-177-245-224-110.ngrok-free.app",
+  "https://certainly-slackness-treble.ngrok-free.dev",
 ];
 
 server.use(helmet());

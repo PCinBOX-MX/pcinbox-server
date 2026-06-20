@@ -4,6 +4,7 @@ import { prisma } from "../../db/prismaClient";
 import { DateTime } from "luxon";
 import CustomRequestI from "./../../interfaces/customrequest.interface";
 import { parseBigInts } from "../../services/index.service";
+import { getTechSmartBranchValidationError } from "../../constants/techsmart-branches";
 
 import ejs from "ejs";
 import path from "path";
@@ -20,7 +21,7 @@ async function resolveAvailableStock(
 ) {
   const product = await prisma.products.findFirst({
     where: { idProduct: productId, active: 1 },
-    select: { idProduct: true, active: true, stock: true },
+    select: { idProduct: true, active: true, stock: true, providerId: true },
   });
 
   if (!product) {
@@ -137,8 +138,9 @@ export const getCart = async (req: CustomRequestI, res: Response) => {
 
 export const addProduct = async (req: CustomRequestI, res: Response) => {
   try {
-    const { idProduct, quantity, isDetails, storeId } = req.body;
+    const { idProduct, quantity, storeId, quantityMode = "add" } = req.body;
     const requestedQty = Number(quantity);
+    const isSetMode = quantityMode === "set";
 
     if (!Number.isFinite(requestedQty) || requestedQty < 1) {
       return res.status(400).json({
@@ -147,9 +149,12 @@ export const addProduct = async (req: CustomRequestI, res: Response) => {
       });
     }
 
+    const normalizedStoreId =
+      storeId != null && storeId !== "" ? Number(storeId) : null;
+
     const { available, product } = await resolveAvailableStock(
       Number(idProduct),
-      storeId ? Number(storeId) : null,
+      normalizedStoreId,
     );
 
     if (!product) {
@@ -159,10 +164,14 @@ export const addProduct = async (req: CustomRequestI, res: Response) => {
       });
     }
 
-    if (requestedQty > available) {
+    const techSmartBranchError = await getTechSmartBranchValidationError(
+      Number(product.providerId),
+      normalizedStoreId,
+    );
+    if (techSmartBranchError) {
       return res.status(400).json({
         ok: false,
-        message: `Stock insuficiente. Disponible: ${available}`,
+        message: techSmartBranchError,
       });
     }
 
@@ -185,41 +194,46 @@ export const addProduct = async (req: CustomRequestI, res: Response) => {
       });
     }
 
-    // 3️⃣ Buscar item en carrito
+    // 3️⃣ Buscar item en carrito (misma línea = producto + sucursal)
     const existingItem = await prisma.cartItems.findFirst({
       where: {
         carId: Number(cart.idCart),
         productId: Number(idProduct),
-        storeId: Number(storeId),
+        storeId: normalizedStoreId,
         active: 1,
       },
     });
 
-    if (existingItem) {
-      if (requestedQty > available) {
-        return res.status(400).json({
-          ok: false,
-          message: `Stock insuficiente. Disponible: ${available}`,
-        });
-      }
+    const totalQty = existingItem
+      ? isSetMode
+        ? requestedQty
+        : Number(existingItem.quantity) + requestedQty
+      : requestedQty;
 
+    if (totalQty > available) {
+      return res.status(400).json({
+        ok: false,
+        message: `Stock insuficiente. Disponible: ${available}`,
+      });
+    }
+
+    if (existingItem) {
       await prisma.cartItems.update({
         where: {
           idCartItem: Number(existingItem.idCartItem),
         },
         data: {
-          storeId: storeId ? Number(storeId) : null,
-          quantity: requestedQty,
+          storeId: normalizedStoreId,
+          quantity: totalQty,
         },
       });
     } else {
-      // 🔹 Si no existe, creamos un nuevo item
       await prisma.cartItems.create({
         data: {
           carId: Number(cart.idCart),
           productId: Number(idProduct),
-          quantity: requestedQty,
-          storeId: storeId ? Number(storeId) : null,
+          quantity: totalQty,
+          storeId: normalizedStoreId,
         },
       });
     }
@@ -247,6 +261,7 @@ export const addProductFromStorage = async (
     let cart = await prisma.carts.findFirst({
       where: {
         userId: Number(req?.idUser.toString()),
+        status: "active",
       },
     });
 
@@ -267,19 +282,33 @@ export const addProductFromStorage = async (
           throw new Error(`Cantidad inválida para producto ${item.idProduct}`);
         }
 
+        const normalizedStoreId =
+          item.storeId != null && item.storeId !== ""
+            ? Number(item.storeId)
+            : null;
+
         const { available, product } = await resolveAvailableStock(
           Number(item.idProduct),
-          item.storeId ? Number(item.storeId) : null,
+          normalizedStoreId,
         );
 
         if (!product) {
           throw new Error(`Producto ${item.idProduct} no encontrado o inactivo`);
         }
 
+        const techSmartBranchError = await getTechSmartBranchValidationError(
+          Number(product.providerId),
+          normalizedStoreId,
+        );
+        if (techSmartBranchError) {
+          throw new Error(techSmartBranchError);
+        }
+
         const existingItem = await prisma.cartItems.findFirst({
           where: {
             carId: Number(cart.idCart),
             productId: Number(item.idProduct),
+            storeId: normalizedStoreId,
             active: 1,
           },
         });
@@ -309,7 +338,7 @@ export const addProductFromStorage = async (
               carId: Number(cart.idCart),
               productId: Number(item.idProduct),
               quantity: requestedQty,
-              storeId: item.storeId ? Number(item.storeId) : null,
+              storeId: normalizedStoreId,
               active: 1,
             },
           });
@@ -332,11 +361,12 @@ export const addProductFromStorage = async (
 
 export const removeProduct = async (req: CustomRequestI, res: Response) => {
   try {
-    const { idProduct } = req.body;
+    const { idProduct, storeId } = req.body;
 
     const slcCart = await prisma.carts.findFirst({
       where: {
         userId: Number(req.idUser.toString()),
+        status: "active",
       },
     });
 
@@ -346,11 +376,21 @@ export const removeProduct = async (req: CustomRequestI, res: Response) => {
         .json({ ok: false, message: "Carrito no encontrado" });
     }
 
+    const where: {
+      carId: bigint | number;
+      productId: number;
+      storeId?: number | null;
+    } = {
+      carId: slcCart.idCart,
+      productId: Number(idProduct),
+    };
+
+    if (storeId != null && storeId !== "") {
+      where.storeId = Number(storeId);
+    }
+
     await prisma.cartItems.updateMany({
-      where: {
-        carId: slcCart.idCart,
-        productId: Number(idProduct),
-      },
+      where,
       data: {
         active: 0,
         quantity: 0,
@@ -546,6 +586,22 @@ export const changeSucursal = async (req: CustomRequestI, res: Response) => {
       return res.status(400).json({
         ok: false,
         message: "Productos no encontrados en el carrito de compras",
+      });
+    }
+
+    const product = await prisma.products.findFirst({
+      where: { idProduct: Number(idProduct), active: 1 },
+      select: { providerId: true },
+    });
+
+    const techSmartBranchError = await getTechSmartBranchValidationError(
+      Number(product?.providerId),
+      Number(storeId),
+    );
+    if (techSmartBranchError) {
+      return res.status(400).json({
+        ok: false,
+        message: techSmartBranchError,
       });
     }
 
