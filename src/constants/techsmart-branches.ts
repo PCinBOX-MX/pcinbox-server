@@ -1,0 +1,37 @@
+import { prisma } from "../db/prismaClient";
+
+export const TECHSMART_PROVIDER_ID = 2;
+
+export const TECHSMART_DISABLED_BRANCH_NAMES = ["CDMX"] as const;
+
+export function normalizeBranchName(name?: string | null): string {
+  return String(name || "").trim().toUpperCase();
+}
+
+export function isTechSmartBranchDisabled(
+  branchName?: string | null,
+): boolean {
+  return (TECHSMART_DISABLED_BRANCH_NAMES as readonly string[]).includes(
+    normalizeBranchName(branchName),
+  );
+}
+
+export async function getTechSmartBranchValidationError(
+  providerId: number | null | undefined,
+  storeId: number | null,
+): Promise<string | null> {
+  if (Number(providerId) !== TECHSMART_PROVIDER_ID || storeId == null) {
+    return null;
+  }
+
+  const branch = await prisma.branches.findFirst({
+    where: { idBranche: storeId },
+    select: { name: true },
+  });
+
+  if (isTechSmartBranchDisabled(branch?.name)) {
+    return "La sucursal CDMX no está disponible para productos TechSmart.";
+  }
+
+  return null;
+}
