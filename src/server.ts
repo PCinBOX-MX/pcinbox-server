@@ -15,15 +15,28 @@ import routesReservas from "./routes/reservas/reservas.route";
 import cookieParser from "cookie-parser";
 import path from "path";
 import helmet from "helmet";
+import {
+  applySecurityBaseline,
+  authPathRateLimiter,
+  blockMaliciousProbePaths,
+  checkoutPathRateLimiter,
+  globalRateLimiter,
+} from "./middleware/security.middleware";
 
 //const envFile = `.env.${process.env.NODE_ENV || "local"}`;
 dotenv.config({ path: ".env.prod" });
 const server = express();
 
+applySecurityBaseline(server);
+server.use(blockMaliciousProbePaths);
+server.use(globalRateLimiter.middleware);
+server.use(authPathRateLimiter);
+server.use(checkoutPathRateLimiter);
+
 server.use(express.static(path.join(__dirname, "../public")));
 server.set("view engine", "ejs");
 server.set("views", path.join(__dirname, "views"));
-server.set("trust proxy", 1);
+server.set("trust proxy", process.env.TRUST_PROXY === "false" ? false : 1);
 
 const allowedOrigins = [
   "http://localhost:3000",
