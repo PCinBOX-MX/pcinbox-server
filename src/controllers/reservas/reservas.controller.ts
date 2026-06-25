@@ -81,7 +81,6 @@ export const createReservation = async (req: Request, res: Response) => {
       !service ||
       !deviceType ||
       !brand ||
-      !model ||
       !description ||
       !date ||
       !time ||
@@ -143,7 +142,7 @@ export const createReservation = async (req: Request, res: Response) => {
         service,
         deviceType,
         brand,
-        model,
+        model: typeof model === "string" ? model.trim() : "",
         description,
         date: parsedDate,
         time,
