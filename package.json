@@ -19,6 +19,7 @@
   "license": "ISC",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.864.0",
+    "@pcinbox/core": "file:../pcinbox-core",
     "@prisma/client": "^6.15.0",
     "@sendgrid/mail": "^8.1.5",
     "@types/cookie-parser": "^1.4.9",
