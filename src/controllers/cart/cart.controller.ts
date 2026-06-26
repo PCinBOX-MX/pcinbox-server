@@ -182,6 +182,9 @@ export const addProductFromStorage = async (
           where: {
             carId: Number(cart.idCart),
             productId: Number(item.idProduct),
+            ...(item.storeId != null && item.storeId !== ""
+              ? { storeId: Number(item.storeId) }
+              : {}),
             active: 1,
           },
         });
@@ -192,7 +195,14 @@ export const addProductFromStorage = async (
               idCartItem: existingItem.idCartItem,
             },
             data: {
-              quantity: existingItem.quantity! + Number(item.quantity),
+              quantity: Math.max(
+                Number(existingItem.quantity ?? 0),
+                Number(item.quantity),
+              ),
+              storeId:
+                item.storeId != null && item.storeId !== ""
+                  ? Number(item.storeId)
+                  : existingItem.storeId,
             },
           });
         } else {
@@ -201,7 +211,10 @@ export const addProductFromStorage = async (
               carId: Number(cart.idCart),
               productId: Number(item.idProduct),
               quantity: Number(item.quantity),
-
+              storeId:
+                item.storeId != null && item.storeId !== ""
+                  ? Number(item.storeId)
+                  : null,
               active: 1,
             },
           });
@@ -224,7 +237,7 @@ export const addProductFromStorage = async (
 
 export const removeProduct = async (req: CustomRequestI, res: Response) => {
   try {
-    const { idProduct } = req.body;
+    const { idProduct, storeId } = req.body;
 
     const slcCart = await prisma.carts.findFirst({
       where: {
@@ -242,6 +255,9 @@ export const removeProduct = async (req: CustomRequestI, res: Response) => {
       where: {
         carId: slcCart.idCart,
         productId: Number(idProduct),
+        ...(storeId != null && storeId !== ""
+          ? { storeId: Number(storeId) }
+          : {}),
       },
       data: {
         active: 0,

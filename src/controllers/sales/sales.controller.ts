@@ -204,20 +204,19 @@ export const historySalesByUser = async (
 
 export const filterSales = async (req: CustomRequestI, res: Response) => {
   try {
-    const { status } = req.body;
+    const {
+      status = "allState",
+      startDate = "",
+      endDate = "",
+      searchProduct = "",
+      page = 1,
+      limit = 10,
+    } = req.body;
 
-    if (!status) {
-      return res.status(400).json({
-        ok: false,
-        message: "Faltan campos por enviar en el body",
-      });
-    }
+    const pageNumber = Math.max(1, Number(page) || 1);
+    const pageSize = Math.min(50, Math.max(1, Number(limit) || 10));
 
-    // const record: any = await prisma.$queryRawUnsafe(
-    //   querySalesWithStatus(userId, status)
-    // );
-
-    let orders = await prisma.order.findMany({
+    const orders = await prisma.order.findMany({
       where: {
         userId: Number(req.idUser),
         pay_method: {
@@ -233,7 +232,6 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
             addresses: true,
           },
         },
-
         sales: {
           include: {
             products: {
@@ -243,6 +241,7 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
                 description: true,
                 price: true,
                 image_url: true,
+                providerId: true,
               },
             },
           },
@@ -250,68 +249,176 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
       },
     });
 
-    let parserOrder = orders.map((order) => {
-      return {
-        idOrder: order.idOrder,
-        totalSales: order.sales.length,
-        createdAt: order?.createdAt,
-        updatedAt: order?.updatedAt,
-        payment_method: order.pay_method,
-        idUser: Number(order.userId),
+    const parserOrder = orders.map((order) => ({
+      idOrder: order.idOrder,
+      totalSales: Number(order.totalAmount ?? 0),
+      createdAt: order?.createdAt,
+      updatedAt: order?.updatedAt,
+      payment_method: order.pay_method,
+      orderStatus: order.status,
+      idUser: Number(order.userId),
+      products: order.sales.map((sale, indexSale) => ({
+        idShipment: order?.shipments[indexSale]?.idShipment,
+        description: sale.products?.description,
+        price: sale?.products?.price,
+        idProduct: sale.products.idProduct,
+        name: sale.products.name,
+        quantity: sale.quantity,
+        providerId: sale.products?.providerId,
+        statusShip: order.shipments[indexSale]?.status,
+        shipping_method: order?.shipments[indexSale]?.shipping_method,
+        status: sale.status,
+        image_url: sale?.products?.image_url,
+        trackingNumber: order?.shipments[indexSale]?.trackingNumber,
+        address: order?.shipments[indexSale]?.addresses
+          ? {
+              idAddress: Number(
+                order?.shipments[indexSale].addresses?.idAddress,
+              ),
+              userId: Number(order?.shipments[indexSale].addresses?.userId),
+              street: order?.shipments[indexSale].addresses?.street,
+              noExt: order?.shipments[indexSale].addresses?.noExt,
+              noInt: order?.shipments[indexSale].addresses?.noInt,
+              cologne: order?.shipments[indexSale].addresses?.cologne,
+              city: order?.shipments[indexSale].addresses?.city,
+              state: order?.shipments[indexSale].addresses?.state,
+              country: order?.shipments[indexSale].addresses?.country,
+              postalCode: order?.shipments[indexSale].addresses?.postalCode,
+              phone1: order?.shipments[indexSale].addresses?.phone1,
+              phone2: order?.shipments[indexSale].addresses?.phone2,
+              createdAt: order?.shipments[indexSale].addresses?.createdAt,
+              updatedAt: order?.shipments[indexSale].addresses?.updatedAt,
+              active: order?.shipments[indexSale].addresses?.active,
+            }
+          : null,
+      })),
+    }));
 
-        products: order.sales.map((sale, indexSale) => {
-          // buscar shipment que tenga el mismo productId (si tu Shipment lo tiene)
-          // const shipmentForSale = order.shipments.find(
-          //   (sh) => Number(sh.idShipment) === Number(sale.shipmentId),
-          // );
-          return {
-            idShipment: order?.shipments[indexSale]?.idShipment,
-            description: sale.products?.description,
-            price: sale?.products?.price,
-            idProduct: sale.products.idProduct,
-            name: sale.products.name,
-            quantity: sale.quantity,
-            statusShip: order.shipments[indexSale]?.status,
-            shipping_method: order?.shipments[indexSale]?.shipping_method,
-            status: sale.status,
-            image_url: sale?.products?.image_url,
-            trackingNumber: order?.shipments[indexSale]?.trackingNumber,
-            // shippingType: shipmentForSale ? "envio" : "sucursal",
-            address: order?.shipments[indexSale]?.addresses
-              ? {
-                  idAddress: Number(
-                    order?.shipments[indexSale].addresses?.idAddress,
-                  ),
-                  userId: Number(order?.shipments[indexSale].addresses?.userId),
-                  street: order?.shipments[indexSale].addresses?.street,
-                  noExt: order?.shipments[indexSale].addresses?.noExt,
-                  noInt: order?.shipments[indexSale].addresses?.noInt,
-                  cologne: order?.shipments[indexSale].addresses?.cologne,
-                  city: order?.shipments[indexSale].addresses?.city,
-                  state: order?.shipments[indexSale].addresses?.state,
-                  country: order?.shipments[indexSale].addresses?.country,
-                  postalCode: order?.shipments[indexSale].addresses?.postalCode,
-                  phone1: order?.shipments[indexSale].addresses?.phone1,
-                  phone2: order?.shipments[indexSale].addresses?.phone2,
-                  createdAt: order?.shipments[indexSale].addresses?.createdAt,
-                  updatedAt: order?.shipments[indexSale].addresses?.updatedAt,
-                  active: order?.shipments[indexSale].addresses?.active,
-                }
-              : null,
-          };
-        }),
-      };
+    const filtered = parserOrder.filter((order) => {
+      const statusMatch =
+        status && status !== "allState"
+          ? order.products.some((product) => product.statusShip === status)
+          : true;
+
+      const dateMatch =
+        startDate && endDate
+          ? (() => {
+              const itemDate = new Date(order.createdAt ?? 0);
+              const start = new Date(startDate);
+              const end = new Date(endDate);
+              start.setHours(0, 0, 0, 0);
+              end.setHours(23, 59, 59, 999);
+              itemDate.setHours(0, 0, 0, 0);
+              return itemDate >= start && itemDate <= end;
+            })()
+          : true;
+
+      const searchMatch = searchProduct
+        ? order.products.some((product) =>
+            String(product.name || "")
+              .toLowerCase()
+              .includes(String(searchProduct).toLowerCase()),
+          )
+        : true;
+
+      return statusMatch && dateMatch && searchMatch;
     });
+
+    const total = filtered.length;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const safePage = Math.min(pageNumber, totalPages);
+    const startIndex = (safePage - 1) * pageSize;
+    const paginated = filtered.slice(startIndex, startIndex + pageSize);
 
     return res.status(200).json({
       ok: true,
       message: "OK!",
       data: {
-        data:
-          parserOrder && parserOrder.length > 0
-            ? parseBigInts(parserOrder)
-            : [],
-        //  data: record && record.length > 0 ? parseBigInts(record) : [],
+        data: paginated.length > 0 ? parseBigInts(paginated) : [],
+        pagination: {
+          page: safePage,
+          limit: pageSize,
+          total,
+          totalPages,
+        },
+      },
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      message: "Error interno del servidor",
+      error: error.message,
+    });
+  }
+};
+
+export const cancelOrderByUser = async (req: CustomRequestI, res: Response) => {
+  try {
+    const { idOrder } = req.body;
+
+    if (!idOrder) {
+      return res.status(400).json({
+        ok: false,
+        message: "Falta idOrder",
+      });
+    }
+
+    const order = await prisma.order.findFirst({
+      where: {
+        idOrder: Number(idOrder),
+        userId: Number(req.idUser),
+      },
+      include: {
+        shipments: true,
+        sales: true,
+      },
+    });
+
+    if (!order) {
+      return res.status(404).json({
+        ok: false,
+        message: "Orden no encontrada",
+      });
+    }
+
+    const blockedStatuses = new Set(["entregado", "cancelado", "disponible", "enviado"]);
+    const hasBlockedShipment = order.shipments.some((shipment) =>
+      blockedStatuses.has(String(shipment.status ?? "")),
+    );
+
+    if (hasBlockedShipment) {
+      return res.status(400).json({
+        ok: false,
+        message: "Esta compra ya no puede cancelarse por su estado de envío.",
+      });
+    }
+
+    await prisma.shipments.updateMany({
+      where: { orderId: Number(order.idOrder) },
+      data: { status: "cancelado" },
+    });
+
+    await prisma.sales.updateMany({
+      where: { orderId: Number(order.idOrder) },
+      data: { status: "cancelado" },
+    });
+
+    await prisma.order.update({
+      where: { idOrder: Number(order.idOrder) },
+      data: {
+        status: "cancelled",
+        updatedAt: new Date(),
+      },
+    });
+
+    return res.status(200).json({
+      ok: true,
+      message: "Compra cancelada correctamente",
+      data: {
+        data: {
+          idOrder: Number(order.idOrder),
+          payment_method: order.pay_method,
+        },
       },
     });
   } catch (error: any) {
