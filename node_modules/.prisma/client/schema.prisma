@@ -247,6 +247,18 @@ model order {
   techsmart_orders      techsmart_orders?
 
   @@index([userId], map: "fk_userId_order_idx")
+  @@index([active, idOrder], map: "idx_order_active_idOrder")
+}
+
+model payment_webhook_events {
+  idWebhookEvent BigInt   @id @default(autoincrement())
+  gateway        String   @db.VarChar(32)
+  eventId        String   @db.VarChar(255)
+  orderId        BigInt?
+  processedAt    DateTime @default(now()) @db.DateTime(0)
+
+  @@unique([gateway, eventId], map: "uk_payment_webhook_gateway_event")
+  @@index([orderId], map: "idx_payment_webhook_order")
 }
 
 model techsmart_orders {
@@ -263,9 +275,38 @@ model techsmart_orders {
   wsError          String?                 @db.Text
   createdAt        DateTime                @default(now()) @db.DateTime(0)
   updatedAt        DateTime                @updatedAt @db.DateTime(0)
+  numOrdenCompra   String?                 @db.VarChar(50)
+  techsmart_guides techsmart_guides[]
   order            order                   @relation(fields: [idOrder], references: [idOrder], onDelete: Cascade, onUpdate: NoAction, map: "fk_techsmart_orders_idOrder")
 
   @@index([idOrder], map: "fk_techsmart_orders_idOrder_idx")
+}
+
+model techsmart_guides {
+  idTechsmartGuide    BigInt                  @id @default(autoincrement())
+  idTechsmartOrder    BigInt
+  idOrder             BigInt
+  idSale              BigInt
+  idProduct           BigInt
+  unitIndex           Int                     @default(1)
+  productName         String                  @db.VarChar(150)
+  requiresOwnGuide    Int                     @default(0) @db.TinyInt
+  techsmartReference  String?                 @db.VarChar(100)
+  internalGuideNumber String                  @db.VarChar(50)
+  guiaPedido          String?                 @db.VarChar(255)
+  nombrePaqueteria    String?                 @db.VarChar(100)
+  status              techsmart_guides_status @default(pending)
+  wsError             String?                 @db.Text
+  linkedAt            DateTime?               @db.DateTime(0)
+  createdAt           DateTime                @default(now()) @db.DateTime(0)
+  updatedAt           DateTime                @updatedAt @db.DateTime(0)
+  sales               sales                   @relation(fields: [idSale], references: [idSale], onDelete: NoAction, onUpdate: NoAction, map: "fk_techsmart_guides_idSale")
+  techsmart_orders    techsmart_orders        @relation(fields: [idTechsmartOrder], references: [idTechsmartOrder], onDelete: Cascade, onUpdate: NoAction, map: "fk_techsmart_guides_idTechsmartOrder")
+
+  @@unique([idSale, unitIndex], map: "uk_techsmart_guides_sale_unit")
+  @@index([idTechsmartOrder], map: "fk_techsmart_guides_idTechsmartOrder_idx")
+  @@index([idOrder], map: "fk_techsmart_guides_idOrder_idx")
+  @@index([idSale], map: "fk_techsmart_guides_idSale_idx")
 }
 
 model shipments {
@@ -322,21 +363,23 @@ model marca {
 }
 
 model sales {
-  idSale        BigInt        @id @default(autoincrement())
-  orderId       BigInt
-  shipmentId    BigInt?
-  productId     BigInt
-  userId        BigInt
-  purchaseId    String?       @db.VarChar(255)
-  invoiceNumber String?       @db.VarChar(255)
-  quantity      Int?
-  total         Decimal?      @db.Decimal(10, 2)
-  status        sales_status?
-  createdAt     DateTime?     @default(now()) @db.DateTime(0)
-  order         order         @relation(fields: [orderId], references: [idOrder], onDelete: NoAction, onUpdate: NoAction, map: "fk_orderId_sales")
-  products      products      @relation(fields: [productId], references: [idProduct], onDelete: NoAction, onUpdate: NoAction, map: "fk_productId_sales")
-  shipments     shipments?    @relation(fields: [shipmentId], references: [idShipment], onDelete: NoAction, onUpdate: NoAction, map: "fk_shipmentId_sales")
-  users         users         @relation(fields: [userId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "fk_userId_sales")
+  idSale             BigInt             @id @default(autoincrement())
+  orderId            BigInt
+  shipmentId         BigInt?
+  productId          BigInt
+  userId             BigInt
+  purchaseId         String?            @db.VarChar(255)
+  invoiceNumber      String?            @db.VarChar(255)
+  quantity           Int?
+  total              Decimal?           @db.Decimal(10, 2)
+  status             sales_status?
+  createdAt          DateTime?          @default(now()) @db.DateTime(0)
+  techsmartReference String?            @db.VarChar(100)
+  order              order              @relation(fields: [orderId], references: [idOrder], onDelete: NoAction, onUpdate: NoAction, map: "fk_orderId_sales")
+  products           products           @relation(fields: [productId], references: [idProduct], onDelete: NoAction, onUpdate: NoAction, map: "fk_productId_sales")
+  shipments          shipments?         @relation(fields: [shipmentId], references: [idShipment], onDelete: NoAction, onUpdate: NoAction, map: "fk_shipmentId_sales")
+  users              users              @relation(fields: [userId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "fk_userId_sales")
+  techsmart_guides   techsmart_guides[]
 
   @@index([orderId], map: "fk_orderId_sales_idx")
   @@index([productId], map: "fk_productId_sales")
@@ -634,5 +677,11 @@ enum techsmart_orders_status {
   sent
   guide_linked
   invoiced
+  failed
+}
+
+enum techsmart_guides_status {
+  pending
+  linked
   failed
 }
