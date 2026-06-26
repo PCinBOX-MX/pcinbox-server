@@ -5,6 +5,7 @@ import {
   getSalesByUser,
   historySalesByUser,
   filterSales,
+  cancelOrderByUser,
 } from "./../../controllers/sales/sales.controller";
 import { MiddleAuthRoute } from "./../../middleware/index.middleware";
 
@@ -15,5 +16,6 @@ router.get("/historySalesByUser", MiddleAuthRoute, historySalesByUser);
 router.post("/getSalesByUser", MiddleAuthRoute, getSalesByUser);
 router.post("/registerSales", MiddleAuthRoute, registerSales);
 router.post("/filterSales", MiddleAuthRoute, filterSales);
+router.post("/cancelOrder", MiddleAuthRoute, cancelOrderByUser);
 
 export default router;
