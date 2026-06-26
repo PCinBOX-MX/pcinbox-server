@@ -8,6 +8,7 @@ import {
   querySalesWithOrder,
   querySalesWithStatus,
 } from "./../../query/sales.query";
+import { evaluateOrderCancellation } from "../../services/order-cancellation.policy";
 
 export const registerSales = async (req: CustomRequestI, res: Response) => {
   try {
@@ -204,66 +205,109 @@ export const historySalesByUser = async (
 };
 
 function mapOrdersToHistoryResponse(orders: any[]) {
-  return orders.map((order) => ({
-    idOrder: order.idOrder,
-    totalSales: order.sales.length,
-    createdAt: order?.createdAt,
-    updatedAt: order?.updatedAt,
-    payment_method: order.pay_method,
-    orderStatus: order.status,
-    idUser: Number(order.userId),
-    techsmartOrder: order.techsmart_orders
-      ? {
-          folioPedido: order.techsmart_orders.folioPedido,
-          guiaPedido: order.techsmart_orders.guiaPedido,
-          folioFactura: order.techsmart_orders.folioFactura,
-          status: order.techsmart_orders.status,
-          wsError: order.techsmart_orders.wsError,
-        }
-      : null,
-    products: order.sales.map((sale: any, indexSale: number) => ({
-      idShipment: order?.shipments[indexSale]?.idShipment,
-      description: sale.products?.description,
-      price: sale?.products?.price,
-      idProduct: sale.products.idProduct,
-      name: sale.products.name,
-      quantity: sale.quantity,
-      providerId: sale.products?.providerId,
-      statusShip: order.shipments[indexSale]?.status,
-      shipping_method: order?.shipments[indexSale]?.shipping_method,
-      status: sale.status,
-      image_url: sale?.products?.image_url,
-      trackingNumber:
-        order?.shipments[indexSale]?.trackingNumber ||
-        order?.techsmart_orders?.guiaPedido ||
-        null,
-      address: order?.shipments[indexSale]?.addresses
+  return orders.map((order) => {
+    const shipmentById = new Map(
+      order.shipments.map((shipment: any) => [
+        Number(shipment.idShipment),
+        shipment,
+      ]),
+    );
+
+    const cancellation = evaluateOrderCancellation({
+      orderStatus: order.status,
+      orderCreatedAt: order.createdAt,
+      orderUpdatedAt: order.updatedAt,
+      sales: order.sales,
+      shipmentStatuses: order.shipments
+        .map((shipment: any) => shipment.status)
+        .filter((status: string | null) => status != null),
+      techsmartOrderStatus: order.techsmart_orders?.status ?? null,
+      dicotechPurchaseIds: (order.purchases ?? []).map(
+        (purchase: any) => purchase.purchaseId,
+      ),
+    });
+
+    return {
+      idOrder: order.idOrder,
+      totalSales: order.sales.length,
+      createdAt: order?.createdAt,
+      updatedAt: order?.updatedAt,
+      payment_method: order.pay_method,
+      orderStatus: order.status,
+      idUser: Number(order.userId),
+      canCancel: cancellation.canCancel,
+      cancelReason: cancellation.reason,
+      cancelDeadline: cancellation.cancelDeadline,
+      hoursRemaining: cancellation.hoursRemaining,
+      hasTechsmartProducts: cancellation.hasTechsmartProducts,
+      techsmartOrder: order.techsmart_orders
         ? {
-            idAddress: Number(
-              order?.shipments[indexSale].addresses?.idAddress,
-            ),
-            userId: Number(order?.shipments[indexSale].addresses?.userId),
-            street: order?.shipments[indexSale].addresses?.street,
-            noExt: order?.shipments[indexSale].addresses?.noExt,
-            noInt: order?.shipments[indexSale].addresses?.noInt,
-            cologne: order?.shipments[indexSale].addresses?.cologne,
-            city: order?.shipments[indexSale].addresses?.city,
-            state: order?.shipments[indexSale].addresses?.state,
-            country: order?.shipments[indexSale].addresses?.country,
-            postalCode: order?.shipments[indexSale].addresses?.postalCode,
-            phone1: order?.shipments[indexSale].addresses?.phone1,
-            phone2: order?.shipments[indexSale].addresses?.phone2,
-            createdAt: order?.shipments[indexSale].addresses?.createdAt,
-            updatedAt: order?.shipments[indexSale].addresses?.updatedAt,
-            active: order?.shipments[indexSale].addresses?.active,
+            folioPedido: order.techsmart_orders.folioPedido,
+            guiaPedido: order.techsmart_orders.guiaPedido,
+            folioFactura: order.techsmart_orders.folioFactura,
+            status: order.techsmart_orders.status,
+            wsError: order.techsmart_orders.wsError,
           }
         : null,
-    })),
-  }));
+      products: order.sales.map((sale: any) => {
+        const shipment =
+          (sale.shipmentId
+            ? shipmentById.get(Number(sale.shipmentId))
+            : null) ||
+          order.shipments.find(
+            (entry: any) => entry.shipping_method === "sucursal",
+          ) ||
+          order.shipments[0] ||
+          null;
+
+        return {
+          idShipment: shipment?.idShipment,
+          description: sale.products?.description,
+          price: sale?.products?.price,
+          idProduct: sale.products.idProduct,
+          name: sale.products.name,
+          quantity: sale.quantity,
+          providerId: sale.products?.providerId,
+          statusShip: shipment?.status,
+          shipping_method: shipment?.shipping_method,
+          status: sale.status,
+          image_url: sale?.products?.image_url,
+          trackingNumber:
+            shipment?.trackingNumber ||
+            order?.techsmart_orders?.guiaPedido ||
+            null,
+          address: shipment?.addresses
+            ? {
+                idAddress: Number(shipment.addresses?.idAddress),
+                userId: Number(shipment.addresses?.userId),
+                street: shipment.addresses?.street,
+                noExt: shipment.addresses?.noExt,
+                noInt: shipment.addresses?.noInt,
+                cologne: shipment.addresses?.cologne,
+                city: shipment.addresses?.city,
+                state: shipment.addresses?.state,
+                country: shipment.addresses?.country,
+                postalCode: shipment.addresses?.postalCode,
+                phone1: shipment.addresses?.phone1,
+                phone2: shipment.addresses?.phone2,
+                createdAt: shipment.addresses?.createdAt,
+                updatedAt: shipment.addresses?.updatedAt,
+                active: shipment.addresses?.active,
+              }
+            : null,
+        };
+      }),
+    };
+  });
 }
 
 const historyOrderInclude = {
   techsmart_orders: true,
+  purchases: {
+    select: {
+      purchaseId: true,
+    },
+  },
   shipments: {
     include: {
       addresses: true,
