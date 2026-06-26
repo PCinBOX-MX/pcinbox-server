@@ -1,6 +1,8 @@
 import { prisma } from "../db/prismaClient";
 
-export const TECHSMART_PROVIDER_ID = 2;
+import { TECHSMART_PROVIDER_ID } from "@pcinbox/core";
+
+export { TECHSMART_PROVIDER_ID };
 
 export const TECHSMART_DISABLED_BRANCH_NAMES = ["CDMX"] as const;
 
