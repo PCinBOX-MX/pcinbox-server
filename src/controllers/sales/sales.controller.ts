@@ -400,7 +400,7 @@ export const cancelOrderByUser = async (req: CustomRequestI, res: Response) => {
 
     await prisma.sales.updateMany({
       where: { orderId: Number(order.idOrder) },
-      data: { status: "cancelado" },
+      data: { status: "cancelled" },
     });
 
     await prisma.order.update({
