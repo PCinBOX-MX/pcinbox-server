@@ -3,6 +3,50 @@ import { Response, Request } from "express";
 import CustomRequestI from "./../../interfaces/customrequest.interface";
 import { parseBigInts } from "./../../services/index.service";
 
+function normalizeHistorySearchTerm(raw: unknown): string {
+  return String(raw ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^#+/, "");
+}
+
+function orderMatchesHistorySearch(
+  order: {
+    idOrder: bigint | number;
+    products: ReadonlyArray<{
+      name?: string | null | undefined;
+      description?: string | null | undefined;
+      idProduct?: bigint | number | undefined;
+      trackingNumber?: string | null | undefined;
+    }>;
+  },
+  rawTerm: unknown,
+): boolean {
+  const term = normalizeHistorySearchTerm(rawTerm);
+  if (!term) return true;
+
+  const orderId = String(order.idOrder);
+  if (orderId.includes(term)) return true;
+
+  const termDigits = term.replace(/\D/g, "");
+  if (termDigits && orderId.includes(termDigits)) return true;
+
+  return order.products.some((product) => {
+    const searchableValues = [
+      product.name,
+      product.description,
+      product.idProduct,
+      product.trackingNumber,
+    ];
+
+    return searchableValues.some((value) =>
+      String(value ?? "")
+        .toLowerCase()
+        .includes(term),
+    );
+  });
+}
+
 import {
   querySales,
   querySalesWithOrder,
@@ -186,11 +230,17 @@ export const historySalesByUser = async (
       querySales({ idUser: req.idUser }),
     );
 
+    const paidHistory = (history || []).filter((item: any) => {
+      const saleStatus = String(item.status ?? "");
+      return saleStatus === "paid" || saleStatus === "cancelled";
+    });
+
     return res.status(200).json({
       ok: true,
       message: "OK!",
       data: {
-        data: history && history.length > 0 ? parseBigInts(history) : [],
+        data:
+          paidHistory.length > 0 ? parseBigInts(paidHistory) : [],
       },
     });
   } catch (error: any) {
@@ -221,6 +271,9 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
         userId: Number(req.idUser),
         pay_method: {
           not: "esperando",
+        },
+        status: {
+          in: ["paid", "cancelled", "refunded"],
         },
       },
       orderBy: {
@@ -313,13 +366,7 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
             })()
           : true;
 
-      const searchMatch = searchProduct
-        ? order.products.some((product) =>
-            String(product.name || "")
-              .toLowerCase()
-              .includes(String(searchProduct).toLowerCase()),
-          )
-        : true;
+      const searchMatch = orderMatchesHistorySearch(order, searchProduct);
 
       return statusMatch && dateMatch && searchMatch;
     });

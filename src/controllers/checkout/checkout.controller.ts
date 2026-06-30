@@ -15,6 +15,10 @@ import {
   ShippingProductInput,
   DeliverySelectionInput,
 } from "../../services/shipping/shippingCalculation.service";
+import {
+  consolidateActiveCartItems,
+  getOrCreateActiveCart,
+} from "../../services/cart.service";
 
 type CheckoutDraftPayload = {
   checkoutMode?: "cart" | "buy_now";
@@ -105,11 +109,8 @@ async function readDraft(userId: number): Promise<CheckoutDraftPayload | null> {
 }
 
 async function loadCartProducts(userId: number): Promise<ShippingProductInput[]> {
-  const cart = await prisma.carts.findFirst({
-    where: { userId: BigInt(userId), status: "active" },
-  });
-
-  if (!cart) return [];
+  const cart = await getOrCreateActiveCart(userId);
+  await consolidateActiveCartItems(userId, cart.idCart);
 
   const cartItems = await prisma.cartItems.findMany({
     where: { carId: cart.idCart, active: 1 },
@@ -167,12 +168,12 @@ async function resolveCheckoutProducts(
   draft: CheckoutDraftPayload | null,
   bodyProducts?: ShippingProductInput[],
 ) {
-  if (Array.isArray(bodyProducts) && bodyProducts.length > 0) {
-    return bodyProducts;
-  }
-
   if (draft?.checkoutMode === "buy_now" && draft.buyNow) {
     return loadBuyNowProduct(draft.buyNow);
+  }
+
+  if (Array.isArray(bodyProducts) && bodyProducts.length > 0) {
+    return bodyProducts;
   }
 
   return loadCartProducts(userId);

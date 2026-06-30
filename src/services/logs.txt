@@ -39,3 +39,15 @@
 [26/2/2026, 1:42:26 p.m.] ❌ Error al obtener última foto: Error: connect ETIMEDOUT 52.23.130.57:443
 [5/6/2026, 1:02:45 p.m.] ❌ Error al obtener última foto: Error: connect ETIMEDOUT 52.23.130.57:443
 [5/6/2026, 1:03:05 p.m.] ❌ Error al obtener última foto: Error: connect ETIMEDOUT 52.23.130.57:443
+[30/6/2026, 1:18:06 p.m.] Sin foto en ImageKit para idUser 47 (local: /users/local/47)
+[30/6/2026, 1:18:08 p.m.] Sin foto en ImageKit para idUser 47 (local: /users/local/47)
+[30/6/2026, 1:18:09 p.m.] Sin foto en ImageKit para idUser 47 (local: /users/local/47)
+[30/6/2026, 1:18:10 p.m.] Sin foto en ImageKit para idUser 47 (local: /users/local/47)
+[30/6/2026, 1:28:05 p.m.] Sin foto en ImageKit para idUser 45 (local: /users/local/45)
+[30/6/2026, 1:28:07 p.m.] Sin foto en ImageKit para idUser 45 (local: /users/local/45)
+[30/6/2026, 1:28:08 p.m.] Sin foto en ImageKit para idUser 45 (local: /users/local/45)
+[30/6/2026, 1:28:09 p.m.] Sin foto en ImageKit para idUser 45 (local: /users/local/45)
+[30/6/2026, 1:43:02 p.m.] Sin foto en ImageKit para idUser 45 (local: /users/local/45)
+[30/6/2026, 1:43:04 p.m.] Sin foto en ImageKit para idUser 45 (local: /users/local/45)
+[30/6/2026, 1:43:05 p.m.] Sin foto en ImageKit para idUser 45 (local: /users/local/45)
+[30/6/2026, 1:43:05 p.m.] Sin foto en ImageKit para idUser 45 (local: /users/local/45)
