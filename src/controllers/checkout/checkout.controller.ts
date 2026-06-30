@@ -55,7 +55,25 @@ function parseDraftValue(raw: unknown): CheckoutDraftPayload | null {
   return null;
 }
 
+let checkoutDraftsTableReady = false;
+
+async function ensureCheckoutDraftsTable() {
+  if (checkoutDraftsTableReady) return;
+
+  await prisma.$executeRaw`
+    CREATE TABLE IF NOT EXISTS checkout_drafts (
+      userId BIGINT NOT NULL PRIMARY KEY,
+      draft JSON NOT NULL,
+      updatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )
+  `;
+
+  checkoutDraftsTableReady = true;
+}
+
 async function upsertDraft(userId: number, draft: CheckoutDraftPayload) {
+  await ensureCheckoutDraftsTable();
+
   const existing = await prisma.$queryRaw<{ userId: bigint }[]>`
     SELECT userId FROM checkout_drafts WHERE userId = ${BigInt(userId)} LIMIT 1
   `;
@@ -76,6 +94,8 @@ async function upsertDraft(userId: number, draft: CheckoutDraftPayload) {
 }
 
 async function readDraft(userId: number): Promise<CheckoutDraftPayload | null> {
+  await ensureCheckoutDraftsTable();
+
   const rows = await prisma.$queryRaw<{ draft: unknown }[]>`
     SELECT draft FROM checkout_drafts WHERE userId = ${BigInt(userId)} LIMIT 1
   `;
@@ -270,6 +290,8 @@ export const clearCheckoutDraft = async (
     if (!userId) {
       return res.status(401).json({ ok: false, message: "Usuario no autenticado" });
     }
+
+    await ensureCheckoutDraftsTable();
 
     await prisma.$executeRaw`
       DELETE FROM checkout_drafts WHERE userId = ${BigInt(userId)}
