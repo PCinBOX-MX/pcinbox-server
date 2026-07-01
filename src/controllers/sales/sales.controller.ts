@@ -198,11 +198,53 @@ export const getSalesByUser = async (req: CustomRequestI, res: Response) => {
         },
       },
     });
+
+    if (!slcAllSalesUser) {
+      return res.status(404).json({
+        ok: false,
+        message: "Orden no encontrada",
+      });
+    }
+
+    const branchIds = [
+      ...new Set(
+        slcAllSalesUser.shipments
+          .map((shipment) => shipment.storeId)
+          .filter((storeId): storeId is number => storeId != null && storeId > 0),
+      ),
+    ];
+
+    const branches =
+      branchIds.length > 0
+        ? await prisma.branches.findMany({
+            where: {
+              idBranche: { in: branchIds.map((id) => BigInt(id)) },
+            },
+            select: {
+              idBranche: true,
+              name: true,
+              city: true,
+            },
+          })
+        : [];
+
+    const branchById = new Map(
+      branches.map((branch) => [Number(branch.idBranche), branch]),
+    );
+
+    const orderWithBranches = {
+      ...slcAllSalesUser,
+      shipments: slcAllSalesUser.shipments.map((shipment) => ({
+        ...shipment,
+        branch: branchById.get(Number(shipment.storeId)) ?? null,
+      })),
+    };
+
     return res.status(200).json({
       ok: true,
       message: "OK!",
       data: {
-        data: parseBigInts(slcAllSalesUser),
+        data: parseBigInts(orderWithBranches),
       },
     });
   } catch (error: any) {
@@ -303,6 +345,11 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
                 providerId: true,
               },
             },
+            shipments: {
+              include: {
+                addresses: true,
+              },
+            },
           },
         },
       },
@@ -316,41 +363,43 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
       payment_method: order.pay_method,
       orderStatus: order.status,
       idUser: Number(order.userId),
-      products: order.sales.map((sale, indexSale) => ({
-        idShipment: order?.shipments[indexSale]?.idShipment,
-        description: sale.products?.description,
-        price: sale?.products?.price,
-        idProduct: sale.products.idProduct,
-        name: sale.products.name,
-        quantity: sale.quantity,
-        providerId: sale.products?.providerId,
-        statusShip: order.shipments[indexSale]?.status,
-        shipping_method: order?.shipments[indexSale]?.shipping_method,
-        status: sale.status,
-        image_url: sale?.products?.image_url,
-        trackingNumber: order?.shipments[indexSale]?.trackingNumber,
-        address: order?.shipments[indexSale]?.addresses
-          ? {
-              idAddress: Number(
-                order?.shipments[indexSale].addresses?.idAddress,
-              ),
-              userId: Number(order?.shipments[indexSale].addresses?.userId),
-              street: order?.shipments[indexSale].addresses?.street,
-              noExt: order?.shipments[indexSale].addresses?.noExt,
-              noInt: order?.shipments[indexSale].addresses?.noInt,
-              cologne: order?.shipments[indexSale].addresses?.cologne,
-              city: order?.shipments[indexSale].addresses?.city,
-              state: order?.shipments[indexSale].addresses?.state,
-              country: order?.shipments[indexSale].addresses?.country,
-              postalCode: order?.shipments[indexSale].addresses?.postalCode,
-              phone1: order?.shipments[indexSale].addresses?.phone1,
-              phone2: order?.shipments[indexSale].addresses?.phone2,
-              createdAt: order?.shipments[indexSale].addresses?.createdAt,
-              updatedAt: order?.shipments[indexSale].addresses?.updatedAt,
-              active: order?.shipments[indexSale].addresses?.active,
-            }
-          : null,
-      })),
+      products: order.sales.map((sale) => {
+        const shipment = sale.shipments;
+
+        return {
+          idShipment: shipment?.idShipment ?? sale.shipmentId,
+          description: sale.products?.description,
+          price: sale?.products?.price,
+          idProduct: sale.products.idProduct,
+          name: sale.products.name,
+          quantity: sale.quantity,
+          providerId: sale.products?.providerId,
+          statusShip: shipment?.status,
+          shipping_method: shipment?.shipping_method,
+          status: sale.status,
+          image_url: sale?.products?.image_url,
+          trackingNumber: shipment?.trackingNumber,
+          address: shipment?.addresses
+            ? {
+                idAddress: Number(shipment.addresses.idAddress),
+                userId: Number(shipment.addresses.userId),
+                street: shipment.addresses.street,
+                noExt: shipment.addresses.noExt,
+                noInt: shipment.addresses.noInt,
+                cologne: shipment.addresses.cologne,
+                city: shipment.addresses.city,
+                state: shipment.addresses.state,
+                country: shipment.addresses.country,
+                postalCode: shipment.addresses.postalCode,
+                phone1: shipment.addresses.phone1,
+                phone2: shipment.addresses.phone2,
+                createdAt: shipment.addresses.createdAt,
+                updatedAt: shipment.addresses.updatedAt,
+                active: shipment.addresses.active,
+              }
+            : null,
+        };
+      }),
     }));
 
     const filtered = parserOrder.filter((order) => {
@@ -436,7 +485,7 @@ export const cancelOrderByUser = async (req: CustomRequestI, res: Response) => {
 
     const blockedStatuses = new Set(["entregado", "cancelado", "disponible", "enviado"]);
     const hasBlockedShipment = order.shipments.some((shipment) =>
-      blockedStatuses.has(String(shipment.status ?? "")),
+      blockedStatuses.has(String(shipment.status ?? "").toLowerCase()),
     );
 
     if (hasBlockedShipment) {
