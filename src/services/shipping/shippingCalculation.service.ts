@@ -79,6 +79,18 @@ export function sumProviderSubtotal(
   return Math.round((total + Number.EPSILON) * 100) / 100;
 }
 
+export function sumGroupSubtotal(products: ShippingProductInput[]): number {
+  const total = products
+    .filter((item) => (Number(item.quantity) || 0) > 0)
+    .reduce(
+      (sum, item) =>
+        sum + Number(item.price || 0) * (Number(item.quantity) || 1),
+      0,
+    );
+
+  return Math.round((total + Number.EPSILON) * 100) / 100;
+}
+
 export async function getZoneShippingCost(
   idAddress: number | null | undefined,
   userId?: number,
@@ -136,8 +148,7 @@ export async function calculateGroupCosts(
     (method === "paqueteexpress" || method === "estafeta") &&
     selection.wantsInsurance === "si"
   ) {
-    const subtotalProvider3 = sumProviderSubtotal(products, 3);
-    insuranceCost = calcInsuranceCost(subtotalProvider3);
+    insuranceCost = calcInsuranceCost(sumGroupSubtotal(products));
   }
 
   shippingCost = Math.round(shippingCost * 100) / 100;
