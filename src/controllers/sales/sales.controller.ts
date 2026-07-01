@@ -3,6 +3,10 @@ import { Response, Request } from "express";
 import CustomRequestI from "./../../interfaces/customrequest.interface";
 import { parseBigInts } from "./../../services/index.service";
 import { cancelOrderWithGatewayRefund } from "../../services/pasarelaPagos.service";
+import {
+  getOrderCancellationBlockMessage,
+  isOrderWithinCancellationWindow,
+} from "../../services/orderCancellationWindow.service";
 import axios from "axios";
 
 function normalizeHistorySearchTerm(raw: unknown): string {
@@ -439,6 +443,13 @@ export const cancelOrderByUser = async (req: CustomRequestI, res: Response) => {
       return res.status(400).json({
         ok: false,
         message: "Esta compra ya no puede cancelarse por su estado de envío.",
+      });
+    }
+
+    if (!isOrderWithinCancellationWindow(order)) {
+      return res.status(400).json({
+        ok: false,
+        message: getOrderCancellationBlockMessage(),
       });
     }
 
