@@ -2,6 +2,8 @@ import { prisma } from "../../db/prismaClient";
 import { Response, Request } from "express";
 import CustomRequestI from "./../../interfaces/customrequest.interface";
 import { parseBigInts } from "./../../services/index.service";
+import { cancelOrderWithGatewayRefund } from "../../services/pasarelaPagos.service";
+import axios from "axios";
 
 function normalizeHistorySearchTerm(raw: unknown): string {
   return String(raw ?? "")
@@ -440,35 +442,34 @@ export const cancelOrderByUser = async (req: CustomRequestI, res: Response) => {
       });
     }
 
-    await prisma.shipments.updateMany({
-      where: { orderId: Number(order.idOrder) },
-      data: { status: "cancelado" },
-    });
-
-    await prisma.sales.updateMany({
-      where: { orderId: Number(order.idOrder) },
-      data: { status: "cancelled" },
-    });
-
-    await prisma.order.update({
-      where: { idOrder: Number(order.idOrder) },
-      data: {
-        status: "cancelled",
-        updatedAt: new Date(),
-      },
-    });
+    const pasarelaResult = await cancelOrderWithGatewayRefund(
+      Number(order.idOrder),
+      Number(req.idUser),
+      req.headers.authorization,
+    );
 
     return res.status(200).json({
       ok: true,
-      message: "Compra cancelada correctamente",
+      message: pasarelaResult?.message ?? "Compra cancelada correctamente",
       data: {
         data: {
           idOrder: Number(order.idOrder),
           payment_method: order.pay_method,
+          refunded: pasarelaResult?.data?.data?.refunded ?? false,
         },
       },
     });
   } catch (error: any) {
+    if (axios.isAxiosError(error) && error.response) {
+      return res.status(error.response.status).json({
+        ok: false,
+        message:
+          error.response.data?.message ||
+          "No se pudo cancelar la compra en la pasarela de pagos",
+        error: error.response.data?.error,
+      });
+    }
+
     return res.status(500).json({
       ok: false,
       message: "Error interno del servidor",
