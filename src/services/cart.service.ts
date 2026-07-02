@@ -82,24 +82,105 @@ export async function findActiveCartItem(
   productId: number,
   storeId: number | null,
 ) {
-  if (storeId === null) {
-    return prisma.cartItems.findFirst({
-      where: {
-        carId,
-        productId,
-        storeId: null,
-        active: 1,
-      },
-    });
-  }
-
-  return prisma.cartItems.findFirst({
+  const exact = await prisma.cartItems.findFirst({
     where: {
       carId,
       productId,
       storeId,
       active: 1,
     },
+  });
+
+  if (exact) return exact;
+
+  const allForProduct = await prisma.cartItems.findMany({
+    where: {
+      carId,
+      productId,
+      active: 1,
+    },
+    orderBy: { idCartItem: "desc" },
+  });
+
+  if (allForProduct.length === 0) return null;
+  if (allForProduct.length === 1) return allForProduct[0];
+
+  if (storeId !== null) {
+    const byStore = allForProduct.find(
+      (item) =>
+        item.storeId != null && Number(item.storeId) === Number(storeId),
+    );
+    if (byStore) return byStore;
+  }
+
+  return allForProduct.reduce((best, item) =>
+    Number(item.quantity ?? 0) > Number(best.quantity ?? 0) ? item : best,
+  );
+}
+
+/**
+ * Une líneas duplicadas del mismo producto (p. ej. storeId null vs sucursal)
+ * para que addProduct y getCart vean la misma cantidad.
+ */
+export async function mergeDuplicateCartLines(
+  carId: bigint,
+  productId: number,
+  preferredStoreId: number | null,
+) {
+  const lines = await prisma.cartItems.findMany({
+    where: {
+      carId,
+      productId,
+      active: 1,
+    },
+    orderBy: { idCartItem: "asc" },
+  });
+
+  if (lines.length <= 1) {
+    return lines[0] ?? null;
+  }
+
+  const totalQty = lines.reduce(
+    (sum, line) => sum + Number(line.quantity ?? 0),
+    0,
+  );
+
+  const keeper =
+    (preferredStoreId !== null
+      ? lines.find(
+          (line) =>
+            line.storeId != null &&
+            Number(line.storeId) === Number(preferredStoreId),
+        )
+      : lines.find((line) => line.storeId === null)) ?? lines[0];
+
+  if (!keeper) {
+    return null;
+  }
+
+  await prisma.cartItems.update({
+    where: { idCartItem: keeper.idCartItem },
+    data: {
+      quantity: totalQty,
+      storeId: preferredStoreId ?? keeper.storeId,
+    },
+  });
+
+  const toDeactivate = lines.filter(
+    (line) => line.idCartItem !== keeper.idCartItem,
+  );
+
+  if (toDeactivate.length > 0) {
+    await prisma.cartItems.updateMany({
+      where: {
+        idCartItem: { in: toDeactivate.map((line) => line.idCartItem) },
+      },
+      data: { active: 0, quantity: 0 },
+    });
+  }
+
+  return prisma.cartItems.findFirst({
+    where: { idCartItem: keeper.idCartItem },
   });
 }
 
@@ -114,4 +195,38 @@ export async function deactivateAllActiveCartItems(carId: bigint) {
       quantity: 0,
     },
   });
+}
+
+export async function resolveAvailableStock(
+  productId: number,
+  storeId: number | null,
+): Promise<{ stock: number; found: boolean }> {
+  const product = await prisma.products.findFirst({
+    where: { idProduct: BigInt(productId), active: 1 },
+    select: { stock: true, providerId: true },
+  });
+
+  if (!product) {
+    return { stock: 0, found: false };
+  }
+
+  const providerId = Number(product.providerId ?? 0);
+
+  if (providerId === 1 || storeId === null) {
+    return { stock: Math.max(0, Number(product.stock ?? 0)), found: true };
+  }
+
+  const branchStock = await prisma.product_stock.findFirst({
+    where: {
+      productId: BigInt(productId),
+      branchId: BigInt(storeId),
+    },
+    select: { stock: true },
+  });
+
+  if (branchStock?.stock != null) {
+    return { stock: Math.max(0, Number(branchStock.stock)), found: true };
+  }
+
+  return { stock: Math.max(0, Number(product.stock ?? 0)), found: true };
 }

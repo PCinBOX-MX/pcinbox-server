@@ -16,11 +16,15 @@ import {
 
   deactivateAllActiveCartItems,
 
+  mergeDuplicateCartLines,
+
   findActiveCartItem,
 
   getOrCreateActiveCart,
 
   normalizeStoreId,
+
+  resolveAvailableStock,
 
 } from "../../services/cart.service";
 
@@ -160,7 +164,7 @@ export const addProduct = async (req: CustomRequestI, res: Response) => {
 
   try {
 
-    const { idProduct, quantity, storeId } = req.body;
+    const { idProduct, quantity, storeId, quantityMode = "increment" } = req.body;
 
     const userId = Number(req?.idUser.toString());
 
@@ -170,7 +174,13 @@ export const addProduct = async (req: CustomRequestI, res: Response) => {
 
     const cart = await getOrCreateActiveCart(userId);
 
+    await consolidateActiveCartItems(userId, cart.idCart);
 
+    await mergeDuplicateCartLines(
+      cart.idCart,
+      Number(idProduct),
+      normalizedStoreId,
+    );
 
     const existingItem = await findActiveCartItem(
 
@@ -183,6 +193,98 @@ export const addProduct = async (req: CustomRequestI, res: Response) => {
     );
 
 
+
+    const qtyToAdd = Number(quantity) || 0;
+    if (qtyToAdd <= 0) {
+      return res.status(400).json({
+        ok: false,
+        message: "Cantidad inválida",
+      });
+    }
+
+    const stockInfo = await resolveAvailableStock(
+      Number(idProduct),
+      normalizedStoreId,
+    );
+
+    if (!stockInfo.found) {
+      return res.status(404).json({
+        ok: false,
+        message: "Producto no encontrado",
+      });
+    }
+
+    if (stockInfo.stock <= 0) {
+      return res.status(400).json({
+        ok: false,
+        message: "Este producto no tiene stock disponible",
+      });
+    }
+
+    const previousQuantity = existingItem
+      ? Number(existingItem.quantity ?? 0)
+      : 0;
+
+    let nextQuantity: number;
+    let quantityAdded: number;
+
+    if (quantityMode === "set") {
+      nextQuantity = qtyToAdd;
+
+      if (nextQuantity < 1) {
+        return res.status(400).json({
+          ok: false,
+          message: "La cantidad mínima es 1",
+        });
+      }
+
+      if (nextQuantity > stockInfo.stock) {
+        return res.status(400).json({
+          ok: false,
+          message: `Solo hay ${stockInfo.stock} unidad${stockInfo.stock === 1 ? "" : "es"} disponible${stockInfo.stock === 1 ? "" : "s"}`,
+          data: { maxStock: stockInfo.stock, quantity: previousQuantity },
+        });
+      }
+
+      quantityAdded = nextQuantity - previousQuantity;
+
+      if (quantityAdded === 0) {
+        return res.status(200).json({
+          ok: true,
+          message: "Sin cambios en el carrito",
+          data: {
+            quantity: previousQuantity,
+            previousQuantity,
+            quantityAdded: 0,
+            maxStock: stockInfo.stock,
+            stockLimitReached: previousQuantity >= stockInfo.stock,
+          },
+        });
+      }
+    } else {
+      nextQuantity = previousQuantity + qtyToAdd;
+
+      if (nextQuantity > stockInfo.stock) {
+        nextQuantity = stockInfo.stock;
+      }
+
+      quantityAdded = nextQuantity - previousQuantity;
+
+      if (quantityAdded <= 0) {
+        return res.status(200).json({
+          ok: true,
+          message: `Ya tienes ${previousQuantity} de ${stockInfo.stock} unidades disponibles`,
+          data: {
+            quantity: previousQuantity,
+            previousQuantity,
+            quantityAdded: 0,
+            maxStock: stockInfo.stock,
+            stockLimitReached: true,
+            alreadyAtMax: true,
+          },
+        });
+      }
+    }
 
     if (existingItem) {
 
@@ -198,7 +300,7 @@ export const addProduct = async (req: CustomRequestI, res: Response) => {
 
           storeId: normalizedStoreId,
 
-          quantity: Number(quantity),
+          quantity: nextQuantity,
 
         },
 
@@ -214,7 +316,7 @@ export const addProduct = async (req: CustomRequestI, res: Response) => {
 
           productId: Number(idProduct),
 
-          quantity: Number(quantity),
+          quantity: nextQuantity,
 
           storeId: normalizedStoreId,
 
@@ -233,6 +335,14 @@ export const addProduct = async (req: CustomRequestI, res: Response) => {
       ok: true,
 
       message: "Producto agregado correctamente",
+
+      data: {
+        quantity: nextQuantity,
+        previousQuantity,
+        quantityAdded,
+        maxStock: stockInfo.stock,
+        stockLimitReached: nextQuantity >= stockInfo.stock,
+      },
 
     });
 
