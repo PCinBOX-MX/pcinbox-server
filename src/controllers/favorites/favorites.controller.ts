@@ -1,10 +1,9 @@
 import { prisma } from "../../db/prismaClient";
 import { Response } from "express";
-import dotenv from "dotenv";
+import "../../config/loadEnv";
 import CustomRequestI from "./../../interfaces/customrequest.interface";
 import { parseBigInts } from "./../../services/index.service";
 
-dotenv.config({ path: ".env.prod" });
 export const getFavoritosUser = async (req: CustomRequestI, res: Response) => {
   try {
     const findFavoritesUser = await prisma.favorites.findMany({

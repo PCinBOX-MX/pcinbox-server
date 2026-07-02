@@ -1,12 +1,10 @@
 import { prisma } from "../../db/prismaClient";
 import { Response, Request } from "express";
 import jwt from "jsonwebtoken";
-import dotenv from "dotenv";
+import "../../config/loadEnv";
 import CustomRequestI from "../../interfaces/customrequest.interface";
 import { parseBigInts } from "../../services/index.service";
 import { sendEmailResend } from "../../services/resend.service";
-
-dotenv.config({ path: ".env.prod" });
 
 // Helper para extraer de manera opcional el idUser del header Bearer
 const getUserIdFromHeader = (req: Request): number | null => {

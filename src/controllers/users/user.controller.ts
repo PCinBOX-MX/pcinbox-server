@@ -9,13 +9,12 @@ import {
 import { SendEmailWelcomeUser } from "../../services/sendgrid.service";
 import { DateTime } from "luxon";
 import { uploadPhotoUser, getPhotoUserAWS } from "./../../imagekit/imagekit";
-import dotenv from "dotenv";
+import "../../config/loadEnv";
 import CustomRequestI from "./../../interfaces/customrequest.interface";
 import { sendEmailResend } from "../../services/resend.service";
 
 const fechaLocal = DateTime.now().setZone("America/Mexico_City");
 
-dotenv.config({ path: ".env.prod" });
 export const Login = async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
@@ -291,10 +290,17 @@ export const LoginGoogle = async (req: Request, res: Response) => {
         },
       });
   } catch (error: any) {
+    writeErrorLogs(`LoginGoogle: ${error?.message || error}`);
+    const isDev =
+      !process.env.NODE_ENV ||
+      process.env.NODE_ENV === "local" ||
+      process.env.NODE_ENV === "development";
     return res.status(500).json({
       ok: false,
-      error: error.message,
-      message: "Error interno del servidor",
+      error: error?.message || "Error desconocido",
+      message: isDev
+        ? error?.message || "Error interno del servidor"
+        : "Error interno del servidor",
     });
   }
 };

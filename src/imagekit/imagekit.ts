@@ -1,11 +1,9 @@
-import dotenv from "dotenv";
+import "../config/loadEnv";
 import path from "path";
 import https from "https";
 import axios from "axios";
 import ImageKit from "imagekit";
 import { writeErrorLogs } from "../services/index.service";
-
-let envLoaded = false;
 
 type ImageKitListedFile = {
   url?: string;
@@ -15,22 +13,7 @@ type ImageKitListedFile = {
   createdAt?: number;
 };
 
-function loadEnvOnce() {
-  if (envLoaded) return;
-  envLoaded = true;
-
-  const envFile =
-    process.env.NODE_ENV === "local" ||
-    !process.env.NODE_ENV ||
-    process.env.NODE_ENV === "development"
-      ? ".env.local"
-      : ".env.prod";
-
-  dotenv.config({ path: path.resolve(process.cwd(), envFile) });
-}
-
 function getImageKitCredentials() {
-  loadEnvOnce();
   return {
     publicKey: process.env.IMAGEKIT_PUBLICKEY?.trim() || "",
     privateKey: process.env.IMAGEKIT_PRIVATEKEY?.trim() || "",
@@ -41,8 +24,6 @@ function getImageKitCredentials() {
 let imagekitClient: ImageKit | null = null;
 
 function getImageKitClient(): ImageKit | null {
-  loadEnvOnce();
-
   if (imagekitClient) return imagekitClient;
 
   const { publicKey, privateKey, urlEndpoint } = getImageKitCredentials();
@@ -70,8 +51,6 @@ function getLocalHttpsAgent(): https.Agent | undefined {
 
 /** local | prod — prioriza IMAGEKIT_USER_ENV y trata dev como local. */
 export function getUserPhotoEnvSegment(): "local" | "prod" {
-  loadEnvOnce();
-
   const explicit = process.env.IMAGEKIT_USER_ENV?.trim().toLowerCase();
   if (explicit === "local" || explicit === "prod") {
     return explicit;
@@ -200,8 +179,6 @@ export const uploadPhotoUser = async (
 };
 
 export const getPhotoUserAWS = async (idUser: string | number) => {
-  loadEnvOnce();
-
   const envSegment = getUserPhotoEnvSegment();
   const envFolder = getUserPhotoFolder(idUser);
 

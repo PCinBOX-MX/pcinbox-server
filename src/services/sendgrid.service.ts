@@ -1,12 +1,10 @@
-import dotenv from "dotenv";
+import "../config/loadEnv";
 import sgMail from "@sendgrid/mail";
 
 import ejs from "ejs";
 import fs from "fs";
 import path from "path";
 
-// const envFile = `.env.${process.env.NODE_ENV || "local"}`;
-dotenv.config({ path: ".env.prod" });
 sgMail.setApiKey(process.env.KEY_SENDGRID || "");
 
 export const sendMail = async (

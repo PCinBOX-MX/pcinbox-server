@@ -1,6 +1,6 @@
 import { Response } from "express";
 
-import dotenv from "dotenv";
+import "../../config/loadEnv";
 
 import { prisma } from "../../db/prismaClient";
 
@@ -28,6 +28,8 @@ import {
 
 } from "../../services/cart.service";
 
+import { getTechSmartBranchValidationError } from "../../constants/techsmart-branches";
+
 
 
 import ejs from "ejs";
@@ -41,8 +43,6 @@ import axios from "axios";
 
 
 const fechaLocal = DateTime.now().setZone("America/Mexico_City");
-
-dotenv.config({ path: ".env.prod" });
 
 
 
@@ -221,6 +221,25 @@ export const addProduct = async (req: CustomRequestI, res: Response) => {
       });
     }
 
+    const productRecord = await prisma.products.findFirst({
+      where: { idProduct: BigInt(idProduct), active: 1 },
+      select: { providerId: true },
+    });
+
+    const techSmartBranchError = await getTechSmartBranchValidationError(
+      productRecord?.providerId != null
+        ? Number(productRecord.providerId)
+        : null,
+      normalizedStoreId,
+    );
+
+    if (techSmartBranchError) {
+      return res.status(400).json({
+        ok: false,
+        message: techSmartBranchError,
+      });
+    }
+
     const previousQuantity = existingItem
       ? Number(existingItem.quantity ?? 0)
       : 0;
@@ -381,6 +400,28 @@ export const addProductFromStorage = async (
     const cart = await getOrCreateActiveCart(userId);
 
 
+
+    for (const item of dataCart ?? []) {
+      const normalizedStoreId = normalizeStoreId(item.storeId);
+      const productRecord = await prisma.products.findFirst({
+        where: { idProduct: BigInt(item.idProduct), active: 1 },
+        select: { providerId: true },
+      });
+
+      const techSmartBranchError = await getTechSmartBranchValidationError(
+        productRecord?.providerId != null
+          ? Number(productRecord.providerId)
+          : null,
+        normalizedStoreId,
+      );
+
+      if (techSmartBranchError) {
+        return res.status(400).json({
+          ok: false,
+          message: techSmartBranchError,
+        });
+      }
+    }
 
     await Promise.all(
 

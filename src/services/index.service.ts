@@ -1,13 +1,12 @@
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
-import dotenv from "dotenv";
+import "../config/loadEnv";
 import { nanoid } from "nanoid";
 import fs from "fs";
 import path from "path";
 import axios from "axios";
 import xlsx from "xlsx";
 
-dotenv.config({ path: ".env.prod" });
 export const hasPassword = async (password: string): Promise<string> => {
   const saltRounds = 10;
   const hashedPassword = await bcrypt.hash(password, saltRounds);
@@ -21,11 +20,21 @@ export const verifyPassword = async (
   return bcrypt.compare(password, hashed);
 };
 
+function getJwtSecret(): string {
+  const secret = process.env.KEY_JWT?.trim() || "";
+  if (!secret) {
+    throw new Error(
+      "KEY_JWT no configurada en pcinbox-server (.env.local o .env.prod)",
+    );
+  }
+  return secret;
+}
+
 export const signPayload = (
   obj: object | Buffer | string,
   expiresIn: number | any,
 ): string => {
-  return jwt.sign(obj, process.env.KEY_JWT || "", { expiresIn: expiresIn });
+  return jwt.sign(obj, getJwtSecret(), { expiresIn: expiresIn });
 };
 
 export function generateResetToken(): string {

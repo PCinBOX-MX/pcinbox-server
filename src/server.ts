@@ -1,6 +1,6 @@
+import "./config/loadEnv";
 import express from "express";
 import cors from "cors";
-import dotenv from "dotenv";
 import routesUser from "./routes/users/user.route";
 import routesResetPass from "./routes/resetPass/resetPassword.route";
 import routesCart from "./routes/cart/cart.route";
@@ -17,14 +17,6 @@ import cookieParser from "cookie-parser";
 import path from "path";
 import helmet from "helmet";
 
-// dotenv-cli inyecta vars en `npm run dev`; esto cubre arranques directos.
-const envFile =
-  process.env.NODE_ENV === "local" ||
-  !process.env.NODE_ENV ||
-  process.env.NODE_ENV === "development"
-    ? ".env.local"
-    : ".env.prod";
-dotenv.config({ path: path.resolve(process.cwd(), envFile) });
 const server = express();
 
 server.use(express.static(path.join(__dirname, "../public")));

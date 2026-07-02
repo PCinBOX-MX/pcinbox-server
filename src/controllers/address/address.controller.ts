@@ -1,10 +1,9 @@
 import { prisma } from "../../db/prismaClient";
 import { Response } from "express";
 import { readExcelImageKit } from "./../../services/index.service";
-import dotenv from "dotenv";
+import "../../config/loadEnv";
 import CustomRequestI from "./../../interfaces/customrequest.interface";
 
-dotenv.config({ path: ".env.prod" });
 export const hasAddressUser = async (req: CustomRequestI, res: Response) => {
   try {
     let findAdrress = await prisma.addresses.findMany({
