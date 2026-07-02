@@ -1,11 +1,18 @@
 import { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
+import path from "path";
 import CustomRequestI from "../interfaces/customrequest.interface";
 import { prisma } from "./../db/prismaClient";
 
 // const envFile = `.env.${process.env.NODE_ENV || "local"}`;
-dotenv.config({ path: ".env.prod" });
+const envFile =
+  process.env.NODE_ENV === "local" ||
+  !process.env.NODE_ENV ||
+  process.env.NODE_ENV === "development"
+    ? ".env.local"
+    : ".env.prod";
+dotenv.config({ path: path.resolve(process.cwd(), envFile) });
 export const MiddleAuthRoute = async (
   req: CustomRequestI,
   res: Response,

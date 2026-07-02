@@ -2,13 +2,62 @@ import { prisma } from "../../db/prismaClient";
 import { Response, Request } from "express";
 import CustomRequestI from "./../../interfaces/customrequest.interface";
 import { parseBigInts } from "./../../services/index.service";
+import { cancelOrderWithGatewayRefund } from "../../services/pasarelaPagos.service";
+import {
+  getOrderCancellationBlockMessage,
+  isOrderWithinCancellationWindow,
+} from "../../services/orderCancellationWindow.service";
+import axios from "axios";
+
+function normalizeHistorySearchTerm(raw: unknown): string {
+  return String(raw ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^#+/, "");
+}
+
+function orderMatchesHistorySearch(
+  order: {
+    idOrder: bigint | number;
+    products: ReadonlyArray<{
+      name?: string | null | undefined;
+      description?: string | null | undefined;
+      idProduct?: bigint | number | undefined;
+      trackingNumber?: string | null | undefined;
+    }>;
+  },
+  rawTerm: unknown,
+): boolean {
+  const term = normalizeHistorySearchTerm(rawTerm);
+  if (!term) return true;
+
+  const orderId = String(order.idOrder);
+  if (orderId.includes(term)) return true;
+
+  const termDigits = term.replace(/\D/g, "");
+  if (termDigits && orderId.includes(termDigits)) return true;
+
+  return order.products.some((product) => {
+    const searchableValues = [
+      product.name,
+      product.description,
+      product.idProduct,
+      product.trackingNumber,
+    ];
+
+    return searchableValues.some((value) =>
+      String(value ?? "")
+        .toLowerCase()
+        .includes(term),
+    );
+  });
+}
 
 import {
   querySales,
   querySalesWithOrder,
   querySalesWithStatus,
 } from "./../../query/sales.query";
-import { evaluateOrderCancellation } from "../../services/order-cancellation.policy";
 
 export const registerSales = async (req: CustomRequestI, res: Response) => {
   try {
@@ -147,14 +196,55 @@ export const getSalesByUser = async (req: CustomRequestI, res: Response) => {
             products: true,
           },
         },
-        techsmart_orders: true,
       },
     });
+
+    if (!slcAllSalesUser) {
+      return res.status(404).json({
+        ok: false,
+        message: "Orden no encontrada",
+      });
+    }
+
+    const branchIds = [
+      ...new Set(
+        slcAllSalesUser.shipments
+          .map((shipment) => shipment.storeId)
+          .filter((storeId): storeId is number => storeId != null && storeId > 0),
+      ),
+    ];
+
+    const branches =
+      branchIds.length > 0
+        ? await prisma.branches.findMany({
+            where: {
+              idBranche: { in: branchIds.map((id) => BigInt(id)) },
+            },
+            select: {
+              idBranche: true,
+              name: true,
+              city: true,
+            },
+          })
+        : [];
+
+    const branchById = new Map(
+      branches.map((branch) => [Number(branch.idBranche), branch]),
+    );
+
+    const orderWithBranches = {
+      ...slcAllSalesUser,
+      shipments: slcAllSalesUser.shipments.map((shipment) => ({
+        ...shipment,
+        branch: branchById.get(Number(shipment.storeId)) ?? null,
+      })),
+    };
+
     return res.status(200).json({
       ok: true,
       message: "OK!",
       data: {
-        data: parseBigInts(slcAllSalesUser),
+        data: parseBigInts(orderWithBranches),
       },
     });
   } catch (error: any) {
@@ -188,11 +278,17 @@ export const historySalesByUser = async (
       querySales({ idUser: req.idUser }),
     );
 
+    const paidHistory = (history || []).filter((item: any) => {
+      const saleStatus = String(item.status ?? "");
+      return saleStatus === "paid" || saleStatus === "cancelled";
+    });
+
     return res.status(200).json({
       ok: true,
       message: "OK!",
       data: {
-        data: history && history.length > 0 ? parseBigInts(history) : [],
+        data:
+          paidHistory.length > 0 ? parseBigInts(paidHistory) : [],
       },
     });
   } catch (error: any) {
@@ -204,64 +300,74 @@ export const historySalesByUser = async (
   }
 };
 
-function mapOrdersToHistoryResponse(orders: any[]) {
-  return orders.map((order) => {
-    const shipmentById = new Map(
-      order.shipments.map((shipment: any) => [
-        Number(shipment.idShipment),
-        shipment,
-      ]),
-    );
+export const filterSales = async (req: CustomRequestI, res: Response) => {
+  try {
+    const {
+      status = "allState",
+      startDate = "",
+      endDate = "",
+      searchProduct = "",
+      page = 1,
+      limit = 10,
+    } = req.body;
 
-    const cancellation = evaluateOrderCancellation({
-      orderStatus: order.status,
-      orderCreatedAt: order.createdAt,
-      orderUpdatedAt: order.updatedAt,
-      sales: order.sales,
-      shipmentStatuses: order.shipments
-        .map((shipment: any) => shipment.status)
-        .filter((status: string | null) => status != null),
-      techsmartOrderStatus: order.techsmart_orders?.status ?? null,
-      dicotechPurchaseIds: (order.purchases ?? []).map(
-        (purchase: any) => purchase.purchaseId,
-      ),
+    const pageNumber = Math.max(1, Number(page) || 1);
+    const pageSize = Math.min(50, Math.max(1, Number(limit) || 10));
+
+    const orders = await prisma.order.findMany({
+      where: {
+        userId: Number(req.idUser),
+        pay_method: {
+          not: "esperando",
+        },
+        status: {
+          in: ["paid", "cancelled", "refunded"],
+        },
+      },
+      orderBy: {
+        idOrder: "desc",
+      },
+      include: {
+        shipments: {
+          include: {
+            addresses: true,
+          },
+        },
+        sales: {
+          include: {
+            products: {
+              select: {
+                idProduct: true,
+                name: true,
+                description: true,
+                price: true,
+                image_url: true,
+                providerId: true,
+              },
+            },
+            shipments: {
+              include: {
+                addresses: true,
+              },
+            },
+          },
+        },
+      },
     });
 
-    return {
+    const parserOrder = orders.map((order) => ({
       idOrder: order.idOrder,
-      totalSales: order.sales.length,
+      totalSales: Number(order.totalAmount ?? 0),
       createdAt: order?.createdAt,
       updatedAt: order?.updatedAt,
       payment_method: order.pay_method,
       orderStatus: order.status,
       idUser: Number(order.userId),
-      canCancel: cancellation.canCancel,
-      cancelReason: cancellation.reason,
-      cancelDeadline: cancellation.cancelDeadline,
-      hoursRemaining: cancellation.hoursRemaining,
-      hasTechsmartProducts: cancellation.hasTechsmartProducts,
-      techsmartOrder: order.techsmart_orders
-        ? {
-            folioPedido: order.techsmart_orders.folioPedido,
-            guiaPedido: order.techsmart_orders.guiaPedido,
-            folioFactura: order.techsmart_orders.folioFactura,
-            status: order.techsmart_orders.status,
-            wsError: order.techsmart_orders.wsError,
-          }
-        : null,
-      products: order.sales.map((sale: any) => {
-        const shipment =
-          (sale.shipmentId
-            ? shipmentById.get(Number(sale.shipmentId))
-            : null) ||
-          order.shipments.find(
-            (entry: any) => entry.shipping_method === "sucursal",
-          ) ||
-          order.shipments[0] ||
-          null;
+      products: order.sales.map((sale) => {
+        const shipment = sale.shipments;
 
         return {
-          idShipment: shipment?.idShipment,
+          idShipment: shipment?.idShipment ?? sale.shipmentId,
           description: sale.products?.description,
           price: sale?.products?.price,
           idProduct: sale.products.idProduct,
@@ -272,147 +378,67 @@ function mapOrdersToHistoryResponse(orders: any[]) {
           shipping_method: shipment?.shipping_method,
           status: sale.status,
           image_url: sale?.products?.image_url,
-          trackingNumber:
-            shipment?.trackingNumber ||
-            order?.techsmart_orders?.guiaPedido ||
-            null,
+          trackingNumber: shipment?.trackingNumber,
           address: shipment?.addresses
             ? {
-                idAddress: Number(shipment.addresses?.idAddress),
-                userId: Number(shipment.addresses?.userId),
-                street: shipment.addresses?.street,
-                noExt: shipment.addresses?.noExt,
-                noInt: shipment.addresses?.noInt,
-                cologne: shipment.addresses?.cologne,
-                city: shipment.addresses?.city,
-                state: shipment.addresses?.state,
-                country: shipment.addresses?.country,
-                postalCode: shipment.addresses?.postalCode,
-                phone1: shipment.addresses?.phone1,
-                phone2: shipment.addresses?.phone2,
-                createdAt: shipment.addresses?.createdAt,
-                updatedAt: shipment.addresses?.updatedAt,
-                active: shipment.addresses?.active,
+                idAddress: Number(shipment.addresses.idAddress),
+                userId: Number(shipment.addresses.userId),
+                street: shipment.addresses.street,
+                noExt: shipment.addresses.noExt,
+                noInt: shipment.addresses.noInt,
+                cologne: shipment.addresses.cologne,
+                city: shipment.addresses.city,
+                state: shipment.addresses.state,
+                country: shipment.addresses.country,
+                postalCode: shipment.addresses.postalCode,
+                phone1: shipment.addresses.phone1,
+                phone2: shipment.addresses.phone2,
+                createdAt: shipment.addresses.createdAt,
+                updatedAt: shipment.addresses.updatedAt,
+                active: shipment.addresses.active,
               }
             : null,
         };
       }),
-    };
-  });
-}
+    }));
 
-const historyOrderInclude = {
-  techsmart_orders: true,
-  purchases: {
-    select: {
-      purchaseId: true,
-    },
-  },
-  shipments: {
-    include: {
-      addresses: true,
-    },
-  },
-  sales: {
-    include: {
-      products: {
-        select: {
-          idProduct: true,
-          name: true,
-          description: true,
-          price: true,
-          image_url: true,
-          providerId: true,
-        },
-      },
-    },
-  },
-} as const;
+    const filtered = parserOrder.filter((order) => {
+      const statusMatch =
+        status && status !== "allState"
+          ? order.products.some((product) => product.statusShip === status)
+          : true;
 
-function buildHistoryOrdersWhere(
-  userId: number,
-  filters: {
-    status?: string;
-    startDate?: string;
-    endDate?: string;
-    searchProduct?: string;
-  },
-) {
-  const where: any = {
-    userId,
-    pay_method: { not: "esperando" },
-    status: { not: "payment_pending" },
-  };
+      const dateMatch =
+        startDate && endDate
+          ? (() => {
+              const itemDate = new Date(order.createdAt ?? 0);
+              const start = new Date(startDate);
+              const end = new Date(endDate);
+              start.setHours(0, 0, 0, 0);
+              end.setHours(23, 59, 59, 999);
+              itemDate.setHours(0, 0, 0, 0);
+              return itemDate >= start && itemDate <= end;
+            })()
+          : true;
 
-  if (filters.status && filters.status !== "allState") {
-    where.shipments = { some: { status: filters.status } };
-  }
+      const searchMatch = orderMatchesHistorySearch(order, searchProduct);
 
-  if (filters.startDate && filters.endDate) {
-    const start = new Date(filters.startDate);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(filters.endDate);
-    end.setHours(23, 59, 59, 999);
-    where.createdAt = { gte: start, lte: end };
-  }
-
-  const search = filters.searchProduct?.trim();
-  if (search) {
-    where.sales = {
-      some: {
-        products: {
-          name: { contains: search },
-        },
-      },
-    };
-  }
-
-  return where;
-}
-
-export const filterSales = async (req: CustomRequestI, res: Response) => {
-  try {
-    const { status, page = 1, limit = 6, startDate, endDate, searchProduct } =
-      req.body;
-
-    if (!status) {
-      return res.status(400).json({
-        ok: false,
-        message: "Faltan campos por enviar en el body",
-      });
-    }
-
-    const pageNumber = Math.max(1, Number(page) || 1);
-    const pageSize = Math.min(20, Math.max(1, Number(limit) || 6));
-    const userId = Number(req.idUser);
-    const where = buildHistoryOrdersWhere(userId, {
-      status,
-      startDate,
-      endDate,
-      searchProduct,
+      return statusMatch && dateMatch && searchMatch;
     });
 
-    const [orders, total] = await Promise.all([
-      prisma.order.findMany({
-        where,
-        orderBy: { idOrder: "desc" },
-        skip: (pageNumber - 1) * pageSize,
-        take: pageSize,
-        include: historyOrderInclude,
-      }),
-      prisma.order.count({ where }),
-    ]);
-
-    const parserOrder = mapOrdersToHistoryResponse(orders);
-    const totalPages = total > 0 ? Math.ceil(total / pageSize) : 0;
+    const total = filtered.length;
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const safePage = Math.min(pageNumber, totalPages);
+    const startIndex = (safePage - 1) * pageSize;
+    const paginated = filtered.slice(startIndex, startIndex + pageSize);
 
     return res.status(200).json({
       ok: true,
       message: "OK!",
       data: {
-        data: parserOrder.length > 0 ? parseBigInts(parserOrder) : [],
+        data: paginated.length > 0 ? parseBigInts(paginated) : [],
         pagination: {
-          page: pageNumber,
+          page: safePage,
           limit: pageSize,
           total,
           totalPages,
@@ -420,6 +446,90 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
       },
     });
   } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      message: "Error interno del servidor",
+      error: error.message,
+    });
+  }
+};
+
+export const cancelOrderByUser = async (req: CustomRequestI, res: Response) => {
+  try {
+    const { idOrder } = req.body;
+
+    if (!idOrder) {
+      return res.status(400).json({
+        ok: false,
+        message: "Falta idOrder",
+      });
+    }
+
+    const order = await prisma.order.findFirst({
+      where: {
+        idOrder: Number(idOrder),
+        userId: Number(req.idUser),
+      },
+      include: {
+        shipments: true,
+        sales: true,
+      },
+    });
+
+    if (!order) {
+      return res.status(404).json({
+        ok: false,
+        message: "Orden no encontrada",
+      });
+    }
+
+    const blockedStatuses = new Set(["entregado", "cancelado", "disponible", "enviado"]);
+    const hasBlockedShipment = order.shipments.some((shipment) =>
+      blockedStatuses.has(String(shipment.status ?? "").toLowerCase()),
+    );
+
+    if (hasBlockedShipment) {
+      return res.status(400).json({
+        ok: false,
+        message: "Esta compra ya no puede cancelarse por su estado de envío.",
+      });
+    }
+
+    if (!isOrderWithinCancellationWindow(order)) {
+      return res.status(400).json({
+        ok: false,
+        message: getOrderCancellationBlockMessage(),
+      });
+    }
+
+    const pasarelaResult = await cancelOrderWithGatewayRefund(
+      Number(order.idOrder),
+      Number(req.idUser),
+      req.headers.authorization,
+    );
+
+    return res.status(200).json({
+      ok: true,
+      message: pasarelaResult?.message ?? "Compra cancelada correctamente",
+      data: {
+        data: {
+          idOrder: Number(order.idOrder),
+          payment_method: order.pay_method,
+          refunded: pasarelaResult?.data?.data?.refunded ?? false,
+        },
+      },
+    });
+  } catch (error: any) {
+    if (axios.isAxiosError(error) && error.response) {
+      return res.status(error.response.status).json({
+        ok: false,
+        message:
+          error.response.data?.message ||
+          "No se pudo cancelar la compra en la pasarela de pagos",
+        error: error.response.data?.error,
+      });
+    }
+
     return res.status(500).json({
       ok: false,
       message: "Error interno del servidor",
