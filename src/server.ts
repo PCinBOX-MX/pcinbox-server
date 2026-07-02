@@ -12,31 +12,25 @@ import routerFavorites from "./routes/favorites/favorites.route";
 import routesReview from "./routes/review/review.route";
 import routesSales from "./routes/sales/sales.route";
 import routesReservas from "./routes/reservas/reservas.route";
+import routesCheckout from "./routes/checkout/checkout.route";
 import cookieParser from "cookie-parser";
 import path from "path";
 import helmet from "helmet";
-import {
-  applySecurityBaseline,
-  authPathRateLimiter,
-  blockMaliciousProbePaths,
-  checkoutPathRateLimiter,
-  globalRateLimiter,
-} from "./middleware/security.middleware";
 
-//const envFile = `.env.${process.env.NODE_ENV || "local"}`;
-dotenv.config({ path: ".env.prod" });
+// dotenv-cli inyecta vars en `npm run dev`; esto cubre arranques directos.
+const envFile =
+  process.env.NODE_ENV === "local" ||
+  !process.env.NODE_ENV ||
+  process.env.NODE_ENV === "development"
+    ? ".env.local"
+    : ".env.prod";
+dotenv.config({ path: path.resolve(process.cwd(), envFile) });
 const server = express();
-
-applySecurityBaseline(server);
-server.use(blockMaliciousProbePaths);
-server.use(globalRateLimiter.middleware);
-server.use(authPathRateLimiter);
-server.use(checkoutPathRateLimiter);
 
 server.use(express.static(path.join(__dirname, "../public")));
 server.set("view engine", "ejs");
 server.set("views", path.join(__dirname, "views"));
-server.set("trust proxy", process.env.TRUST_PROXY === "false" ? false : 1);
+server.set("trust proxy", 1);
 
 const allowedOrigins = [
   "http://localhost:3000",
@@ -50,7 +44,6 @@ const allowedOrigins = [
   "http://192.168.0.107:3000",
   "https://colt-fierce-eugena.ngrok-free.dev",
   "https://interpervasive-unbotanical-kinsley.ngrok-free.dev",
-  "https://bd26-177-245-224-110.ngrok-free.app",
   "https://certainly-slackness-treble.ngrok-free.dev",
 ];
 
@@ -97,6 +90,7 @@ server.use("/api/v1/favorites", routerFavorites);
 server.use("/api/v1/review", routesReview);
 server.use("/api/v1/sales", routesSales);
 server.use("/api/v1/reservas", routesReservas);
+server.use("/api/v1/checkout", routesCheckout);
 
 server.get("/", (req, res) => {
   res.send("Servidor funcionando correctamente");
