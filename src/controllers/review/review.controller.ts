@@ -1,10 +1,9 @@
 import { prisma } from "../../db/prismaClient";
 import { Response } from "express";
-import dotenv from "dotenv";
+import "../../config/loadEnv";
 import CustomRequestI from "./../../interfaces/customrequest.interface";
 import { DateTime } from "luxon";
 
-dotenv.config({ path: ".env.prod" });
 const fechaLocal = DateTime.now().setZone("America/Mexico_City");
 
 export const addReview = async (req: CustomRequestI, res: Response) => {

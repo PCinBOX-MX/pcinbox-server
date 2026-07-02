@@ -1,9 +1,8 @@
-import dotenv from "dotenv";
 import axios from "axios";
 import { Request, Response } from "express";
 import { prisma } from "../../db/prismaClient";
+import "../../config/loadEnv";
 
-dotenv.config({ path: ".env.prod" });
 const apiGeoNames = axios.create({
   baseURL: `http://api.geonames.org`,
   params: {

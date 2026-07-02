@@ -1,7 +1,5 @@
 import { Resend } from "resend";
-import dotenv from "dotenv";
-
-dotenv.config({ path: ".env.prod" });
+import "../config/loadEnv";
 
 let resendClient: Resend | null = null;
 

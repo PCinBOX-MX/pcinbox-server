@@ -1,6 +1,6 @@
-import dotenv from "dotenv";
 import { Request, Response } from "express";
 import { prisma } from "../../db/prismaClient";
+import "../../config/loadEnv";
 import {
   generateResetToken,
   hasPassword,
@@ -12,8 +12,7 @@ import path from "path";
 import fs from "fs";
 import { format } from "date-fns-tz";
 import { sendEmailResend } from "../../services/resend.service";
-// const envFile = `.env.${process.env.NODE_ENV || "local"}`;
-dotenv.config({ path: ".env.prod" });
+
 export const forgotPassword = async (req: Request, res: Response) => {
   try {
     const { email } = req.body;

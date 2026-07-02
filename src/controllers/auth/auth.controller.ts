@@ -1,9 +1,8 @@
 import { Request, Response } from "express";
 import { verify } from "jsonwebtoken";
 import { prisma } from "../../db/prismaClient";
-import dotenv from "dotenv";
+import "../../config/loadEnv";
 
-dotenv.config({ path: ".env.prod" });
 export const getAuth = async (req: Request, res: Response) => {
   const authHeader = req.headers.authorization;
 

@@ -1,8 +1,6 @@
 import mysql from "mysql2/promise";
-import dotenv from "dotenv";
+import "../config/loadEnv";
 
-// const envFile = `.env.${process.env.NODE_ENV || "local"}`;
-dotenv.config({ path: ".env.prod" });
 const connectionDb = async () => {
   try {
     const pool = mysql.createPool(process.env.DATABASE_URL || "");
