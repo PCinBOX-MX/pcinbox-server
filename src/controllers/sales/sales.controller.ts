@@ -8,6 +8,10 @@ import {
   isOrderWithinCancellationWindow,
 } from "../../services/orderCancellationWindow.service";
 import axios from "axios";
+import {
+  sumShipmentCostTotals,
+  toMoneyNumber,
+} from "../../utils/shipmentCosts";
 
 function normalizeHistorySearchTerm(raw: unknown): string {
   return String(raw ?? "")
@@ -232,10 +236,18 @@ export const getSalesByUser = async (req: CustomRequestI, res: Response) => {
       branches.map((branch) => [Number(branch.idBranche), branch]),
     );
 
+    const { shippingTotal, insuranceTotal } = sumShipmentCostTotals(
+      slcAllSalesUser.shipments,
+    );
+
     const orderWithBranches = {
       ...slcAllSalesUser,
+      shippingTotal,
+      insuranceTotal,
       shipments: slcAllSalesUser.shipments.map((shipment) => ({
         ...shipment,
+        shippingCost: toMoneyNumber(shipment.shippingCost),
+        insuranceCost: toMoneyNumber(shipment.insuranceCost),
         branch: branchById.get(Number(shipment.storeId)) ?? null,
       })),
     };
@@ -355,9 +367,16 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
       },
     });
 
-    const parserOrder = orders.map((order) => ({
+    const parserOrder = orders.map((order) => {
+      const { shippingTotal, insuranceTotal } = sumShipmentCostTotals(
+        order.shipments,
+      );
+
+      return {
       idOrder: order.idOrder,
       totalSales: Number(order.totalAmount ?? 0),
+      shippingTotal,
+      insuranceTotal,
       createdAt: order?.createdAt,
       updatedAt: order?.updatedAt,
       payment_method: order.pay_method,
@@ -379,6 +398,8 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
           status: sale.status,
           image_url: sale?.products?.image_url,
           trackingNumber: shipment?.trackingNumber,
+          shippingCost: toMoneyNumber(shipment?.shippingCost),
+          insuranceCost: toMoneyNumber(shipment?.insuranceCost),
           address: shipment?.addresses
             ? {
                 idAddress: Number(shipment.addresses.idAddress),
@@ -400,7 +421,8 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
             : null,
         };
       }),
-    }));
+    };
+    });
 
     const filtered = parserOrder.filter((order) => {
       const statusMatch =

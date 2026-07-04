@@ -4,7 +4,7 @@ export const ORDER_CANCELLATION_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 export type OrderPaidAtSource = {
   status?: order_status | null;
-  updatedAt?: Date | string | null;
+  createdAt?: Date | string | null;
 };
 
 function isPaidOrder(status: order_status | null | undefined): boolean {
@@ -12,14 +12,15 @@ function isPaidOrder(status: order_status | null | undefined): boolean {
 }
 
 export function resolveOrderPaidAt(order: OrderPaidAtSource): Date | null {
-  if (order.status === "paid" && order.updatedAt) {
-    return new Date(order.updatedAt);
-  }
-  return null;
+  if (!isPaidOrder(order.status)) return null;
+  if (!order.createdAt) return null;
+
+  const date = new Date(order.createdAt);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 export function getOrderCancellationBlockMessage(): string {
-  return "Ya no es posible cancelar esta compra. El plazo de cancelación es de 24 horas después del pago.";
+  return "Ya no es posible cancelar esta compra. Solo puedes cancelar dentro de las 24 horas siguientes a la fecha de tu compra.";
 }
 
 export function isOrderWithinCancellationWindow(order: OrderPaidAtSource): boolean {
