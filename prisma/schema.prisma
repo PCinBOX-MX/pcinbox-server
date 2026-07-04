@@ -261,6 +261,8 @@ model shipments {
   shipping_method  shipments_shipping_method?
   createdAt        DateTime?                  @db.DateTime(0)
   requireInsurance Int?                       @db.TinyInt
+  shippingCost     Decimal?                   @db.Decimal(10, 2)
+  insuranceCost    Decimal?                   @db.Decimal(10, 2)
   sales            sales[]
   order            order?                     @relation(fields: [orderId], references: [idOrder], onDelete: NoAction, onUpdate: NoAction, map: "fk_order_id_shipments")
   addresses        addresses?                 @relation(fields: [addressId], references: [idAddress], onDelete: NoAction, onUpdate: NoAction, map: "fn_addressId_shipments")
