@@ -261,8 +261,6 @@ model shipments {
   shipping_method  shipments_shipping_method?
   createdAt        DateTime?                  @db.DateTime(0)
   requireInsurance Int?                       @db.TinyInt
-  shippingCost     Decimal?                   @db.Decimal(10, 2)
-  insuranceCost    Decimal?                   @db.Decimal(10, 2)
   sales            sales[]
   order            order?                     @relation(fields: [orderId], references: [idOrder], onDelete: NoAction, onUpdate: NoAction, map: "fk_order_id_shipments")
   addresses        addresses?                 @relation(fields: [addressId], references: [idAddress], onDelete: NoAction, onUpdate: NoAction, map: "fn_addressId_shipments")
@@ -471,6 +469,7 @@ model reservas {
   contactPhone String              @db.VarChar(50)
   status       String              @default("pending") @db.VarChar(50)
   cancelReason String?             @db.Text
+  statusReason String?             @db.Text
   userId       BigInt?
   createdAt    DateTime?           @default(now()) @db.DateTime(0)
   updatedAt    DateTime?           @default(now()) @updatedAt @db.DateTime(0)

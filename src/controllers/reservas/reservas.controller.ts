@@ -1,10 +1,12 @@
 import { prisma } from "../../db/prismaClient";
 import { Response, Request } from "express";
 import jwt from "jsonwebtoken";
-import "../../config/loadEnv";
+import dotenv from "dotenv";
 import CustomRequestI from "../../interfaces/customrequest.interface";
 import { parseBigInts } from "../../services/index.service";
-import { sendEmailResend } from "../../services/resend.service";
+import { sendEmailResend, sendReservationStatusUpdateEmail, getReservationStatusLabel, getReservationStatusMessage } from "../../services/resend.service";
+
+dotenv.config({ path: ".env.prod" });
 
 // Helper para extraer de manera opcional el idUser del header Bearer
 const getUserIdFromHeader = (req: Request): number | null => {
@@ -56,6 +58,51 @@ const isHoliday = (date: Date): boolean => {
   if (month === 10 && day === 2) return true;
 
   return false;
+};
+
+const getReservationDetailUrl = (reference: string): string => {
+  const baseUrl = (process.env.BASE_URL_APP || "http://localhost:3000").replace(/\/$/, "");
+  return `${baseUrl}/reservas/mantenimiento/${reference}`;
+};
+
+const notifyReservationStatusChange = async (
+  reservation: {
+    contactEmail: string;
+    contactName: string;
+    reference: string;
+    service: string;
+    deviceType: string;
+    date: Date;
+    time: string;
+  },
+  status: string,
+  cancelReason?: string,
+) => {
+  if (!reservation.contactEmail) return;
+
+  await sendReservationStatusUpdateEmail(reservation.contactEmail, {
+    contactName: reservation.contactName,
+    reference: reservation.reference,
+    status,
+    statusText: getReservationStatusLabel(status),
+    ...(cancelReason ? { statusReason: cancelReason } : {}),
+    statusMessage:
+      status === "cancelled" && cancelReason
+        ? "Tu cita de mantenimiento ha sido cancelada."
+        : getReservationStatusMessage(status),
+    appointmentDate: reservation.date
+      ? new Date(reservation.date).toLocaleDateString("es-MX", {
+          weekday: "long",
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+        })
+      : "",
+    appointmentTime: reservation.time,
+    deviceType: reservation.deviceType,
+    service: reservation.service,
+    detailUrl: getReservationDetailUrl(reservation.reference),
+  });
 };
 
 export const createReservation = async (req: Request, res: Response) => {
@@ -215,9 +262,20 @@ export const cancelReservation = async (req: Request, res: Response) => {
       where: { reference },
       data: {
         status: "cancelled",
-        cancelReason: cancelReason || "Cancelada por el cliente"
+        cancelReason: cancelReason || "Cancelada por el cliente",
+        
       },
     });
+
+    try {
+      await notifyReservationStatusChange(
+        updated,
+        "cancelled",
+        updated.cancelReason || "Cancelada por el cliente",
+      );
+    } catch (emailErr) {
+      console.error("Error al enviar notificación de cancelación por correo:", emailErr);
+    }
 
     return res.status(200).json({
       ok: true,
@@ -656,9 +714,18 @@ export const updateReservationStatus = async (req: CustomRequestI, res: Response
     }
 
     const { reference, status, cancelReason } = req.body;
+    const resolvedCancelReason =
+      status === "cancelled" ? String(cancelReason || "").trim() : "";
 
     if (!reference || !status) {
       return res.status(400).json({ ok: false, message: "Referencia y estatus requeridos" });
+    }
+
+    if (status === "cancelled" && !resolvedCancelReason) {
+      return res.status(400).json({
+        ok: false,
+        message: "El motivo de la cancelación es requerido",
+      });
     }
 
     const existingReservation = await prisma.reservas.findUnique({
@@ -677,31 +744,21 @@ export const updateReservationStatus = async (req: CustomRequestI, res: Response
       where: { reference },
       data: {
         status,
-        ...(status === "cancelled" && cancelReason ? { cancelReason } : {})
-      }
+        ...(status === "cancelled"
+          ? {
+              cancelReason: resolvedCancelReason,
+              statusReason: resolvedCancelReason,
+            }
+          : {}),
+      },
     });
 
-    // Enviar notificación por correo silenciosamente usando Resend si el estado cambió
     try {
-      if (updated && updated.contactEmail) {
-        let emailSubject = "Actualización de tu cita de mantenimiento";
-        let statusText = "Pendiente";
-        if (status === "completed") statusText = "Completada";
-        else if (status === "in_process") statusText = "En Proceso";
-        else if (status === "cancelled") statusText = "Cancelada";
-
-        await sendEmailResend(
-          updated.contactEmail,
-          `${emailSubject} - Cita ${statusText}`,
-          "reservation-client",
-          {
-            USERNAME: updated.contactName,
-            FOLIO: updated.reference,
-            DATE: updated.date ? new Date(updated.date).toLocaleDateString() : "",
-            TIME: updated.time,
-            DEVICE: updated.deviceType,
-            SERVICE: `${updated.service} (Estatus: ${statusText})`
-          }
+      if (updated.contactEmail) {
+        await notifyReservationStatusChange(
+          updated,
+          status,
+          status === "cancelled" ? resolvedCancelReason : undefined,
         );
       }
     } catch (emailErr) {

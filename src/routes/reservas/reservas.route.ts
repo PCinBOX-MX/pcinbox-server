@@ -13,24 +13,21 @@ import { MiddleAuthRoute } from "../../middleware/index.middleware";
 
 const router = Router();
 
-// Obtener detalles de una reservación por su referencia
+// Obtener detalles de una reservación por su referencia (público)
 router.get("/get/:reference", getReservationByRef);
 
 // Consulta de disponibilidad de horarios para un día específico
 router.get("/availability", checkAvailability);
 
-// Creación de reserva (público / token opcional)
+// Creación de reserva (público / token opcional para vincular al usuario)
 router.post("/create", createReservation);
 
-// Cancelar y reprogramar reservas
+// Cancelar y reprogramar reservas (público por referencia)
 router.post("/cancel", cancelReservation);
 router.post("/reschedule", rescheduleReservation);
 
-// Obtener las reservas del usuario autenticado (requiere token)
+// Historial del usuario autenticado
 router.get("/getUserReservations", MiddleAuthRoute, getUserReservations);
-
-// Obtener el detalle de una reservación por referencia
-router.get("/get/:reference", MiddleAuthRoute, getReservationByRef);
 
 // Rutas de administración
 router.get("/admin/getAll", MiddleAuthRoute, getAdminReservations);
