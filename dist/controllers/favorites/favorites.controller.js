@@ -1,13 +1,9 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getTotalFavorites = exports.removeFavorites = exports.addFavorites = exports.getFavoritosUser = void 0;
 const prismaClient_1 = require("../../db/prismaClient");
-const dotenv_1 = __importDefault(require("dotenv"));
+require("../../config/loadEnv");
 const index_service_1 = require("./../../services/index.service");
-dotenv_1.default.config({ path: ".env.prod" });
 const getFavoritosUser = async (req, res) => {
     try {
         const findFavoritesUser = await prismaClient_1.prisma.favorites.findMany({

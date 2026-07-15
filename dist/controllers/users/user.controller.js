@@ -1,17 +1,13 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.removeAccount = exports.ChangePassword = exports.getPhotoUser = exports.uploadPhoto = exports.LoginGoogle = exports.Register = exports.Login = void 0;
 const prismaClient_1 = require("../../db/prismaClient");
 const index_service_1 = require("./../../services/index.service");
 const luxon_1 = require("luxon");
 const imagekit_1 = require("./../../imagekit/imagekit");
-const dotenv_1 = __importDefault(require("dotenv"));
+require("../../config/loadEnv");
 const resend_service_1 = require("../../services/resend.service");
 const fechaLocal = luxon_1.DateTime.now().setZone("America/Mexico_City");
-dotenv_1.default.config({ path: ".env.prod" });
 const Login = async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -240,10 +236,16 @@ const LoginGoogle = async (req, res) => {
         });
     }
     catch (error) {
+        (0, index_service_1.writeErrorLogs)(`LoginGoogle: ${error?.message || error}`);
+        const isDev = !process.env.NODE_ENV ||
+            process.env.NODE_ENV === "local" ||
+            process.env.NODE_ENV === "development";
         return res.status(500).json({
             ok: false,
-            error: error.message,
-            message: "Error interno del servidor",
+            error: error?.message || "Error desconocido",
+            message: isDev
+                ? error?.message || "Error interno del servidor"
+                : "Error interno del servidor",
         });
     }
 };

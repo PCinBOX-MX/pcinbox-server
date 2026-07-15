@@ -5,10 +5,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MiddleAuthRoute = void 0;
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
-const dotenv_1 = __importDefault(require("dotenv"));
+require("../config/loadEnv");
 const prismaClient_1 = require("./../db/prismaClient");
-// const envFile = `.env.${process.env.NODE_ENV || "local"}`;
-dotenv_1.default.config({ path: ".env.prod" });
 const MiddleAuthRoute = async (req, res, next) => {
     const authHeader = req.headers.authorization;
     if (!authHeader || !authHeader.startsWith("Bearer ")) {

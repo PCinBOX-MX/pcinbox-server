@@ -1,4 +1,5 @@
 import { Response } from "express";
+import "../../config/loadEnv";
 import CustomRequestI from "./../../interfaces/customrequest.interface";
 export declare const hasAddressUser: (req: CustomRequestI, res: Response) => Promise<Response<any, Record<string, any>>>;
 export declare const registerAddress: (req: CustomRequestI, res: Response) => Promise<Response<any, Record<string, any>>>;

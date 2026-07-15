@@ -3,9 +3,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+require("./config/loadEnv");
 const express_1 = __importDefault(require("express"));
 const cors_1 = __importDefault(require("cors"));
-const dotenv_1 = __importDefault(require("dotenv"));
 const user_route_1 = __importDefault(require("./routes/users/user.route"));
 const resetPassword_route_1 = __importDefault(require("./routes/resetPass/resetPassword.route"));
 const cart_route_1 = __importDefault(require("./routes/cart/cart.route"));
@@ -17,22 +17,15 @@ const favorites_route_1 = __importDefault(require("./routes/favorites/favorites.
 const review_route_1 = __importDefault(require("./routes/review/review.route"));
 const sales_route_1 = __importDefault(require("./routes/sales/sales.route"));
 const reservas_route_1 = __importDefault(require("./routes/reservas/reservas.route"));
+const checkout_route_1 = __importDefault(require("./routes/checkout/checkout.route"));
 const cookie_parser_1 = __importDefault(require("cookie-parser"));
 const path_1 = __importDefault(require("path"));
 const helmet_1 = __importDefault(require("helmet"));
-const security_middleware_1 = require("./middleware/security.middleware");
-//const envFile = `.env.${process.env.NODE_ENV || "local"}`;
-dotenv_1.default.config({ path: ".env.prod" });
 const server = (0, express_1.default)();
-(0, security_middleware_1.applySecurityBaseline)(server);
-server.use(security_middleware_1.blockMaliciousProbePaths);
-server.use(security_middleware_1.globalRateLimiter.middleware);
-server.use(security_middleware_1.authPathRateLimiter);
-server.use(security_middleware_1.checkoutPathRateLimiter);
 server.use(express_1.default.static(path_1.default.join(__dirname, "../public")));
 server.set("view engine", "ejs");
 server.set("views", path_1.default.join(__dirname, "views"));
-server.set("trust proxy", process.env.TRUST_PROXY === "false" ? false : 1);
+server.set("trust proxy", 1);
 const allowedOrigins = [
     "http://localhost:3000",
     "https://pcinbox-client.netlify.app",
@@ -45,8 +38,11 @@ const allowedOrigins = [
     "http://192.168.0.107:3000",
     "https://colt-fierce-eugena.ngrok-free.dev",
     "https://interpervasive-unbotanical-kinsley.ngrok-free.dev",
-    "https://bd26-177-245-224-110.ngrok-free.app",
     "https://certainly-slackness-treble.ngrok-free.dev",
+    "http://2.25.81.247:8080",
+    "http://2.25.81.247",
+    "https://admin-qa.pcinbox.com.mx",
+    "https://client-qa.pcinbox.com.mx"
 ];
 server.use((0, helmet_1.default)());
 server.disable("x-powered-by");
@@ -82,6 +78,7 @@ server.use("/api/v1/favorites", favorites_route_1.default);
 server.use("/api/v1/review", review_route_1.default);
 server.use("/api/v1/sales", sales_route_1.default);
 server.use("/api/v1/reservas", reservas_route_1.default);
+server.use("/api/v1/checkout", checkout_route_1.default);
 server.get("/", (req, res) => {
     res.send("Servidor funcionando correctamente");
 });

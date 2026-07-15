@@ -9,13 +9,12 @@ exports.parseBigInts = parseBigInts;
 exports.readExcelImageKit = readExcelImageKit;
 const bcrypt_1 = __importDefault(require("bcrypt"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
-const dotenv_1 = __importDefault(require("dotenv"));
+require("../config/loadEnv");
 const nanoid_1 = require("nanoid");
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
 const axios_1 = __importDefault(require("axios"));
 const xlsx_1 = __importDefault(require("xlsx"));
-dotenv_1.default.config({ path: ".env.prod" });
 const hasPassword = async (password) => {
     const saltRounds = 10;
     const hashedPassword = await bcrypt_1.default.hash(password, saltRounds);
@@ -26,8 +25,15 @@ const verifyPassword = async (password, hashed) => {
     return bcrypt_1.default.compare(password, hashed);
 };
 exports.verifyPassword = verifyPassword;
+function getJwtSecret() {
+    const secret = process.env.KEY_JWT?.trim() || "";
+    if (!secret) {
+        throw new Error("KEY_JWT no configurada en pcinbox-server (.env.local o .env.prod)");
+    }
+    return secret;
+}
 const signPayload = (obj, expiresIn) => {
-    return jsonwebtoken_1.default.sign(obj, process.env.KEY_JWT || "", { expiresIn: expiresIn });
+    return jsonwebtoken_1.default.sign(obj, getJwtSecret(), { expiresIn: expiresIn });
 };
 exports.signPayload = signPayload;
 function generateResetToken() {

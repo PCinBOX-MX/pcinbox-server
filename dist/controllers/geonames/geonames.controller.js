@@ -4,10 +4,9 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ShippingByZone = exports.getAddressWithPostalCode = void 0;
-const dotenv_1 = __importDefault(require("dotenv"));
 const axios_1 = __importDefault(require("axios"));
 const prismaClient_1 = require("../../db/prismaClient");
-dotenv_1.default.config({ path: ".env.prod" });
+require("../../config/loadEnv");
 const apiGeoNames = axios_1.default.create({
     baseURL: `http://api.geonames.org`,
     params: {

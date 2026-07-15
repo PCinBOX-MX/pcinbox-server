@@ -4,13 +4,11 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SendEmailWelcomeUser = exports.sendMail = void 0;
-const dotenv_1 = __importDefault(require("dotenv"));
+require("../config/loadEnv");
 const mail_1 = __importDefault(require("@sendgrid/mail"));
 const ejs_1 = __importDefault(require("ejs"));
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
-// const envFile = `.env.${process.env.NODE_ENV || "local"}`;
-dotenv_1.default.config({ path: ".env.prod" });
 mail_1.default.setApiKey(process.env.KEY_SENDGRID || "");
 const sendMail = async (resetLink, userName, toEmail) => {
     const pathHtml = path_1.default.resolve(__dirname, "../../src/views/linkResetPasswordHtml.ejs");

@@ -1,4 +1,5 @@
 import { Response } from "express";
+import "../../config/loadEnv";
 import CustomRequestI from "./../../interfaces/customrequest.interface";
 export declare const getFavoritosUser: (req: CustomRequestI, res: Response) => Promise<Response<any, Record<string, any>>>;
 export declare const addFavorites: (req: CustomRequestI, res: Response) => Promise<Response<any, Record<string, any>>>;

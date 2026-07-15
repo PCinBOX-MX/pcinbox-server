@@ -4,19 +4,17 @@ const express_1 = require("express");
 const reservas_controller_1 = require("../../controllers/reservas/reservas.controller");
 const index_middleware_1 = require("../../middleware/index.middleware");
 const router = (0, express_1.Router)();
-// Obtener detalles de una reservación por su referencia
+// Obtener detalles de una reservación por su referencia (público)
 router.get("/get/:reference", reservas_controller_1.getReservationByRef);
 // Consulta de disponibilidad de horarios para un día específico
 router.get("/availability", reservas_controller_1.checkAvailability);
-// Creación de reserva (público / token opcional)
+// Creación de reserva (público / token opcional para vincular al usuario)
 router.post("/create", reservas_controller_1.createReservation);
-// Cancelar y reprogramar reservas
+// Cancelar y reprogramar reservas (público por referencia)
 router.post("/cancel", reservas_controller_1.cancelReservation);
 router.post("/reschedule", reservas_controller_1.rescheduleReservation);
-// Obtener las reservas del usuario autenticado (requiere token)
+// Historial del usuario autenticado
 router.get("/getUserReservations", index_middleware_1.MiddleAuthRoute, reservas_controller_1.getUserReservations);
-// Obtener el detalle de una reservación por referencia
-router.get("/get/:reference", index_middleware_1.MiddleAuthRoute, reservas_controller_1.getReservationByRef);
 // Rutas de administración
 router.get("/admin/getAll", index_middleware_1.MiddleAuthRoute, reservas_controller_1.getAdminReservations);
 router.post("/admin/updateStatus", index_middleware_1.MiddleAuthRoute, reservas_controller_1.updateReservationStatus);
