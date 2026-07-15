@@ -259,6 +259,8 @@ model shipments {
   status           shipments_status?
   storeId          Int?
   shipping_method  shipments_shipping_method?
+  shippingCost     Decimal?                   @db.Decimal(10, 2)
+  insuranceCost    Decimal?                   @db.Decimal(10, 2)
   createdAt        DateTime?                  @db.DateTime(0)
   requireInsurance Int?                       @db.TinyInt
   sales            sales[]

@@ -221,15 +221,15 @@ export const getSalesByUser = async (req: CustomRequestI, res: Response) => {
     const branches =
       branchIds.length > 0
         ? await prisma.branches.findMany({
-            where: {
-              idBranche: { in: branchIds.map((id) => BigInt(id)) },
-            },
-            select: {
-              idBranche: true,
-              name: true,
-              city: true,
-            },
-          })
+          where: {
+            idBranche: { in: branchIds.map((id) => BigInt(id)) },
+          },
+          select: {
+            idBranche: true,
+            name: true,
+            city: true,
+          },
+        })
         : [];
 
     const branchById = new Map(
@@ -373,35 +373,35 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
       );
 
       return {
-      idOrder: order.idOrder,
-      totalSales: Number(order.totalAmount ?? 0),
-      shippingTotal,
-      insuranceTotal,
-      createdAt: order?.createdAt,
-      updatedAt: order?.updatedAt,
-      payment_method: order.pay_method,
-      orderStatus: order.status,
-      idUser: Number(order.userId),
-      products: order.sales.map((sale) => {
-        const shipment = sale.shipments;
+        idOrder: order.idOrder,
+        totalSales: Number(order.totalAmount ?? 0),
+        shippingTotal,
+        insuranceTotal,
+        createdAt: order?.createdAt,
+        updatedAt: order?.updatedAt,
+        payment_method: order.pay_method,
+        orderStatus: order.status,
+        idUser: Number(order.userId),
+        products: order.sales.map((sale) => {
+          const shipment = sale.shipments;
 
-        return {
-          idShipment: shipment?.idShipment ?? sale.shipmentId,
-          description: sale.products?.description,
-          price: sale?.products?.price,
-          idProduct: sale.products.idProduct,
-          name: sale.products.name,
-          quantity: sale.quantity,
-          providerId: sale.products?.providerId,
-          statusShip: shipment?.status,
-          shipping_method: shipment?.shipping_method,
-          status: sale.status,
-          image_url: sale?.products?.image_url,
-          trackingNumber: shipment?.trackingNumber,
-          shippingCost: toMoneyNumber(shipment?.shippingCost),
-          insuranceCost: toMoneyNumber(shipment?.insuranceCost),
-          address: shipment?.addresses
-            ? {
+          return {
+            idShipment: shipment?.idShipment ?? sale.shipmentId,
+            description: sale.products?.description,
+            price: sale?.products?.price,
+            idProduct: sale.products.idProduct,
+            name: sale.products.name,
+            quantity: sale.quantity,
+            providerId: sale.products?.providerId,
+            statusShip: shipment?.status,
+            shipping_method: shipment?.shipping_method,
+            status: sale.status,
+            image_url: sale?.products?.image_url,
+            trackingNumber: shipment?.trackingNumber,
+            shippingCost: toMoneyNumber(shipment?.shippingCost),
+            insuranceCost: toMoneyNumber(shipment?.insuranceCost),
+            address: shipment?.addresses
+              ? {
                 idAddress: Number(shipment.addresses.idAddress),
                 userId: Number(shipment.addresses.userId),
                 street: shipment.addresses.street,
@@ -418,10 +418,10 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
                 updatedAt: shipment.addresses.updatedAt,
                 active: shipment.addresses.active,
               }
-            : null,
-        };
-      }),
-    };
+              : null,
+          };
+        }),
+      };
     });
 
     const filtered = parserOrder.filter((order) => {
@@ -433,14 +433,14 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
       const dateMatch =
         startDate && endDate
           ? (() => {
-              const itemDate = new Date(order.createdAt ?? 0);
-              const start = new Date(startDate);
-              const end = new Date(endDate);
-              start.setHours(0, 0, 0, 0);
-              end.setHours(23, 59, 59, 999);
-              itemDate.setHours(0, 0, 0, 0);
-              return itemDate >= start && itemDate <= end;
-            })()
+            const itemDate = new Date(order.createdAt ?? 0);
+            const start = new Date(startDate);
+            const end = new Date(endDate);
+            start.setHours(0, 0, 0, 0);
+            end.setHours(23, 59, 59, 999);
+            itemDate.setHours(0, 0, 0, 0);
+            return itemDate >= start && itemDate <= end;
+          })()
           : true;
 
       const searchMatch = orderMatchesHistorySearch(order, searchProduct);

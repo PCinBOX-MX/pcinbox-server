@@ -82,7 +82,7 @@ export async function findActiveCartItem(
   productId: number,
   storeId: number | null,
 ) {
-  const exact = await prisma.cartItems.findFirst({
+  return prisma.cartItems.findFirst({
     where: {
       carId,
       productId,
@@ -90,32 +90,6 @@ export async function findActiveCartItem(
       active: 1,
     },
   });
-
-  if (exact) return exact;
-
-  const allForProduct = await prisma.cartItems.findMany({
-    where: {
-      carId,
-      productId,
-      active: 1,
-    },
-    orderBy: { idCartItem: "desc" },
-  });
-
-  if (allForProduct.length === 0) return null;
-  if (allForProduct.length === 1) return allForProduct[0];
-
-  if (storeId !== null) {
-    const byStore = allForProduct.find(
-      (item) =>
-        item.storeId != null && Number(item.storeId) === Number(storeId),
-    );
-    if (byStore) return byStore;
-  }
-
-  return allForProduct.reduce((best, item) =>
-    Number(item.quantity ?? 0) > Number(best.quantity ?? 0) ? item : best,
-  );
 }
 
 /**
@@ -125,12 +99,13 @@ export async function findActiveCartItem(
 export async function mergeDuplicateCartLines(
   carId: bigint,
   productId: number,
-  preferredStoreId: number | null,
+  storeId: number | null,
 ) {
   const lines = await prisma.cartItems.findMany({
     where: {
       carId,
       productId,
+      storeId,
       active: 1,
     },
     orderBy: { idCartItem: "asc" },
@@ -145,42 +120,26 @@ export async function mergeDuplicateCartLines(
     0,
   );
 
-  const keeper =
-    (preferredStoreId !== null
-      ? lines.find(
-          (line) =>
-            line.storeId != null &&
-            Number(line.storeId) === Number(preferredStoreId),
-        )
-      : lines.find((line) => line.storeId === null)) ?? lines[0];
-
-  if (!keeper) {
-    return null;
-  }
+  const keeper = lines[0];
 
   await prisma.cartItems.update({
-    where: { idCartItem: keeper.idCartItem },
+    where: { idCartItem: keeper!.idCartItem },
     data: {
       quantity: totalQty,
-      storeId: preferredStoreId ?? keeper.storeId,
     },
   });
 
-  const toDeactivate = lines.filter(
-    (line) => line.idCartItem !== keeper.idCartItem,
-  );
+  const toDeactivate = lines.slice(1);
 
-  if (toDeactivate.length > 0) {
-    await prisma.cartItems.updateMany({
-      where: {
-        idCartItem: { in: toDeactivate.map((line) => line.idCartItem) },
-      },
-      data: { active: 0, quantity: 0 },
-    });
-  }
+  await prisma.cartItems.updateMany({
+    where: {
+      idCartItem: { in: toDeactivate.map((line) => line.idCartItem) },
+    },
+    data: { active: 0, quantity: 0 },
+  });
 
   return prisma.cartItems.findFirst({
-    where: { idCartItem: keeper.idCartItem },
+    where: { idCartItem: keeper!.idCartItem },
   });
 }
 
