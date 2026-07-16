@@ -37,6 +37,10 @@ const allowedOrigins = [
   "https://colt-fierce-eugena.ngrok-free.dev",
   "https://interpervasive-unbotanical-kinsley.ngrok-free.dev",
   "https://certainly-slackness-treble.ngrok-free.dev",
+  "http://2.25.81.247:8080",
+  "http://2.25.81.247",
+  "https://admin-qa.pcinbox.com.mx",
+  "https://client-qa.pcinbox.com.mx"
 ];
 
 server.use(helmet());

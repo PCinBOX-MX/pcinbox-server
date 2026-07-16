@@ -1,13 +1,9 @@
 "use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.updatedAddress = exports.removeAddress = exports.registerAddress = exports.hasAddressUser = void 0;
 const prismaClient_1 = require("../../db/prismaClient");
 const index_service_1 = require("./../../services/index.service");
-const dotenv_1 = __importDefault(require("dotenv"));
-dotenv_1.default.config({ path: ".env.prod" });
+require("../../config/loadEnv");
 const hasAddressUser = async (req, res) => {
     try {
         let findAdrress = await prismaClient_1.prisma.addresses.findMany({

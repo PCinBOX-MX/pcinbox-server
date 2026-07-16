@@ -62,6 +62,36 @@ const isHoliday = (date) => {
         return true;
     return false;
 };
+const getReservationDetailUrl = (reference) => {
+    const baseUrl = (process.env.BASE_URL_APP || "http://localhost:3000").replace(/\/$/, "");
+    return `${baseUrl}/reservas/mantenimiento/${reference}`;
+};
+const notifyReservationStatusChange = async (reservation, status, cancelReason) => {
+    if (!reservation.contactEmail)
+        return;
+    await (0, resend_service_1.sendReservationStatusUpdateEmail)(reservation.contactEmail, {
+        contactName: reservation.contactName,
+        reference: reservation.reference,
+        status,
+        statusText: (0, resend_service_1.getReservationStatusLabel)(status),
+        ...(cancelReason ? { statusReason: cancelReason } : {}),
+        statusMessage: status === "cancelled" && cancelReason
+            ? "Tu cita de mantenimiento ha sido cancelada."
+            : (0, resend_service_1.getReservationStatusMessage)(status),
+        appointmentDate: reservation.date
+            ? new Date(reservation.date).toLocaleDateString("es-MX", {
+                weekday: "long",
+                year: "numeric",
+                month: "long",
+                day: "numeric",
+            })
+            : "",
+        appointmentTime: reservation.time,
+        deviceType: reservation.deviceType,
+        service: reservation.service,
+        detailUrl: getReservationDetailUrl(reservation.reference),
+    });
+};
 const createReservation = async (req, res) => {
     try {
         const { reference, service, deviceType, brand, model, description, date, time, contactName, contactEmail, contactPhone, } = req.body;
@@ -182,9 +212,15 @@ const cancelReservation = async (req, res) => {
             where: { reference },
             data: {
                 status: "cancelled",
-                cancelReason: cancelReason || "Cancelada por el cliente"
+                cancelReason: cancelReason || "Cancelada por el cliente",
             },
         });
+        try {
+            await notifyReservationStatusChange(updated, "cancelled", updated.cancelReason || "Cancelada por el cliente");
+        }
+        catch (emailErr) {
+            console.error("Error al enviar notificación de cancelación por correo:", emailErr);
+        }
         return res.status(200).json({
             ok: true,
             message: "Reserva cancelada con éxito",
@@ -573,8 +609,15 @@ const updateReservationStatus = async (req, res) => {
             return res.status(403).json({ ok: false, message: "Acceso denegado. Se requieren permisos de administrador." });
         }
         const { reference, status, cancelReason } = req.body;
+        const resolvedCancelReason = status === "cancelled" ? String(cancelReason || "").trim() : "";
         if (!reference || !status) {
             return res.status(400).json({ ok: false, message: "Referencia y estatus requeridos" });
+        }
+        if (status === "cancelled" && !resolvedCancelReason) {
+            return res.status(400).json({
+                ok: false,
+                message: "El motivo de la cancelación es requerido",
+            });
         }
         const existingReservation = await prismaClient_1.prisma.reservas.findUnique({
             where: { reference }
@@ -589,28 +632,17 @@ const updateReservationStatus = async (req, res) => {
             where: { reference },
             data: {
                 status,
-                ...(status === "cancelled" && cancelReason ? { cancelReason } : {})
-            }
+                ...(status === "cancelled"
+                    ? {
+                        cancelReason: resolvedCancelReason,
+                        statusReason: resolvedCancelReason,
+                    }
+                    : {}),
+            },
         });
-        // Enviar notificación por correo silenciosamente usando Resend si el estado cambió
         try {
-            if (updated && updated.contactEmail) {
-                let emailSubject = "Actualización de tu cita de mantenimiento";
-                let statusText = "Pendiente";
-                if (status === "completed")
-                    statusText = "Completada";
-                else if (status === "in_process")
-                    statusText = "En Proceso";
-                else if (status === "cancelled")
-                    statusText = "Cancelada";
-                await (0, resend_service_1.sendEmailResend)(updated.contactEmail, `${emailSubject} - Cita ${statusText}`, "reservation-client", {
-                    USERNAME: updated.contactName,
-                    FOLIO: updated.reference,
-                    DATE: updated.date ? new Date(updated.date).toLocaleDateString() : "",
-                    TIME: updated.time,
-                    DEVICE: updated.deviceType,
-                    SERVICE: `${updated.service} (Estatus: ${statusText})`
-                });
+            if (updated.contactEmail) {
+                await notifyReservationStatusChange(updated, status, status === "cancelled" ? resolvedCancelReason : undefined);
             }
         }
         catch (emailErr) {

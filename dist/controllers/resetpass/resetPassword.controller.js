@@ -4,15 +4,13 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.changePassword = exports.resFileLinkResetPass = exports.forgotPassword = void 0;
-const dotenv_1 = __importDefault(require("dotenv"));
 const prismaClient_1 = require("../../db/prismaClient");
+require("../../config/loadEnv");
 const index_service_1 = require("./../../services/index.service");
 const path_1 = __importDefault(require("path"));
 const fs_1 = __importDefault(require("fs"));
 const date_fns_tz_1 = require("date-fns-tz");
 const resend_service_1 = require("../../services/resend.service");
-// const envFile = `.env.${process.env.NODE_ENV || "local"}`;
-dotenv_1.default.config({ path: ".env.prod" });
 const forgotPassword = async (req, res) => {
     try {
         const { email } = req.body;

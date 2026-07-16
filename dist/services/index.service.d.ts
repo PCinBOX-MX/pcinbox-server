@@ -1,3 +1,4 @@
+import "../config/loadEnv";
 export declare const hasPassword: (password: string) => Promise<string>;
 export declare const verifyPassword: (password: string, hashed: string) => Promise<boolean>;
 export declare const signPayload: (obj: object | Buffer | string, expiresIn: number | any) => string;

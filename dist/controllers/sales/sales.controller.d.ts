@@ -5,4 +5,5 @@ export declare const getPedidosByUser: (req: CustomRequestI, res: Response) => P
 export declare const getSalesByUser: (req: CustomRequestI, res: Response) => Promise<Response<any, Record<string, any>>>;
 export declare const historySalesByUser: (req: CustomRequestI, res: Response) => Promise<Response<any, Record<string, any>>>;
 export declare const filterSales: (req: CustomRequestI, res: Response) => Promise<Response<any, Record<string, any>>>;
+export declare const cancelOrderByUser: (req: CustomRequestI, res: Response) => Promise<Response<any, Record<string, any>>>;
 //# sourceMappingURL=sales.controller.d.ts.map
