@@ -13,7 +13,8 @@
     "start:dev": "dotenv -e .env.prod node dist/server.js",
     "start": "node dist/server.js",
     "migrate:start": "npx dotenv -e .env.prod -- npx prisma db push",
-    "qa": "npx dotenv -e .env.local -- node dist/server.js"
+    "qa": "npx dotenv -e .env.local -- node dist/server.js",
+    "prod": "npx dotenv -e .env.prod --node dist/server.js"
   },
   "keywords": [],
   "author": "",
