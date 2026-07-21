@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.changeSucursal = exports.generateCotizacion = exports.removeAllCart = exports.removeProduct = exports.addProductFromStorage = exports.addProduct = exports.getCart = void 0;
+exports.changeQuantity = exports.changeSucursal = exports.generateCotizacion = exports.removeAllCart = exports.removeProduct = exports.addProductFromStorage = exports.addProduct = exports.getCart = void 0;
 require("../../config/loadEnv");
 const prismaClient_1 = require("../../db/prismaClient");
 const luxon_1 = require("luxon");
@@ -438,4 +438,9 @@ const changeSucursal = async (req, res) => {
     }
 };
 exports.changeSucursal = changeSucursal;
+const changeQuantity = async (req, res) => {
+    req.body.quantityMode = "set";
+    return (0, exports.addProduct)(req, res);
+};
+exports.changeQuantity = changeQuantity;
 //# sourceMappingURL=cart.controller.js.map

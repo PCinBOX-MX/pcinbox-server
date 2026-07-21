@@ -17,12 +17,12 @@ export declare function findActiveCartItem(carId: bigint, productId: number, sto
     productId: bigint;
     storeId: number | null;
     quantity: number | null;
-} | null | undefined>;
+} | null>;
 /**
  * Une líneas duplicadas del mismo producto (p. ej. storeId null vs sucursal)
  * para que addProduct y getCart vean la misma cantidad.
  */
-export declare function mergeDuplicateCartLines(carId: bigint, productId: number, preferredStoreId: number | null): Promise<{
+export declare function mergeDuplicateCartLines(carId: bigint, productId: number, storeId: number | null): Promise<{
     active: number | null;
     idCartItem: bigint;
     carId: bigint;
