@@ -928,3 +928,9 @@ export const changeSucursal = async (req: CustomRequestI, res: Response) => {
 };
 
 
+
+export const changeQuantity = async (req: CustomRequestI, res: Response) => {
+  req.body.quantityMode = "set";
+  return addProduct(req, res);
+};
+
