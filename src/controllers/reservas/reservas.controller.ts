@@ -25,10 +25,10 @@ const getUserIdFromHeader = (req: Request): number | null => {
 
 // Helper para comprobar si un día es feriado oficial en México
 const isHoliday = (date: Date): boolean => {
-  const year = date.getFullYear();
-  const month = date.getMonth(); // 0 = Ene, 1 = Feb, etc.
-  const day = date.getDate();
-  const dayOfWeek = date.getDay(); // 0 = Dom, 1 = Lun, ..., 6 = Sáb
+  const year = date.getUTCFullYear();
+  const month = date.getUTCMonth(); // 0 = Ene, 1 = Feb, etc.
+  const day = date.getUTCDate();
+  const dayOfWeek = date.getUTCDay(); // 0 = Dom, 1 = Lun, ..., 6 = Sáb
 
   // 1 de Enero (Año Nuevo)
   if (month === 0 && day === 1) return true;
@@ -199,31 +199,36 @@ export const createReservation = async (req: Request, res: Response) => {
     });
 
     if (newReservation) {
-      await sendEmailResend(
-        newReservation.contactEmail,
-        "Reservacion de cita para mantenimiento",
-        "reservation-client", {
-        USERNAME: newReservation.contactName,
-        FOLIO: newReservation.reference,
-        DATE: newReservation.createdAt?.toDateString()!,
-        TIME: newReservation.time,
-        DEVICE: newReservation.deviceType,
-        SERVICE: newReservation.service
-      })
+        const dateFormatter = new Intl.DateTimeFormat('es-MX', { timeZone: 'UTC', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+        const formattedDate = newReservation.date ? dateFormatter.format(new Date(newReservation.date)) : newReservation.createdAt?.toDateString()!;
 
-      await sendEmailResend(
-        "admon@pcinbox.com.mx",
-        "Reservacion de cita para mantenimiento",
-        "reservation-admin", {
-        USERNAME: newReservation.contactName,
-        EMAIL: newReservation.contactEmail,
-        PHONE: newReservation.contactPhone,
-        FOLIO: newReservation.reference,
-        DATE: newReservation.createdAt?.toDateString()!,
-        TIME: newReservation.time,
-        DEVICE: newReservation.deviceType,
-        SERVICE: newReservation.service
-      })
+        await sendEmailResend(
+          newReservation.contactEmail,
+          "Reservacion de cita para mantenimiento",
+          "reservation-client", {
+          USERNAME: newReservation.contactName,
+          FOLIO: newReservation.reference,
+          DATE: formattedDate,
+          TIME: newReservation.time,
+          DEVICE: `${newReservation.deviceType} (${newReservation.brand} ${newReservation.model})`,
+          DESCRIPTION: newReservation.description,
+          SERVICE: newReservation.service
+        })
+
+        await sendEmailResend(
+          "admon@pcinbox.com.mx",
+          "Reservacion de cita para mantenimiento",
+          "reservation-admin", {
+          USERNAME: newReservation.contactName,
+          EMAIL: newReservation.contactEmail,
+          PHONE: newReservation.contactPhone,
+          FOLIO: newReservation.reference,
+          DATE: formattedDate,
+          TIME: newReservation.time,
+          DEVICE: `${newReservation.deviceType} (${newReservation.brand} ${newReservation.model})`,
+          DESCRIPTION: newReservation.description,
+          SERVICE: newReservation.service
+        })
 
       return res.status(201).json({
         ok: true,
@@ -310,7 +315,7 @@ export const rescheduleReservation = async (req: Request, res: Response) => {
     const parsedDate = new Date(date);
 
     // Validar que no sea fin de semana (Sábado o Domingo)
-    const dayOfWeek = parsedDate.getDay();
+    const dayOfWeek = parsedDate.getUTCDay();
     if (dayOfWeek === 0 || dayOfWeek === 6) {
       return res.status(400).json({ ok: false, message: "No se labora en fines de semana" });
     }
@@ -366,33 +371,37 @@ export const rescheduleReservation = async (req: Request, res: Response) => {
       },
     });
 
-    if (updated) {
+      if (updated) {
+        const dateFormatter = new Intl.DateTimeFormat('es-MX', { timeZone: 'UTC', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+        const formattedDate = updated.date ? dateFormatter.format(new Date(updated.date)) : updated.createdAt?.toDateString()!;
 
-      await sendEmailResend(
-        updated.contactEmail,
-        "Reserva reprogramada con éxito",
-        "reservation-client", {
-        USERNAME: updated.contactName,
-        FOLIO: updated.reference,
-        DATE: updated.createdAt?.toDateString()!,
-        TIME: updated.time,
-        DEVICE: updated.deviceType,
-        SERVICE: updated.service
-      })
+        await sendEmailResend(
+          updated.contactEmail,
+          "Reserva reprogramada con éxito",
+          "reservation-client", {
+          USERNAME: updated.contactName,
+          FOLIO: updated.reference,
+          DATE: formattedDate,
+          TIME: updated.time,
+          DEVICE: `${updated.deviceType} (${updated.brand} ${updated.model})`,
+          DESCRIPTION: updated.description,
+          SERVICE: updated.service
+        })
 
-      await sendEmailResend(
-        "admon@pcinbox.com.mx",
-        "Reserva reprogramada con éxito",
-        "reservation-admin", {
-        USERNAME: updated.contactName,
-        EMAIL: updated.contactEmail,
-        PHONE: updated.contactPhone,
-        FOLIO: updated.reference,
-        DATE: updated.createdAt?.toDateString()!,
-        TIME: updated.time,
-        DEVICE: updated.deviceType,
-        SERVICE: updated.service
-      })
+        await sendEmailResend(
+          "admon@pcinbox.com.mx",
+          "Reserva reprogramada con éxito",
+          "reservation-admin", {
+          USERNAME: updated.contactName,
+          EMAIL: updated.contactEmail,
+          PHONE: updated.contactPhone,
+          FOLIO: updated.reference,
+          DATE: formattedDate,
+          TIME: updated.time,
+          DEVICE: `${updated.deviceType} (${updated.brand} ${updated.model})`,
+          DESCRIPTION: updated.description,
+          SERVICE: updated.service
+        })
       return res.status(201).json({
         ok: true,
         message: "Reserva reprogramada con éxito",
@@ -508,7 +517,7 @@ export const checkAvailability = async (req: Request, res: Response) => {
       return res.status(400).json({ ok: false, message: "Fecha inválida" });
     }
 
-    const dayOfWeek = parsedDate.getDay();
+    const dayOfWeek = parsedDate.getUTCDay();
     const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
     const isDayHoliday = isHoliday(parsedDate);
 
