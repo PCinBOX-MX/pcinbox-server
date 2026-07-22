@@ -111,7 +111,11 @@ export async function getZoneShippingCost(
     where: { name: slcAddress.city },
   });
 
-  return findZone?.price ? Number(findZone.price) : 0;
+  if (!findZone) {
+    throw new Error(`La ciudad seleccionada (${slcAddress.city}) no tiene cobertura para Envío Personalizado.`);
+  }
+
+  return Number(findZone.price);
 }
 
 export async function calculateGroupCosts(
@@ -129,7 +133,16 @@ export async function calculateGroupCosts(
   if (method === "estafeta") {
     shippingCost = ESTAFETA_FIXED_COST;
   } else if (method === "envioLeon") {
-    shippingCost = await getZoneShippingCost(selection.idAddress);
+    try {
+      shippingCost = await getZoneShippingCost(selection.idAddress);
+    } catch (e: any) {
+      return {
+        shippingCost: 0,
+        insuranceCost: 0,
+        totalExtra: 0,
+        error: e.message,
+      };
+    }
   } else if (method === "paqueteexpress") {
     const volume = sumProductVolume(products);
     const volumetric = calcVolumetricShipping(volume);

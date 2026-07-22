@@ -362,7 +362,7 @@ export const calculateZoneShipping = async (
   } catch (error: any) {
     return res.status(500).json({
       ok: false,
-      message: "Error al calcular envío por zona",
+      message: error.message || "Error al calcular envío por zona",
       error: error.message,
     });
   }
