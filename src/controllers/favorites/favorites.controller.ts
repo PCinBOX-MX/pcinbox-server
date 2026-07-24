@@ -6,11 +6,46 @@ import { parseBigInts } from "./../../services/index.service";
 
 export const getFavoritosUser = async (req: CustomRequestI, res: Response) => {
   try {
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 20;
+    const search = req.query.search as string;
+    const sort = req.query.sort as string;
+
+    const skip = (page - 1) * limit;
+
+    const whereClause: any = {
+      userId: req.idUser,
+      active: 1,
+    };
+
+    if (search) {
+      whereClause.products = {
+        OR: [
+          { name: { contains: search } },
+          { sku: { contains: search } },
+          { upc: { contains: search } },
+        ],
+      };
+    }
+
+    let orderByClause: any = { favoritedAt: "desc" };
+    if (sort === "z_a") {
+      orderByClause = { products: { name: "desc" } };
+    } else if (sort === "a_z") {
+      orderByClause = { products: { name: "asc" } };
+    } else if (sort === "mayor_precio") {
+      orderByClause = { products: { price: "desc" } };
+    } else if (sort === "menor_precio") {
+      orderByClause = { products: { price: "asc" } };
+    }
+
+    const totalCount = await prisma.favorites.count({ where: whereClause });
+
     const findFavoritesUser = await prisma.favorites.findMany({
-      where: {
-        userId: req.idUser,
-        active: 1,
-      },
+      where: whereClause,
+      orderBy: orderByClause,
+      skip,
+      take: limit,
       include: {
         products: {
           include: {
@@ -41,6 +76,8 @@ export const getFavoritosUser = async (req: CustomRequestI, res: Response) => {
       message: "Data de favoritos por usuario en especifico",
       data: {
         data: serializedFavorites,
+        totalPages: Math.ceil(totalCount / limit),
+        totalItems: totalCount,
       },
     });
   } catch (error: any) {
