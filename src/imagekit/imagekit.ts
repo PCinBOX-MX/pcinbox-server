@@ -11,6 +11,7 @@ type ImageKitListedFile = {
   filePath?: string;
   type?: string;
   createdAt?: number;
+  fileId?: string;
 };
 
 function getImageKitCredentials() {
@@ -198,5 +199,33 @@ export const getPhotoUserAWS = async (idUser: string | number) => {
   } catch (error) {
     writeErrorLogs(`❌ Error al obtener última foto (idUser ${idUser}): ${error}`);
     return null;
+  }
+};
+
+export const deletePhotoUserAWS = async (idUser: string | number) => {
+  const imagekit = getImageKitClient();
+  if (!imagekit) return false;
+
+  try {
+    const envFolder = getUserPhotoFolder(idUser);
+    const envFiles = await listLatestUserPhoto(envFolder);
+    const fileIds = envFiles.filter(f => f.fileId).map(f => f.fileId as string);
+    
+    if (fileIds.length > 0) {
+      await imagekit.bulkDeleteFiles(fileIds);
+    }
+
+    const legacyFolder = `/users/${idUser}`;
+    const legacyFiles = await listLatestUserPhoto(legacyFolder);
+    const legacyFileIds = legacyFiles.filter(f => f.fileId).map(f => f.fileId as string);
+    
+    if (legacyFileIds.length > 0) {
+      await imagekit.bulkDeleteFiles(legacyFileIds);
+    }
+
+    return true;
+  } catch (error) {
+    writeErrorLogs(`Error eliminando foto de idUser ${idUser}: ${error}`);
+    return false;
   }
 };

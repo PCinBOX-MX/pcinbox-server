@@ -8,7 +8,7 @@ import {
 } from "./../../services/index.service";
 import { SendEmailWelcomeUser } from "../../services/sendgrid.service";
 import { DateTime } from "luxon";
-import { uploadPhotoUser, getPhotoUserAWS } from "./../../imagekit/imagekit";
+import { uploadPhotoUser, getPhotoUserAWS, deletePhotoUserAWS } from "./../../imagekit/imagekit";
 import "../../config/loadEnv";
 import CustomRequestI from "./../../interfaces/customrequest.interface";
 import { sendEmailResend } from "../../services/resend.service";
@@ -421,6 +421,26 @@ export const ChangePassword = async (req: CustomRequestI, res: Response) => {
         message: "Contraseña actualizada correctamente.",
       });
     }
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      message: "Error interno del servidor",
+      error: error.message,
+    });
+  }
+};
+
+export const deletePhoto = async (req: CustomRequestI, res: Response) => {
+  try {
+    await deletePhotoUserAWS(req.idUser);
+
+    return res.status(200).json({
+      ok: true,
+      message: "Foto eliminada correctamente",
+      data: {
+        rutaImg: "",
+      },
+    });
   } catch (error: any) {
     return res.status(500).json({
       ok: false,

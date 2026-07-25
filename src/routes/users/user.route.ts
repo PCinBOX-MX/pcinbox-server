@@ -3,6 +3,7 @@ import {
   Login,
   Register,
   uploadPhoto,
+  deletePhoto,
   getPhotoUser,
   LoginGoogle,
   ChangePassword,
@@ -25,6 +26,7 @@ router.post(
   uploadPhoto
 );
 router.post("/changePassword", MiddleAuthRoute, ChangePassword);
+router.delete("/deletePhotoUser", MiddleAuthRoute, deletePhoto);
 router.get("/getPhotoUser", MiddleAuthRoute, getPhotoUser);
 router.post("/removeAccount", MiddleAuthRoute, removeAccount);
 export default router;
