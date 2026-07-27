@@ -7,5 +7,6 @@ export declare const LoginGoogle: (req: Request, res: Response) => Promise<Respo
 export declare const uploadPhoto: (req: CustomRequestI, res: Response) => Promise<Response<any, Record<string, any>> | undefined>;
 export declare const getPhotoUser: (req: CustomRequestI, res: Response) => Promise<Response<any, Record<string, any>> | undefined>;
 export declare const ChangePassword: (req: CustomRequestI, res: Response) => Promise<Response<any, Record<string, any>> | undefined>;
+export declare const deletePhoto: (req: CustomRequestI, res: Response) => Promise<Response<any, Record<string, any>>>;
 export declare const removeAccount: (req: CustomRequestI, res: Response) => Promise<Response<any, Record<string, any>>>;
 //# sourceMappingURL=user.controller.d.ts.map

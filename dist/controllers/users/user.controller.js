@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.removeAccount = exports.ChangePassword = exports.getPhotoUser = exports.uploadPhoto = exports.LoginGoogle = exports.Register = exports.Login = void 0;
+exports.removeAccount = exports.deletePhoto = exports.ChangePassword = exports.getPhotoUser = exports.uploadPhoto = exports.LoginGoogle = exports.Register = exports.Login = void 0;
 const prismaClient_1 = require("../../db/prismaClient");
 const index_service_1 = require("./../../services/index.service");
 const luxon_1 = require("luxon");
@@ -362,6 +362,26 @@ const ChangePassword = async (req, res) => {
     }
 };
 exports.ChangePassword = ChangePassword;
+const deletePhoto = async (req, res) => {
+    try {
+        await (0, imagekit_1.deletePhotoUserAWS)(req.idUser);
+        return res.status(200).json({
+            ok: true,
+            message: "Foto eliminada correctamente",
+            data: {
+                rutaImg: "",
+            },
+        });
+    }
+    catch (error) {
+        return res.status(500).json({
+            ok: false,
+            message: "Error interno del servidor",
+            error: error.message,
+        });
+    }
+};
+exports.deletePhoto = deletePhoto;
 const removeAccount = async (req, res) => {
     try {
         const { pass } = req.body;

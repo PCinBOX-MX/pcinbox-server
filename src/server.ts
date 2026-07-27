@@ -41,7 +41,7 @@ const allowedOrigins = [
   "http://2.25.81.247",
   "https://admin-qa.pcinbox.com.mx",
   "https://client-qa.pcinbox.com.mx",
-  "http://admon.pcinbox.com.mx",
+  "https://admon.pcinbox.com.mx",
   "http://2.25.81.247:3004"
 ];
 

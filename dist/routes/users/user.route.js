@@ -44,6 +44,7 @@ router.post("/loginGoogle", user_controller_1.LoginGoogle);
 router.post("/register", user_controller_1.Register);
 router.post("/uploadPhotoUser", index_middleware_1.MiddleAuthRoute, upload.single("file"), user_controller_1.uploadPhoto);
 router.post("/changePassword", index_middleware_1.MiddleAuthRoute, user_controller_1.ChangePassword);
+router.delete("/deletePhotoUser", index_middleware_1.MiddleAuthRoute, user_controller_1.deletePhoto);
 router.get("/getPhotoUser", index_middleware_1.MiddleAuthRoute, user_controller_1.getPhotoUser);
 router.post("/removeAccount", index_middleware_1.MiddleAuthRoute, user_controller_1.removeAccount);
 exports.default = router;

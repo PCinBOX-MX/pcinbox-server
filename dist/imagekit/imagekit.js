@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getPhotoUserAWS = exports.uploadPhotoUser = void 0;
+exports.deletePhotoUserAWS = exports.getPhotoUserAWS = exports.uploadPhotoUser = void 0;
 exports.getUserPhotoEnvSegment = getUserPhotoEnvSegment;
 exports.getUserPhotoFolder = getUserPhotoFolder;
 require("../config/loadEnv");
@@ -168,4 +168,29 @@ const getPhotoUserAWS = async (idUser) => {
     }
 };
 exports.getPhotoUserAWS = getPhotoUserAWS;
+const deletePhotoUserAWS = async (idUser) => {
+    const imagekit = getImageKitClient();
+    if (!imagekit)
+        return false;
+    try {
+        const envFolder = getUserPhotoFolder(idUser);
+        const envFiles = await listLatestUserPhoto(envFolder);
+        const fileIds = envFiles.filter(f => f.fileId).map(f => f.fileId);
+        if (fileIds.length > 0) {
+            await imagekit.bulkDeleteFiles(fileIds);
+        }
+        const legacyFolder = `/users/${idUser}`;
+        const legacyFiles = await listLatestUserPhoto(legacyFolder);
+        const legacyFileIds = legacyFiles.filter(f => f.fileId).map(f => f.fileId);
+        if (legacyFileIds.length > 0) {
+            await imagekit.bulkDeleteFiles(legacyFileIds);
+        }
+        return true;
+    }
+    catch (error) {
+        (0, index_service_1.writeErrorLogs)(`Error eliminando foto de idUser ${idUser}: ${error}`);
+        return false;
+    }
+};
+exports.deletePhotoUserAWS = deletePhotoUserAWS;
 //# sourceMappingURL=imagekit.js.map

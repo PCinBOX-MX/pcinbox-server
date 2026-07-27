@@ -5,4 +5,5 @@ export declare function getUserPhotoEnvSegment(): "local" | "prod";
 export declare function getUserPhotoFolder(idUser: string | number): string;
 export declare const uploadPhotoUser: (file: Express.Multer.File, idUser: string | number) => Promise<string | false>;
 export declare const getPhotoUserAWS: (idUser: string | number) => Promise<string | null>;
+export declare const deletePhotoUserAWS: (idUser: string | number) => Promise<boolean>;
 //# sourceMappingURL=imagekit.d.ts.map
