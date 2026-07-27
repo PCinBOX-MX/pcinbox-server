@@ -29,10 +29,10 @@ const getUserIdFromHeader = (req) => {
 };
 // Helper para comprobar si un día es feriado oficial en México
 const isHoliday = (date) => {
-    const year = date.getFullYear();
-    const month = date.getMonth(); // 0 = Ene, 1 = Feb, etc.
-    const day = date.getDate();
-    const dayOfWeek = date.getDay(); // 0 = Dom, 1 = Lun, ..., 6 = Sáb
+    const year = date.getUTCFullYear();
+    const month = date.getUTCMonth(); // 0 = Ene, 1 = Feb, etc.
+    const day = date.getUTCDate();
+    const dayOfWeek = date.getUTCDay(); // 0 = Dom, 1 = Lun, ..., 6 = Sáb
     // 1 de Enero (Año Nuevo)
     if (month === 0 && day === 1)
         return true;
@@ -162,12 +162,15 @@ const createReservation = async (req, res) => {
             },
         });
         if (newReservation) {
+            const dateFormatter = new Intl.DateTimeFormat('es-MX', { timeZone: 'UTC', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+            const formattedDate = newReservation.date ? dateFormatter.format(new Date(newReservation.date)) : newReservation.createdAt?.toDateString();
             await (0, resend_service_1.sendEmailResend)(newReservation.contactEmail, "Reservacion de cita para mantenimiento", "reservation-client", {
                 USERNAME: newReservation.contactName,
                 FOLIO: newReservation.reference,
-                DATE: newReservation.createdAt?.toDateString(),
+                DATE: formattedDate,
                 TIME: newReservation.time,
-                DEVICE: newReservation.deviceType,
+                DEVICE: `${newReservation.deviceType} (${newReservation.brand} ${newReservation.model})`,
+                DESCRIPTION: newReservation.description,
                 SERVICE: newReservation.service
             });
             await (0, resend_service_1.sendEmailResend)("admon@pcinbox.com.mx", "Reservacion de cita para mantenimiento", "reservation-admin", {
@@ -175,9 +178,10 @@ const createReservation = async (req, res) => {
                 EMAIL: newReservation.contactEmail,
                 PHONE: newReservation.contactPhone,
                 FOLIO: newReservation.reference,
-                DATE: newReservation.createdAt?.toDateString(),
+                DATE: formattedDate,
                 TIME: newReservation.time,
-                DEVICE: newReservation.deviceType,
+                DEVICE: `${newReservation.deviceType} (${newReservation.brand} ${newReservation.model})`,
+                DESCRIPTION: newReservation.description,
                 SERVICE: newReservation.service
             });
             return res.status(201).json({
@@ -250,7 +254,7 @@ const rescheduleReservation = async (req, res) => {
         }
         const parsedDate = new Date(date);
         // Validar que no sea fin de semana (Sábado o Domingo)
-        const dayOfWeek = parsedDate.getDay();
+        const dayOfWeek = parsedDate.getUTCDay();
         if (dayOfWeek === 0 || dayOfWeek === 6) {
             return res.status(400).json({ ok: false, message: "No se labora en fines de semana" });
         }
@@ -301,12 +305,15 @@ const rescheduleReservation = async (req, res) => {
             },
         });
         if (updated) {
+            const dateFormatter = new Intl.DateTimeFormat('es-MX', { timeZone: 'UTC', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+            const formattedDate = updated.date ? dateFormatter.format(new Date(updated.date)) : updated.createdAt?.toDateString();
             await (0, resend_service_1.sendEmailResend)(updated.contactEmail, "Reserva reprogramada con éxito", "reservation-client", {
                 USERNAME: updated.contactName,
                 FOLIO: updated.reference,
-                DATE: updated.createdAt?.toDateString(),
+                DATE: formattedDate,
                 TIME: updated.time,
-                DEVICE: updated.deviceType,
+                DEVICE: `${updated.deviceType} (${updated.brand} ${updated.model})`,
+                DESCRIPTION: updated.description,
                 SERVICE: updated.service
             });
             await (0, resend_service_1.sendEmailResend)("admon@pcinbox.com.mx", "Reserva reprogramada con éxito", "reservation-admin", {
@@ -314,9 +321,10 @@ const rescheduleReservation = async (req, res) => {
                 EMAIL: updated.contactEmail,
                 PHONE: updated.contactPhone,
                 FOLIO: updated.reference,
-                DATE: updated.createdAt?.toDateString(),
+                DATE: formattedDate,
                 TIME: updated.time,
-                DEVICE: updated.deviceType,
+                DEVICE: `${updated.deviceType} (${updated.brand} ${updated.model})`,
+                DESCRIPTION: updated.description,
                 SERVICE: updated.service
             });
             return res.status(201).json({
@@ -423,7 +431,7 @@ const checkAvailability = async (req, res) => {
         if (isNaN(parsedDate.getTime())) {
             return res.status(400).json({ ok: false, message: "Fecha inválida" });
         }
-        const dayOfWeek = parsedDate.getDay();
+        const dayOfWeek = parsedDate.getUTCDay();
         const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
         const isDayHoliday = isHoliday(parsedDate);
         const timeSlots = ["11:00 AM", "02:00 PM", "05:00 PM"];

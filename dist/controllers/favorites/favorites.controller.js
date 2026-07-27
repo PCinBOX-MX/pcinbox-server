@@ -6,11 +6,43 @@ require("../../config/loadEnv");
 const index_service_1 = require("./../../services/index.service");
 const getFavoritosUser = async (req, res) => {
     try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 20;
+        const search = req.query.search;
+        const sort = req.query.sort;
+        const skip = (page - 1) * limit;
+        const whereClause = {
+            userId: req.idUser,
+            active: 1,
+        };
+        if (search) {
+            whereClause.products = {
+                OR: [
+                    { name: { contains: search } },
+                    { sku: { contains: search } },
+                    { upc: { contains: search } },
+                ],
+            };
+        }
+        let orderByClause = { favoritedAt: "desc" };
+        if (sort === "z_a") {
+            orderByClause = { products: { name: "desc" } };
+        }
+        else if (sort === "a_z") {
+            orderByClause = { products: { name: "asc" } };
+        }
+        else if (sort === "mayor_precio") {
+            orderByClause = { products: { price: "desc" } };
+        }
+        else if (sort === "menor_precio") {
+            orderByClause = { products: { price: "asc" } };
+        }
+        const totalCount = await prismaClient_1.prisma.favorites.count({ where: whereClause });
         const findFavoritesUser = await prismaClient_1.prisma.favorites.findMany({
-            where: {
-                userId: req.idUser,
-                active: 1,
-            },
+            where: whereClause,
+            orderBy: orderByClause,
+            skip,
+            take: limit,
             include: {
                 products: {
                     include: {
@@ -39,6 +71,8 @@ const getFavoritosUser = async (req, res) => {
             message: "Data de favoritos por usuario en especifico",
             data: {
                 data: serializedFavorites,
+                totalPages: Math.ceil(totalCount / limit),
+                totalItems: totalCount,
             },
         });
     }
