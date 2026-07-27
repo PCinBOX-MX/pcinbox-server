@@ -75,7 +75,7 @@ async function consolidateActiveCartItems(userId, activeCartId) {
     }
 }
 async function findActiveCartItem(carId, productId, storeId) {
-    const exact = await prismaClient_1.prisma.cartItems.findFirst({
+    return prismaClient_1.prisma.cartItems.findFirst({
         where: {
             carId,
             productId,
@@ -83,36 +83,17 @@ async function findActiveCartItem(carId, productId, storeId) {
             active: 1,
         },
     });
-    if (exact)
-        return exact;
-    const allForProduct = await prismaClient_1.prisma.cartItems.findMany({
-        where: {
-            carId,
-            productId,
-            active: 1,
-        },
-        orderBy: { idCartItem: "desc" },
-    });
-    if (allForProduct.length === 0)
-        return null;
-    if (allForProduct.length === 1)
-        return allForProduct[0];
-    if (storeId !== null) {
-        const byStore = allForProduct.find((item) => item.storeId != null && Number(item.storeId) === Number(storeId));
-        if (byStore)
-            return byStore;
-    }
-    return allForProduct.reduce((best, item) => Number(item.quantity ?? 0) > Number(best.quantity ?? 0) ? item : best);
 }
 /**
  * Une líneas duplicadas del mismo producto (p. ej. storeId null vs sucursal)
  * para que addProduct y getCart vean la misma cantidad.
  */
-async function mergeDuplicateCartLines(carId, productId, preferredStoreId) {
+async function mergeDuplicateCartLines(carId, productId, storeId) {
     const lines = await prismaClient_1.prisma.cartItems.findMany({
         where: {
             carId,
             productId,
+            storeId,
             active: 1,
         },
         orderBy: { idCartItem: "asc" },
@@ -121,29 +102,20 @@ async function mergeDuplicateCartLines(carId, productId, preferredStoreId) {
         return lines[0] ?? null;
     }
     const totalQty = lines.reduce((sum, line) => sum + Number(line.quantity ?? 0), 0);
-    const keeper = (preferredStoreId !== null
-        ? lines.find((line) => line.storeId != null &&
-            Number(line.storeId) === Number(preferredStoreId))
-        : lines.find((line) => line.storeId === null)) ?? lines[0];
-    if (!keeper) {
-        return null;
-    }
+    const keeper = lines[0];
     await prismaClient_1.prisma.cartItems.update({
         where: { idCartItem: keeper.idCartItem },
         data: {
             quantity: totalQty,
-            storeId: preferredStoreId ?? keeper.storeId,
         },
     });
-    const toDeactivate = lines.filter((line) => line.idCartItem !== keeper.idCartItem);
-    if (toDeactivate.length > 0) {
-        await prismaClient_1.prisma.cartItems.updateMany({
-            where: {
-                idCartItem: { in: toDeactivate.map((line) => line.idCartItem) },
-            },
-            data: { active: 0, quantity: 0 },
-        });
-    }
+    const toDeactivate = lines.slice(1);
+    await prismaClient_1.prisma.cartItems.updateMany({
+        where: {
+            idCartItem: { in: toDeactivate.map((line) => line.idCartItem) },
+        },
+        data: { active: 0, quantity: 0 },
+    });
     return prismaClient_1.prisma.cartItems.findFirst({
         where: { idCartItem: keeper.idCartItem },
     });
