@@ -72,8 +72,8 @@ server.use((req, res, next) => {
   next();
 });
 server.use(express.static(path.join(__dirname, "public")));
-server.use(express.json({ limit: "10mb" }));
-server.use(express.urlencoded({ extended: false }));
+server.use(express.json({ limit: "50mb" }));
+server.use(express.urlencoded({ extended: true, limit: "50mb" }));
 server.use(cookieParser());
 
 //Routes
