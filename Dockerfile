@@ -10,8 +10,8 @@ COPY . .
 # Generate prisma client if needed
 RUN if grep -q "prisma" package.json; then npx prisma generate; fi
 
-ARG BUILD_CMD="build"
-RUN npm run $BUILD_CMD
+ARG BUILD_CMD=""
+RUN if [ -n "$BUILD_CMD" ]; then npm run $BUILD_CMD; else echo "Skipping build phase"; fi
 
 EXPOSE 3000 3001 3002 3004 8000 9000
 
