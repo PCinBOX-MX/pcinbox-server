@@ -22,7 +22,7 @@ services:
         BUILD_CMD: build
     command: npm run qa
     ports:
-      - "8000:8000"
+      - "7000:7000"
     env_file:
       - .env.local
 
