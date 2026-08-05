@@ -305,6 +305,101 @@ export const LoginGoogle = async (req: Request, res: Response) => {
   }
 };
 
+export const getPhone = async (req: CustomRequestI, res: Response) => {
+  try {
+    const user = await prisma.users.findUnique({
+      where: {
+        idUser: Number(req.idUser),
+      },
+      select: {
+        phone: true,
+        password: true,
+      },
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        ok: false,
+        message: "Usuario no encontrado",
+      });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      message: "Teléfono obtenido correctamente",
+      data: {
+        phone: user.phone?.trim() || null,
+        isGoogleAccount: user.password === null,
+      },
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      message: "Error interno del servidor",
+      error: error.message,
+    });
+  }
+};
+
+export const updatePhone = async (req: CustomRequestI, res: Response) => {
+  try {
+    const phone =
+      typeof req.body?.phone === "string"
+        ? req.body.phone.trim().replace(/\s+/g, " ")
+        : "";
+
+    if (!/^\+\d{1,3} \d{10}$/.test(phone)) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          "El teléfono debe incluir una LADA válida y 10 dígitos, por ejemplo: +52 4771234567",
+      });
+    }
+
+    const user = await prisma.users.findUnique({
+      where: {
+        idUser: Number(req.idUser),
+      },
+      select: {
+        idUser: true,
+      },
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        ok: false,
+        message: "Usuario no encontrado",
+      });
+    }
+
+    const updatedUser = await prisma.users.update({
+      where: {
+        idUser: user.idUser,
+      },
+      data: {
+        phone,
+      },
+      select: {
+        phone: true,
+      },
+    });
+
+    return res.status(200).json({
+      ok: true,
+      message: "Teléfono actualizado correctamente",
+      data: {
+        phone: updatedUser.phone,
+      },
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      message: "Error interno del servidor",
+      error: error.message,
+    });
+  }
+};
+
 export const uploadPhoto = async (req: CustomRequestI, res: Response) => {
   try {
     const file = (req as any).file;
