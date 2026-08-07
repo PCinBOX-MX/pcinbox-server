@@ -1,7 +1,7 @@
 import { createReadStream } from "fs";
 import { stat } from "fs/promises";
 import path from "path";
-import { createHash, createHmac } from "crypto";
+import { createHash } from "crypto";
 import { Prisma } from "@prisma/client";
 import { Response } from "express";
 import CustomRequestI from "../../interfaces/customrequest.interface";
@@ -13,10 +13,8 @@ import {
   validatePdfAndHash,
 } from "../../services/quoteStorage.service";
 
-const QUOTE_NUMBER_PATTERN = /^COT-[A-Z0-9-]{8,55}$/;
+const QUOTE_NUMBER_PATTERN = /^(?:\d{13}|COT-[A-Z0-9-]{8,55})$/;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9:_-]{8,100}$/;
-const GUEST_ID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PAGE_SIZE = 25;
 const QUOTE_LIMIT = 3;
 const QUOTE_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -44,10 +42,10 @@ const quoteSelect = {
   totalAmount: true,
   itemCount: true,
   includeAssemblyService: true,
+  active: true,
   createdAt: true,
   expiresAt: true,
   userId: true,
-  guestScopeHash: true,
   cartHash: true,
   checkoutMode: true,
   users: {
@@ -62,18 +60,19 @@ const quoteSelect = {
 type QuoteRecord = Prisma.cotizacionesGetPayload<{ select: typeof quoteSelect }>;
 
 const serializeQuote = (quote: QuoteRecord) => {
-  const { users, guestScopeHash: _guest, cartHash: _cart, ...safe } = quote;
+  const { users, cartHash: _cart, active: _active, ...safe } = quote;
+  if (!users) {
+    throw new Error("La cotización no está asociada a un usuario");
+  }
   return {
     ...safe,
     idCotizacion: Number(quote.idCotizacion),
-    userId: quote.userId == null ? null : Number(quote.userId),
+    userId: Number(quote.userId),
     totalAmount: Number(quote.totalAmount),
-    customer: users
-      ? {
-          name: [users.name, users.lastname].filter(Boolean).join(" "),
-          email: users.email,
-        }
-      : null,
+    customer: {
+      name: [users.name, users.lastname].filter(Boolean).join(" "),
+      email: users.email,
+    },
   };
 };
 
@@ -139,31 +138,6 @@ export const parseCheckoutContext = (
   }
 };
 
-const guestScopeHash = (req: CustomRequestI) => {
-  const rawHeader = req.headers["x-quote-guest-id"];
-  const guestId = String(
-    Array.isArray(rawHeader) ? rawHeader[0] : rawHeader || "",
-  ).trim();
-  if (!GUEST_ID_PATTERN.test(guestId)) return null;
-
-  const environment = (
-    process.env.COTIZACIONES_ENV ||
-    process.env.NODE_ENV ||
-    ""
-  ).toLowerCase();
-  const hosted = ["prod", "production", "qa"].includes(environment);
-  const secret =
-    process.env.COTIZACIONES_GUEST_HASH_SECRET?.trim() ||
-    (!hosted ? process.env.KEY_JWT || "pcinbox-local-guest-quotes" : "");
-  if (!secret) {
-    throw new Error("COTIZACIONES_GUEST_HASH_SECRET no está configurado");
-  }
-  const ip = String(req.ip || req.socket.remoteAddress || "unknown")
-    .replace(/^::ffff:/, "")
-    .trim();
-  return createHmac("sha256", secret).update(`${guestId}|${ip}`).digest("hex");
-};
-
 const sanitizeFileName = (fileName: string, quoteNumber: string) => {
   const baseName = path.basename(fileName || `${quoteNumber}.pdf`);
   const cleaned = baseName
@@ -187,14 +161,13 @@ const retentionDays = () => {
 };
 
 const quotaWhere = (
-  userId: number | null,
-  guestHash: string | null,
+  userId: number,
   cartHash: string,
   since: Date,
 ): Prisma.cotizacionesWhereInput => ({
+  userId,
   cartHash,
   createdAt: { gte: since },
-  ...(userId !== null ? { userId } : { userId: null, guestScopeHash: guestHash }),
 });
 
 export const quotaResponse = (count: number, oldestCreatedAt: Date) => ({
@@ -217,10 +190,13 @@ export const createQuote = async (req: CustomRequestI, res: Response) => {
     }
 
     const parsedUserId = Number(req.idUser);
-    const userId =
-      Number.isSafeInteger(parsedUserId) && parsedUserId > 0
-        ? parsedUserId
-        : null;
+    if (!Number.isSafeInteger(parsedUserId) || parsedUserId <= 0) {
+      return res.status(401).json({
+        ok: false,
+        message: "Debes iniciar sesión para generar una cotización",
+      });
+    }
+    const userId = parsedUserId;
     const quoteNumber = String(req.body.quoteNumber || "")
       .trim()
       .toUpperCase();
@@ -253,26 +229,19 @@ export const createQuote = async (req: CustomRequestI, res: Response) => {
       });
     }
 
-    const guestHash = userId === null ? guestScopeHash(req) : null;
-    if (userId === null && !guestHash) {
-      return res.status(400).json({
-        ok: false,
-        message: "No fue posible identificar la sesión invitada",
-      });
-    }
-
     const sha256 = await validatePdfAndHash(temporaryPath);
     const existing = await prisma.cotizaciones.findUnique({
       where: { idempotencyKey },
       select: quoteSelect,
     });
     if (existing) {
-      const sameOwner =
-        userId !== null
-          ? Number(existing.userId) === userId
-          : existing.userId === null &&
-            existing.guestScopeHash === guestHash;
-      if (!sameOwner) {
+      if (existing.active === 0) {
+        return res.status(409).json({
+          ok: false,
+          message: "Esta cotización ya fue archivada",
+        });
+      }
+      if (Number(existing.userId) !== userId) {
         return res.status(409).json({
           ok: false,
           message: "La clave de idempotencia ya está en uso",
@@ -301,7 +270,6 @@ export const createQuote = async (req: CustomRequestI, res: Response) => {
           const since = new Date(Date.now() - QUOTE_WINDOW_MS);
           const where = quotaWhere(
             userId,
-            guestHash,
             checkout.cartHash,
             since,
           );
@@ -335,7 +303,6 @@ export const createQuote = async (req: CustomRequestI, res: Response) => {
             const since = new Date(createdAt.getTime() - QUOTE_WINDOW_MS);
             const where = quotaWhere(
               userId,
-              guestHash,
               checkout.cartHash,
               since,
             );
@@ -360,7 +327,6 @@ export const createQuote = async (req: CustomRequestI, res: Response) => {
                 quoteNumber,
                 idempotencyKey,
                 userId,
-                guestScopeHash: guestHash,
                 cartHash: checkout.cartHash,
                 checkoutMode: checkout.mode,
                 storageKey: stored.storageKey,
@@ -484,6 +450,7 @@ export const listAdminQuotes = async (
     if (to) to.setUTCHours(23, 59, 59, 999);
 
     const where: Prisma.cotizacionesWhereInput = {
+      active: 1,
       ...(search
         ? {
             OR: [
@@ -544,8 +511,8 @@ export const streamAdminQuote = async (
       return res.status(400).json({ ok: false, message: "Cotización inválida" });
     }
 
-    const record = await prisma.cotizaciones.findUnique({
-      where: { idCotizacion },
+    const record = await prisma.cotizaciones.findFirst({
+      where: { idCotizacion, active: 1 },
       select: {
         storageKey: true,
         originalFileName: true,
@@ -556,7 +523,7 @@ export const streamAdminQuote = async (
     if (!record) {
       return res.status(404).json({
         ok: false,
-        message: "Cotización no encontrada",
+        message: "Cotización no encontrada o ya archivada",
       });
     }
 
@@ -597,7 +564,7 @@ export const streamAdminQuote = async (
   }
 };
 
-export const deleteAdminQuote = async (
+export const archiveAdminQuote = async (
   req: CustomRequestI,
   res: Response,
 ) => {
@@ -607,25 +574,20 @@ export const deleteAdminQuote = async (
       return res.status(400).json({ ok: false, message: "Cotización inválida" });
     }
 
-    const record = await prisma.cotizaciones.findUnique({
-      where: { idCotizacion },
-      select: { storageKey: true },
+    const archived = await prisma.cotizaciones.updateMany({
+      where: { idCotizacion, active: 1 },
+      data: { active: 0 },
     });
-    if (!record) {
+    if (archived.count === 0) {
       return res.status(404).json({
         ok: false,
-        message: "Cotización no encontrada",
+        message: "Cotización no encontrada o ya archivada",
       });
     }
 
-    await prisma.cotizaciones.delete({ where: { idCotizacion } });
-    await removeFileIfPresent(resolveQuotePath(record.storageKey)).catch(
-      (error) => console.error("No se pudo eliminar el PDF de cotización", error),
-    );
-
     return res.status(200).json({
       ok: true,
-      message: "Cotización eliminada correctamente",
+      message: "Cotización archivada correctamente",
       data: { idCotizacion },
     });
   } catch {

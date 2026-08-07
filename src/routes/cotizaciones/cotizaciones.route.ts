@@ -2,14 +2,13 @@ import { NextFunction, Request, Response, Router } from "express";
 import multer from "multer";
 import {
   createQuote,
-  deleteAdminQuote,
+  archiveAdminQuote,
   listAdminQuotes,
   streamAdminQuote,
 } from "../../controllers/cotizaciones/cotizaciones.controller";
 import {
   MiddleAdminRoute,
   MiddleAuthRoute,
-  MiddleOptionalAuthRoute,
 } from "../../middleware/index.middleware";
 import {
   createTemporaryQuoteName,
@@ -64,7 +63,7 @@ const uploadQuotePdf = (req: Request, res: Response, next: NextFunction) => {
   });
 };
 
-router.post("/", MiddleOptionalAuthRoute, uploadQuotePdf, createQuote);
+router.post("/", MiddleAuthRoute, uploadQuotePdf, createQuote);
 router.get("/admin", MiddleAuthRoute, MiddleAdminRoute, listAdminQuotes);
 router.get(
   "/admin/:id/content",
@@ -76,7 +75,7 @@ router.delete(
   "/admin/:id",
   MiddleAuthRoute,
   MiddleAdminRoute,
-  deleteAdminQuote,
+  archiveAdminQuote,
 );
 
 export default router;

@@ -101,19 +101,6 @@ server.get("/", (req, res) => {
 });
 
 const startServer = async () => {
-  const quoteEnvironment = (
-    process.env.COTIZACIONES_ENV ||
-    process.env.NODE_ENV ||
-    ""
-  ).toLowerCase();
-  if (
-    ["prod", "production", "qa"].includes(quoteEnvironment) &&
-    !process.env.COTIZACIONES_GUEST_HASH_SECRET?.trim()
-  ) {
-    throw new Error(
-      "COTIZACIONES_GUEST_HASH_SECRET es obligatorio en producción",
-    );
-  }
   await ensureQuoteStorage();
   server.listen(Number(process.env.PORT) || 8000, () => {
     console.log(`Server running in the por ${process.env.SERVER_PORT || 8000}`);

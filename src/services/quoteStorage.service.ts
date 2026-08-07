@@ -12,25 +12,25 @@ import path from "path";
 const PDF_SIGNATURE = Buffer.from("%PDF-");
 export const MAX_QUOTE_FILE_SIZE = 15 * 1024 * 1024;
 
-const isHostedEnvironment = () => {
+const getStorageEnvironment = () => {
   const environment = (
     process.env.COTIZACIONES_ENV ||
     process.env.NODE_ENV ||
-    ""
+    "local"
   ).toLowerCase();
-  return ["prod", "production", "qa"].includes(environment);
+  if (environment === "production") return "prod";
+  if (environment === "development") return "local";
+  return ["local", "qa", "prod"].includes(environment) ? environment : "local";
 };
 
 export const getQuoteStorageRoot = () => {
   const configured = process.env.COTIZACIONES_STORAGE_DIR?.trim();
-  if (!configured && isHostedEnvironment()) {
-    throw new Error(
-      "COTIZACIONES_STORAGE_DIR es obligatorio en ambientes hospedados",
-    );
-  }
+  if (configured) return path.resolve(configured);
 
   return path.resolve(
-    configured || path.join(process.cwd(), "storage", "cotizaciones"),
+    "/var/www/pcinbox",
+    getStorageEnvironment(),
+    "cotizaciones",
   );
 };
 
