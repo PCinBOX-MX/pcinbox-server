@@ -574,6 +574,17 @@ export const archiveAdminQuote = async (
       return res.status(400).json({ ok: false, message: "Cotización inválida" });
     }
 
+    const record = await prisma.cotizaciones.findFirst({
+      where: { idCotizacion, active: 1 },
+      select: { storageKey: true },
+    });
+    if (!record) {
+      return res.status(404).json({
+        ok: false,
+        message: "Cotización no encontrada o ya archivada",
+      });
+    }
+
     const archived = await prisma.cotizaciones.updateMany({
       where: { idCotizacion, active: 1 },
       data: { active: 0 },
@@ -585,15 +596,33 @@ export const archiveAdminQuote = async (
       });
     }
 
+    try {
+      await removeFileIfPresent(resolveQuotePath(record.storageKey));
+    } catch (fileError) {
+      await prisma.cotizaciones
+        .updateMany({
+          where: { idCotizacion, active: 0 },
+          data: { active: 1 },
+        })
+        .catch((rollbackError) => {
+          console.error(
+            "No se pudo restaurar la cotización tras fallar el borrado del PDF",
+            rollbackError,
+          );
+        });
+      throw fileError;
+    }
+
     return res.status(200).json({
       ok: true,
-      message: "Cotización archivada correctamente",
+      message: "Cotización archivada y PDF eliminado correctamente",
       data: { idCotizacion },
     });
-  } catch {
+  } catch (error) {
+    console.error("No se pudo archivar la cotización y eliminar su PDF", error);
     return res.status(500).json({
       ok: false,
-      message: "No fue posible eliminar la cotización",
+      message: "No fue posible archivar la cotización y eliminar su PDF",
     });
   }
 };
