@@ -41,7 +41,10 @@ export const MiddleAuthRoute = async (
           },
         });
 
-        req.idUser = slcUser?.idUser;
+        if (!slcUser?.idUser) {
+          return res.status(401).json({ message: "Usuario no encontrado" });
+        }
+        req.idUser = slcUser.idUser;
         next();
         return;
       }
@@ -52,6 +55,87 @@ export const MiddleAuthRoute = async (
       return res.status(401).json({ message: "Token expirado o invalido" });
     }
   } catch (err) {
+    return res.status(401).json({ message: "Token inválido o expirado" });
+  }
+};
+
+export const MiddleAdminRoute = async (
+  req: CustomRequestI,
+  res: Response,
+  next: NextFunction,
+) => {
+  const userId = Number(req.idUser);
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    return res.status(401).json({ message: "Sesión inválida" });
+  }
+
+  try {
+    const user = await prisma.users.findFirst({
+      where: { idUser: userId, active: 1 },
+      select: { role: true },
+    });
+    if (user?.role !== "admin") {
+      return res.status(403).json({
+        ok: false,
+        message: "No tienes permisos para administrar cotizaciones",
+      });
+    }
+    next();
+  } catch {
+    return res.status(500).json({
+      ok: false,
+      message: "No fue posible validar los permisos administrativos",
+    });
+  }
+};
+
+export const MiddleOptionalAuthRoute = async (
+  req: CustomRequestI,
+  res: Response,
+  next: NextFunction,
+) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    next();
+    return;
+  }
+  if (authHeader.trim().toLowerCase() === "bearer") {
+    next();
+    return;
+  }
+  if (!authHeader.startsWith("Bearer ")) {
+    return res.status(401).json({ message: "Token inválido" });
+  }
+
+  const token = authHeader.slice(7).trim();
+  if (!token || ["null", "undefined", "false"].includes(token)) {
+    next();
+    return;
+  }
+
+  try {
+    const decoded = jwt.verify(token, process.env.KEY_JWT || "") as {
+      idUser?: string | number;
+      email?: string;
+    };
+    const decodedId = Number(decoded.idUser);
+    const user = await prisma.users.findFirst({
+      where: {
+        active: 1,
+        ...(Number.isSafeInteger(decodedId) && decodedId > 0
+          ? { idUser: decodedId }
+          : decoded.email
+            ? { email: decoded.email }
+            : { idUser: -1 }),
+      },
+      select: { idUser: true },
+    });
+    if (!user) {
+      return res.status(401).json({ message: "Usuario no encontrado" });
+    }
+    req.idUser = user.idUser;
+    next();
+  } catch {
     return res.status(401).json({ message: "Token inválido o expirado" });
   }
 };

@@ -12,3 +12,4 @@
 *.tsbuildinfo
 
 /node_modules
+/storage/cotizaciones/
