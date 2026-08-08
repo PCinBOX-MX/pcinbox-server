@@ -12,6 +12,7 @@ import {
   sumShipmentCostTotals,
   toMoneyNumber,
 } from "../../utils/shipmentCosts";
+import { sendLicenseKeyEmail } from "../../services/resend.service";
 
 function normalizeHistorySearchTerm(raw: unknown): string {
   return String(raw ?? "")
@@ -556,6 +557,138 @@ export const cancelOrderByUser = async (req: CustomRequestI, res: Response) => {
       ok: false,
       message: "Error interno del servidor",
       error: error.message,
+    });
+  }
+};
+
+/** Admin: envía correo de entrega digital con clave(s) de licencia. */
+export const sendLicenseKeyEmailAdmin = async (
+  req: CustomRequestI,
+  res: Response,
+) => {
+  try {
+    const adminUser = await prisma.users.findUnique({
+      where: { idUser: Number(req.idUser) },
+      select: { role: true },
+    });
+
+    if (!adminUser || adminUser.role !== "admin") {
+      return res.status(403).json({
+        ok: false,
+        message: "Acceso denegado. Se requieren permisos de administrador.",
+      });
+    }
+
+    const {
+      idOrder,
+      idShipment,
+      toEmail,
+      customerName,
+      productName,
+      licenseKeys,
+      instructions,
+    } = req.body || {};
+
+    const email = String(toEmail || "")
+      .trim()
+      .toLowerCase();
+    const keys = Array.isArray(licenseKeys)
+      ? licenseKeys.map((k: unknown) => String(k || "").trim()).filter(Boolean)
+      : String(licenseKeys || "")
+          .split(/\r?\n/)
+          .map((k) => k.trim())
+          .filter(Boolean);
+
+    if (!idOrder || !email || !productName || !keys.length) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          "Faltan campos: idOrder, toEmail, productName y al menos una clave.",
+      });
+    }
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({
+        ok: false,
+        message: "El correo del destinatario no es válido.",
+      });
+    }
+
+    const order = await prisma.order.findFirst({
+      where: { idOrder: Number(idOrder) },
+      include: {
+        users: { select: { name: true, lastname: true, email: true } },
+        shipments: idShipment
+          ? { where: { idShipment: Number(idShipment) } }
+          : true,
+      },
+    });
+
+    if (!order) {
+      return res.status(404).json({
+        ok: false,
+        message: `Orden #${idOrder} no encontrada.`,
+      });
+    }
+
+    const paymentStatus = String(order.status || "")
+      .toLowerCase()
+      .trim();
+    if (paymentStatus !== "paid" && paymentStatus !== "approved") {
+      return res.status(400).json({
+        ok: false,
+        message:
+          "Solo se puede enviar la licencia cuando la orden está pagada.",
+      });
+    }
+
+    if (idShipment) {
+      const shipment = order.shipments?.[0];
+      if (!shipment) {
+        return res.status(404).json({
+          ok: false,
+          message: `Shipment ${idShipment} no pertenece a la orden #${idOrder}.`,
+        });
+      }
+    }
+
+    const resolvedName =
+      String(customerName || "").trim() ||
+      [order.users?.name, order.users?.lastname].filter(Boolean).join(" ") ||
+      "cliente";
+
+    const mailResult = await sendLicenseKeyEmail(email, {
+      customerName: resolvedName,
+      idOrder: Number(idOrder),
+      productName: String(productName),
+      licenseKeys: keys,
+      ...(instructions
+        ? { instructions: String(instructions) }
+        : {}),
+    });
+
+    if (mailResult?.status === 400) {
+      return res.status(400).json({
+        ok: false,
+        message: mailResult.error || "No se pudo enviar el correo.",
+      });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      message: `Correo de licencia enviado a ${email}`,
+      data: {
+        idOrder: Number(idOrder),
+        idShipment: idShipment ? Number(idShipment) : null,
+        toEmail: email,
+        keysSent: keys.length,
+      },
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      message: "Error interno al enviar la licencia por correo",
+      error: error?.message,
     });
   }
 };

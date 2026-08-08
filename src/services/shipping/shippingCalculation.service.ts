@@ -21,6 +21,7 @@ export type ShippingProductInput = {
   storeId?: number | string | null;
   name?: string;
   stock?: number | string | null;
+  licenseType?: string | null;
 };
 
 export type DeliverySelectionInput = {
@@ -126,7 +127,7 @@ export async function calculateGroupCosts(
   let shippingCost = 0;
   let insuranceCost = 0;
 
-  if (method === "sucursal") {
+  if (method === "sucursal" || method === "digital") {
     return { shippingCost: 0, insuranceCost: 0, totalExtra: 0 };
   }
 
