@@ -172,3 +172,46 @@ export const sendReservationStatusUpdateEmail = async (
     };
   }
 };
+
+export type LicenseKeyEmailParams = {
+  customerName: string;
+  idOrder: number | string;
+  productName: string;
+  licenseKeys: string[];
+  instructions?: string;
+};
+
+const LICENSE_CLIENT_TEMPLATE_ID = "license-client";
+
+const DEFAULT_LICENSE_INSTRUCTIONS =
+  "Usa la clave para activar tu producto. Si el fabricante requiere descarga, utiliza su portal oficial. Conserva este correo como comprobante.";
+
+/** Correo de entrega digital vía plantilla Resend `license-client`. */
+export const sendLicenseKeyEmail = async (
+  to: string,
+  params: LicenseKeyEmailParams,
+): Promise<{ status?: number; error?: string } | void> => {
+  const keys = (params.licenseKeys || [])
+    .map((key) => String(key || "").trim())
+    .filter(Boolean);
+
+  if (!keys.length) {
+    return { status: 400, error: "Debes indicar al menos una clave" };
+  }
+
+  const instructions =
+    String(params.instructions || "").trim() || DEFAULT_LICENSE_INSTRUCTIONS;
+
+  return sendEmailResend(
+    to,
+    `Tu licencia PCInbox — Pedido #${params.idOrder}`,
+    LICENSE_CLIENT_TEMPLATE_ID,
+    {
+      NAME: String(params.customerName || "cliente").trim() || "cliente",
+      ORDER_ID: String(params.idOrder),
+      PRODUCT_NAME: String(params.productName || "Licencia digital").trim(),
+      LICENSE_KEY: keys.join("\n"),
+      INSTRUCTIONS: instructions,
+    },
+  );
+};

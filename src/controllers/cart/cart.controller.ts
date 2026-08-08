@@ -72,6 +72,8 @@ function serializeCartItems(cartItems: any[]) {
 
       marcaId: item.products.marcaId ? String(item.products.marcaId) : null,
 
+      licenseType: item.products.licenseType ?? null,
+
       quantity: item.quantity != null ? String(item.quantity) : null,
 
     }))
