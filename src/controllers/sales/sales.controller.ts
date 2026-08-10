@@ -2,7 +2,10 @@ import { prisma } from "../../db/prismaClient";
 import { Response, Request } from "express";
 import CustomRequestI from "./../../interfaces/customrequest.interface";
 import { parseBigInts } from "./../../services/index.service";
-import { cancelOrderWithGatewayRefund } from "../../services/pasarelaPagos.service";
+import {
+  cancelOrderWithGatewayRefund,
+  syncShipmentStatusOnPasarela,
+} from "../../services/pasarelaPagos.service";
 import {
   getOrderCancellationBlockMessage,
   isOrderWithinCancellationWindow,
@@ -531,6 +534,12 @@ export const cancelOrderByUser = async (req: CustomRequestI, res: Response) => {
       req.headers.authorization,
     );
 
+    const gateway = pasarelaResult?.data?.data?.gateway;
+    const refunded = Boolean(
+      pasarelaResult?.data?.data?.refunded ??
+        (gateway === "mercadopago" || gateway === "openpay"),
+    );
+
     return res.status(200).json({
       ok: true,
       message: pasarelaResult?.message ?? "Compra cancelada correctamente",
@@ -538,13 +547,18 @@ export const cancelOrderByUser = async (req: CustomRequestI, res: Response) => {
         data: {
           idOrder: Number(order.idOrder),
           payment_method: order.pay_method,
-          refunded: pasarelaResult?.data?.data?.refunded ?? false,
+          refunded,
+          gateway: gateway ?? null,
         },
       },
     });
   } catch (error: any) {
     if (axios.isAxiosError(error) && error.response) {
-      return res.status(error.response.status).json({
+      const upstreamStatus = Number(error.response.status) || 502;
+      // No reenviar 404 de la pasarela como si /sales/cancelOrder no existiera.
+      const status =
+        upstreamStatus === 404 ? 502 : upstreamStatus;
+      return res.status(status).json({
         ok: false,
         message:
           error.response.data?.message ||
@@ -674,6 +688,57 @@ export const sendLicenseKeyEmailAdmin = async (
       });
     }
 
+    // Tras entregar la licencia por correo, marcar envío como entregado
+    // para bloquear cancelación/reembolso del cliente.
+    const shipmentIdsToClose = idShipment
+      ? [Number(idShipment)]
+      : (order.shipments || []).map((s) => Number(s.idShipment)).filter(Boolean);
+
+    let shipmentMarkedEntregado = false;
+    if (shipmentIdsToClose.length > 0) {
+      try {
+        await prisma.shipments.updateMany({
+          where: {
+            orderId: Number(idOrder),
+            idShipment: { in: shipmentIdsToClose },
+          },
+          data: { status: "entregado" },
+        });
+        shipmentMarkedEntregado = true;
+
+        await Promise.all(
+          shipmentIdsToClose.map((shipId) =>
+            syncShipmentStatusOnPasarela({
+              idShipment: shipId,
+              status: "entregado",
+              idUser: Number(order.userId),
+              authorization: req.headers.authorization!,
+            }),
+          ),
+        );
+      } catch (statusError: any) {
+        console.error(
+          "[sendLicenseKeyEmailAdmin] Correo enviado pero falló marcar entregado",
+          statusError,
+        );
+        return res.status(500).json({
+          ok: false,
+          message:
+            `El correo de licencia se envió a ${email}, pero no se pudo marcar el envío como entregado. ` +
+            "Marca manualmente el status a «entregado» para bloquear cancelaciones/reembolsos.",
+          data: {
+            idOrder: Number(idOrder),
+            idShipment: idShipment ? Number(idShipment) : null,
+            toEmail: email,
+            keysSent: keys.length,
+            emailSent: true,
+            shipmentStatusUpdated: false,
+          },
+          error: statusError?.message,
+        });
+      }
+    }
+
     return res.status(200).json({
       ok: true,
       message: `Correo de licencia enviado a ${email}`,
@@ -682,6 +747,7 @@ export const sendLicenseKeyEmailAdmin = async (
         idShipment: idShipment ? Number(idShipment) : null,
         toEmail: email,
         keysSent: keys.length,
+        shipmentStatus: shipmentMarkedEntregado ? "entregado" : null,
       },
     });
   } catch (error: any) {
