@@ -3,6 +3,7 @@ import { DateTime } from "luxon";
 import { prisma } from "../db/prismaClient";
 import {
   hasPassword,
+  signPayload,
   verifyPassword,
   writeErrorLogs,
 } from "./index.service";
@@ -436,7 +437,7 @@ export async function confirmRegisterVerificationCode(params: {
 
   const fechaLocal = DateTime.now().setZone("America/Mexico_City");
 
-  await prisma.users.create({
+  const createdUser = await prisma.users.create({
     data: {
       name: pending.name,
       lastname: pending.lastname,
@@ -445,6 +446,13 @@ export async function confirmRegisterVerificationCode(params: {
       phone: pending.phone,
       role: "customer",
       createdAT: fechaLocal.toISO(),
+    },
+    select: {
+      idUser: true,
+      email: true,
+      name: true,
+      lastname: true,
+      role: true,
     },
   });
 
@@ -461,10 +469,27 @@ export async function confirmRegisterVerificationCode(params: {
     writeErrorLogs(error);
   }
 
+  const token = signPayload(
+    {
+      email: createdUser.email,
+      idUser: createdUser.idUser.toString(),
+      rol: createdUser.role,
+    },
+    "3d",
+  );
+
   return {
     ok: true as const,
     status: 200,
-    message: "Cuenta creada correctamente",
-    data: { email },
+    message: "Cuenta creada correctamente. Sesión iniciada.",
+    data: {
+      email: createdUser.email,
+      token,
+      idUser: createdUser.idUser.toString(),
+      name: createdUser.name,
+      lastname: createdUser.lastname,
+      role: createdUser.role,
+      totalFavorites: 0,
+    },
   };
 }
