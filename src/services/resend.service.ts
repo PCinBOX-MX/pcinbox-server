@@ -1,9 +1,10 @@
 import { Resend } from "resend";
-import dotenv from "dotenv";
+import "../config/loadEnv";
 
-dotenv.config({ path: ".env.prod" });
-
-const resend = new Resend(process?.env?.RESEND_KEY || "");
+function getResendClient() {
+  const key = process.env.RESEND_KEY?.trim() || "";
+  return new Resend(key);
+}
 
 export const RESERVATION_STATUS_LABELS: Record<string, string> = {
   pending: "Pendiente",
@@ -15,6 +16,17 @@ export const RESERVATION_STATUS_LABELS: Record<string, string> = {
 export const getReservationStatusLabel = (status: string): string =>
   RESERVATION_STATUS_LABELS[status] || status;
 
+function normalizeTemplateVariables(
+  variables: Record<string, string | number>,
+): Record<string, string | number> {
+  // Resend templates suelen esperar strings en variables.
+  const normalized: Record<string, string | number> = {};
+  for (const [key, value] of Object.entries(variables || {})) {
+    normalized[key] = typeof value === "number" ? String(value) : value;
+  }
+  return normalized;
+}
+
 export const sendEmailResend = async (
   to: string | string[],
   subject: string,
@@ -22,22 +34,42 @@ export const sendEmailResend = async (
   variables: Record<string, string | number>,
 ): Promise<any> => {
   try {
+    if (!process.env.RESEND_KEY?.trim()) {
+      return {
+        status: 400,
+        error: "RESEND_KEY no está configurada en el servidor",
+      };
+    }
+    if (!process.env.FROM_EMAIL?.trim()) {
+      return {
+        status: 400,
+        error: "FROM_EMAIL no está configurada en el servidor",
+      };
+    }
+
+    const resend = getResendClient();
     const { error } = await resend.emails.send({
       from: process.env.FROM_EMAIL || "",
       to: typeof to === "string" ? [to] : to,
       subject: subject,
       template: {
         id: idTemplate,
-        variables,
+        variables: normalizeTemplateVariables(variables),
       },
     });
     if (error) {
+      console.error("[sendEmailResend] Resend error:", {
+        template: idTemplate,
+        message: error?.message,
+        error,
+      });
       return {
         status: 400,
         error: error?.message,
       };
     }
   } catch (error: any) {
+    console.error("[sendEmailResend] exception:", error?.message || error);
     return {
       status: 400,
       error: error?.message,
@@ -152,6 +184,7 @@ export const sendReservationStatusUpdateEmail = async (
   `;
 
   try {
+    const resend = getResendClient();
     const { error } = await resend.emails.send({
       from: process.env.FROM_EMAIL || "",
       to: [to],

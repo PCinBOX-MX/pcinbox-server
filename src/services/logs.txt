@@ -84,3 +84,5 @@
 [8/8/2026, 12:43:13 p.m.] Sin foto en ImageKit para idUser 40 (local: /users/local/40)
 [8/8/2026, 12:43:21 p.m.] ImageKit listFiles (/users/local/40/): AxiosError: timeout of 20000ms exceeded
 [8/8/2026, 12:43:37 p.m.] Sin foto en ImageKit para idUser 40 (local: /users/local/40)
+[10/8/2026, 5:30:59 p.m.] Error: Variable "EXPIRES_MINUTES" must be a `string`.
+[10/8/2026, 5:32:14 p.m.] Error: Variable "EXPIRES_MINUTES" must be a `string`.
