@@ -35,6 +35,7 @@ model products {
   marcaId         BigInt?
   providerId      BigInt
   isPC            Int?            @db.TinyInt
+  licenseType     String?         @db.VarChar(20)
   createdAt       DateTime?       @default(now()) @db.DateTime(0)
   active          Int?            @default(1) @db.TinyInt
   cartItems       cartItems[]
@@ -49,6 +50,7 @@ model products {
   @@index([providerId], map: "fk_providerId_products_idx")
   @@index([marcaId], map: "fk_marcaId_products_idx")
   @@index([categoryId], map: "fk_categoriaId_products_idx")
+  @@index([licenseType], map: "products_software_license_idx")
 }
 
 model providers {
@@ -98,6 +100,26 @@ model resetpassword {
   users           users     @relation(fields: [idUser], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "resetpassword_ibfk_1")
 
   @@index([idUser], map: "idUser")
+}
+
+/// Códigos OTP pendientes antes de crear la cuenta en /register.
+model register_email_codes {
+  id             BigInt    @id @default(autoincrement())
+  email          String    @db.VarChar(100)
+  codeHash       String    @db.VarChar(255)
+  name           String    @db.VarChar(100)
+  lastname       String    @db.VarChar(100)
+  phone          String?   @db.VarChar(45)
+  passwordHash   String    @db.VarChar(255)
+  resendCount    Int       @default(0)
+  verifyAttempts Int       @default(0)
+  lastResendAt   DateTime? @db.DateTime(0)
+  expiresAt      DateTime  @db.DateTime(0)
+  consumedAt     DateTime? @db.DateTime(0)
+  createdAt      DateTime  @default(now()) @db.DateTime(0)
+
+  @@index([email], map: "register_email_codes_email_idx")
+  @@map("register_email_codes")
 }
 
 model cartItems {
@@ -560,6 +582,7 @@ enum order_shipping_method {
   dhl
   estafeta
   envioLeon
+  digital
 }
 
 enum order_pay_method {
@@ -604,6 +627,7 @@ enum shipments_shipping_method {
   estafeta
   envioLeon
   sucursalExt
+  digital
 }
 
 enum reservas_deviceType {

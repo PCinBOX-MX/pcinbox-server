@@ -270,3 +270,7 @@
 [7/27/2026, 6:00:13 PM] Sin foto en ImageKit para idUser 2 (prod: /users/prod/2)
 [7/27/2026, 6:00:13 PM] Sin foto en ImageKit para idUser 2 (prod: /users/prod/2)
 [7/27/2026, 6:00:14 PM] Sin foto en ImageKit para idUser 2 (prod: /users/prod/2)
+[7/31/2026, 12:05:03 AM] Sin foto en ImageKit para idUser 40 (local: /users/local/40)
+[7/31/2026, 12:05:03 AM] Sin foto en ImageKit para idUser 40 (local: /users/local/40)
+[7/31/2026, 12:05:04 AM] Sin foto en ImageKit para idUser 40 (local: /users/local/40)
+[7/31/2026, 12:05:04 AM] Sin foto en ImageKit para idUser 40 (local: /users/local/40)
