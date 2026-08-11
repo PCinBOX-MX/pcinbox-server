@@ -13,9 +13,14 @@ import routesReview from "./routes/review/review.route";
 import routesSales from "./routes/sales/sales.route";
 import routesReservas from "./routes/reservas/reservas.route";
 import routesCheckout from "./routes/checkout/checkout.route";
+import routesCotizaciones from "./routes/cotizaciones/cotizaciones.route";
 import cookieParser from "cookie-parser";
 import path from "path";
 import helmet from "helmet";
+import {
+  ensureQuoteStorage,
+  getQuoteStorageRoot,
+} from "./services/quoteStorage.service";
 
 const server = express();
 
@@ -89,12 +94,22 @@ server.use("/api/v1/review", routesReview);
 server.use("/api/v1/sales", routesSales);
 server.use("/api/v1/reservas", routesReservas);
 server.use("/api/v1/checkout", routesCheckout);
+server.use("/api/v1/cotizaciones", routesCotizaciones);
 
 server.get("/", (req, res) => {
   res.send("Servidor funcionando correctamente");
 });
 
-server.listen(Number(process.env.PORT) || 8000, () => {
-  console.log(`Server running in the por ${process.env.SERVER_PORT || 8000}`);
-  console.log(`Access front end ${allowedOrigins}`);
+const startServer = async () => {
+  await ensureQuoteStorage();
+  server.listen(Number(process.env.PORT) || 8000, () => {
+    console.log(`Server running in the por ${process.env.SERVER_PORT || 8000}`);
+    console.log(`Access front end ${allowedOrigins}`);
+    console.log(`Cotizaciones storage: ${getQuoteStorageRoot()}`);
+  });
+};
+
+void startServer().catch((error) => {
+  console.error("No fue posible iniciar el servidor", error);
+  process.exit(1);
 });

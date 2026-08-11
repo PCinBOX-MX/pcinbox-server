@@ -46,5 +46,6 @@
     "moduleDetection": "force",
     "skipLibCheck": true
   },
-  "include": ["src", "prisma/generated"]
+  "include": ["src", "prisma/generated"],
+  "exclude": ["src/**/*.test.ts"]
 }

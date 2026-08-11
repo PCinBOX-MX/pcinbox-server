@@ -41,7 +41,10 @@ export const MiddleAuthRoute = async (
           },
         });
 
-        req.idUser = slcUser?.idUser;
+        if (!slcUser?.idUser) {
+          return res.status(401).json({ message: "Usuario no encontrado" });
+        }
+        req.idUser = slcUser.idUser;
         next();
         return;
       }
@@ -53,5 +56,34 @@ export const MiddleAuthRoute = async (
     }
   } catch (err) {
     return res.status(401).json({ message: "Token inválido o expirado" });
+  }
+};
+export const MiddleAdminRoute = async (
+  req: CustomRequestI,
+  res: Response,
+  next: NextFunction,
+) => {
+  const userId = Number(req.idUser);
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    return res.status(401).json({ message: "Sesión inválida" });
+  }
+
+  try {
+    const user = await prisma.users.findFirst({
+      where: { idUser: userId, active: 1 },
+      select: { role: true },
+    });
+    if (user?.role !== "admin") {
+      return res.status(403).json({
+        ok: false,
+        message: "No tienes permisos para administrar cotizaciones",
+      });
+    }
+    next();
+  } catch {
+    return res.status(500).json({
+      ok: false,
+      message: "No fue posible validar los permisos administrativos",
+    });
   }
 };
