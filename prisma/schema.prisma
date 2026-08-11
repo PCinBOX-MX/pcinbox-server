@@ -102,6 +102,26 @@ model resetpassword {
   @@index([idUser], map: "idUser")
 }
 
+/// Códigos OTP pendientes antes de crear la cuenta en /register.
+model register_email_codes {
+  id             BigInt    @id @default(autoincrement())
+  email          String    @db.VarChar(100)
+  codeHash       String    @db.VarChar(255)
+  name           String    @db.VarChar(100)
+  lastname       String    @db.VarChar(100)
+  phone          String?   @db.VarChar(45)
+  passwordHash   String    @db.VarChar(255)
+  resendCount    Int       @default(0)
+  verifyAttempts Int       @default(0)
+  lastResendAt   DateTime? @db.DateTime(0)
+  expiresAt      DateTime  @db.DateTime(0)
+  consumedAt     DateTime? @db.DateTime(0)
+  createdAt      DateTime  @default(now()) @db.DateTime(0)
+
+  @@index([email], map: "register_email_codes_email_idx")
+  @@map("register_email_codes")
+}
+
 model cartItems {
   idCartItem BigInt   @id @default(autoincrement())
   carId      BigInt

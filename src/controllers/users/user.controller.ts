@@ -12,6 +12,11 @@ import { uploadPhotoUser, getPhotoUserAWS, deletePhotoUserAWS } from "./../../im
 import "../../config/loadEnv";
 import CustomRequestI from "./../../interfaces/customrequest.interface";
 import { sendEmailResend } from "../../services/resend.service";
+import {
+  confirmRegisterVerificationCode,
+  requestRegisterVerificationCode,
+  resendRegisterVerificationCode,
+} from "../../services/registerEmailVerification.service";
 
 const fechaLocal = DateTime.now().setZone("America/Mexico_City");
 
@@ -105,75 +110,63 @@ export const Login = async (req: Request, res: Response) => {
   }
 };
 
+/**
+ * Paso 1 del registro: valida datos, NO crea la cuenta, envía código al correo.
+ * (Reemplaza la creación directa anterior.)
+ */
 export const Register = async (req: Request, res: Response) => {
   try {
-    const {
+    const { name, lastname, email, password, phone } = req.body || {};
+    const result = await requestRegisterVerificationCode({
       name,
       lastname,
       email,
       password,
-      rol,
       phone,
-    }: {
-      name: string;
-      lastname: string;
-      email: string;
-      password: string;
-      rol: any;
-      phone: string;
-    } = req.body;
-
-    if (!name || !email || !password || !lastname || !phone)
-      return res
-        .status(400)
-        .json({ ok: false, message: "Completa los campos" });
-
-    //Validamos que no este registrado el email entrante en la DB
-
-    const isExistEmail = await prisma.users.findFirst({
-      where: {
-        email: email.toString().trim(),
-      },
-      select: {
-        email: true,
-      },
     });
 
-    if (isExistEmail) {
-      return res.status(400).json({
-        ok: false,
-        message: `El correo ${email} ya está registrado o se desvinculó del sistema`,
-      });
-    }
-
-    //Encriptamos la password
-    const hPass: string = await hasPassword(password);
-
-    await prisma.users.create({
-      data: {
-        name: name,
-        email: email,
-        password: hPass,
-        lastname: lastname,
-        createdAT: fechaLocal.toISO(),
-        role: !rol ? "customer" : rol,
-        phone: phone,
-      },
+    return res.status(result.status).json({
+      ok: result.ok,
+      message: result.message,
+      ...(result.data ? { data: result.data } : {}),
+      needsEmailVerification: result.ok,
     });
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      error: error.message,
+      message: "Error interno del servidor",
+    });
+  }
+};
 
-    try {
-      //await SendEmailWelcomeUser(`${name} ${lastname}`, email);
-      await sendEmailResend(email, "Bienvenido a PCinBOX", "welcome-email-1", {
-        NAME: `${name} ${lastname}`,
-      });
-    } catch (error: any) {
-      //Notificar cuando no se haya enviado el correo
-      writeErrorLogs(error);
-    }
+export const ResendRegisterCode = async (req: Request, res: Response) => {
+  try {
+    const { email } = req.body || {};
+    const result = await resendRegisterVerificationCode(email);
+    return res.status(result.status).json({
+      ok: result.ok,
+      message: result.message,
+      ...(result.data ? { data: result.data } : {}),
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      error: error.message,
+      message: "Error interno del servidor",
+    });
+  }
+};
 
-    return res.status(200).json({
-      ok: true,
-      mesage: `Usuario ${name} registrado correctamente`,
+/** Paso 2: valida el código y crea la cuenta. */
+export const ConfirmRegister = async (req: Request, res: Response) => {
+  try {
+    const { email, code } = req.body || {};
+    const result = await confirmRegisterVerificationCode({ email, code });
+    return res.status(result.status).json({
+      ok: result.ok,
+      message: result.message,
+      ...(result.data ? { data: result.data } : {}),
     });
   } catch (error: any) {
     return res.status(500).json({
