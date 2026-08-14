@@ -278,19 +278,33 @@ export const saveCheckoutDraft = async (
       return res.status(401).json({ ok: false, message: "Usuario no autenticado" });
     }
 
-    const incoming = req.body as CheckoutDraftPayload;
+    const incoming = req.body as CheckoutDraftPayload & {
+      deliveryGroups?: CheckoutDraftPayload["deliveryGroups"] | null;
+      paymentMethod?: CheckoutDraftPayload["paymentMethod"] | null;
+    };
     const current = (await readDraft(userId)) || {};
 
+    // Merge superficial, pero entrega/pago admiten `null` para resetear
+    // (p. ej. vaciar carrito / nuevo comprar-ahora). `{}` solo no borra.
     let merged: CheckoutDraftPayload = {
       ...current,
       ...incoming,
-      deliveryGroups: {
-        ...(current.deliveryGroups || {}),
-        ...(incoming.deliveryGroups || {}),
-      },
     };
 
-    if (incoming.paymentMethod !== undefined) {
+    if (incoming.deliveryGroups === null) {
+      merged.deliveryGroups = {};
+    } else if (incoming.deliveryGroups !== undefined) {
+      merged.deliveryGroups = {
+        ...(current.deliveryGroups || {}),
+        ...incoming.deliveryGroups,
+      };
+    } else {
+      merged.deliveryGroups = current.deliveryGroups;
+    }
+
+    if (incoming.paymentMethod === null) {
+      merged.paymentMethod = null;
+    } else if (incoming.paymentMethod !== undefined) {
       merged.paymentMethod = incoming.paymentMethod;
     } else if (current.paymentMethod !== undefined) {
       merged.paymentMethod = current.paymentMethod;
