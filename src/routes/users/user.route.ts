@@ -10,6 +10,9 @@ import {
   LoginGoogle,
   ChangePassword,
   removeAccount,
+  getPhone,
+  updatePhone,
+  dismissPhonePrompt,
 } from "../../controllers/users/user.controller";
 
 import { MiddleAuthRoute } from "../../middleware/index.middleware";
@@ -30,6 +33,9 @@ router.post(
   uploadPhoto
 );
 router.post("/changePassword", MiddleAuthRoute, ChangePassword);
+router.get("/getPhone", MiddleAuthRoute, getPhone);
+router.post("/updatePhone", MiddleAuthRoute, updatePhone);
+router.post("/dismissPhonePrompt", MiddleAuthRoute, dismissPhonePrompt);
 router.delete("/deletePhotoUser", MiddleAuthRoute, deletePhoto);
 router.get("/getPhotoUser", MiddleAuthRoute, getPhotoUser);
 router.post("/removeAccount", MiddleAuthRoute, removeAccount);
