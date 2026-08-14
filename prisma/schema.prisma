@@ -71,6 +71,7 @@ model users {
   email          String           @db.VarChar(100)
   password       String?          @db.VarChar(255)
   phone          String?          @db.VarChar(45)
+  phonePromptDismissedAt DateTime? @db.DateTime(0)
   role           users_role       @default(customer)
   customerId     String?          @db.VarChar(255)
   createdAT      DateTime?        @default(now()) @db.DateTime(0)

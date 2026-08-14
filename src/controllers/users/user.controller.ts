@@ -12,6 +12,7 @@ import { uploadPhotoUser, getPhotoUserAWS, deletePhotoUserAWS } from "./../../im
 import "../../config/loadEnv";
 import CustomRequestI from "./../../interfaces/customrequest.interface";
 import { sendEmailResend } from "../../services/resend.service";
+import { hasUserPhone, maskUserPhone, buildPhoneReminderState } from "../../utils/phoneMask.util";
 
 const fechaLocal = DateTime.now().setZone("America/Mexico_City");
 
@@ -314,6 +315,7 @@ export const getPhone = async (req: CustomRequestI, res: Response) => {
       select: {
         phone: true,
         password: true,
+        phonePromptDismissedAt: true,
       },
     });
 
@@ -324,12 +326,75 @@ export const getPhone = async (req: CustomRequestI, res: Response) => {
       });
     }
 
+    const phone = user.phone?.trim() || null;
+    const hasPhone = hasUserPhone(phone);
+    const isGoogleAccount = user.password === null;
+    const reminder = buildPhoneReminderState({
+      isGoogleAccount,
+      hasPhone,
+      dismissedAt: user.phonePromptDismissedAt,
+    });
+
     return res.status(200).json({
       ok: true,
       message: "Teléfono obtenido correctamente",
       data: {
-        phone: user.phone?.trim() || null,
-        isGoogleAccount: user.password === null,
+        hasPhone,
+        phoneMasked: maskUserPhone(phone),
+        isGoogleAccount,
+        reminderDue: reminder.reminderDue,
+        reminderAvailableAt: reminder.reminderAvailableAt,
+      },
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      message: "Error interno del servidor",
+      error: error.message,
+    });
+  }
+};
+
+export const dismissPhonePrompt = async (req: CustomRequestI, res: Response) => {
+  try {
+    const user = await prisma.users.findUnique({
+      where: {
+        idUser: Number(req.idUser),
+      },
+      select: {
+        idUser: true,
+        phone: true,
+        password: true,
+      },
+    });
+
+    if (!user) {
+      return res.status(404).json({
+        ok: false,
+        message: "Usuario no encontrado",
+      });
+    }
+
+    const now = new Date();
+    await prisma.users.update({
+      where: { idUser: user.idUser },
+      data: { phonePromptDismissedAt: now },
+    });
+
+    const hasPhone = hasUserPhone(user.phone);
+    const isGoogleAccount = user.password === null;
+    const reminder = buildPhoneReminderState({
+      isGoogleAccount,
+      hasPhone,
+      dismissedAt: now,
+    });
+
+    return res.status(200).json({
+      ok: true,
+      message: "Recordatorio pospuesto",
+      data: {
+        reminderDue: reminder.reminderDue,
+        reminderAvailableAt: reminder.reminderAvailableAt,
       },
     });
   } catch (error: any) {
@@ -378,17 +443,23 @@ export const updatePhone = async (req: CustomRequestI, res: Response) => {
       },
       data: {
         phone,
+        phonePromptDismissedAt: null,
       },
       select: {
         phone: true,
       },
     });
 
+    const saved = updatedUser.phone?.trim() || phone;
+
     return res.status(200).json({
       ok: true,
       message: "Teléfono actualizado correctamente",
       data: {
-        phone: updatedUser.phone,
+        hasPhone: true,
+        phoneMasked: maskUserPhone(saved),
+        reminderDue: false,
+        reminderAvailableAt: null,
       },
     });
   } catch (error: any) {
