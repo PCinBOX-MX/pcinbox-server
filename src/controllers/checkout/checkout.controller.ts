@@ -298,8 +298,10 @@ export const saveCheckoutDraft = async (
         ...(current.deliveryGroups || {}),
         ...incoming.deliveryGroups,
       };
-    } else {
+    } else if (current.deliveryGroups !== undefined) {
       merged.deliveryGroups = current.deliveryGroups;
+    } else {
+      delete merged.deliveryGroups;
     }
 
     if (incoming.paymentMethod === null) {
@@ -308,6 +310,8 @@ export const saveCheckoutDraft = async (
       merged.paymentMethod = incoming.paymentMethod;
     } else if (current.paymentMethod !== undefined) {
       merged.paymentMethod = current.paymentMethod;
+    } else {
+      delete merged.paymentMethod;
     }
 
     merged = await pruneDeliveryGroups(userId, merged);
