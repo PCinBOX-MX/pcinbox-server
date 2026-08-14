@@ -13,6 +13,11 @@ import "../../config/loadEnv";
 import CustomRequestI from "./../../interfaces/customrequest.interface";
 import { sendEmailResend } from "../../services/resend.service";
 import { hasUserPhone, maskUserPhone, buildPhoneReminderState } from "../../utils/phoneMask.util";
+import {
+  confirmRegisterVerificationCode,
+  requestRegisterVerificationCode,
+  resendRegisterVerificationCode,
+} from "../../services/registerEmailVerification.service";
 
 const fechaLocal = DateTime.now().setZone("America/Mexico_City");
 
