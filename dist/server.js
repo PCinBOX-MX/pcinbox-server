@@ -65,8 +65,8 @@ server.use((req, res, next) => {
     next();
 });
 server.use(express_1.default.static(path_1.default.join(__dirname, "public")));
-server.use(express_1.default.json({ limit: "10mb" }));
-server.use(express_1.default.urlencoded({ extended: false }));
+server.use(express_1.default.json({ limit: "50mb" }));
+server.use(express_1.default.urlencoded({ extended: true, limit: "50mb" }));
 server.use((0, cookie_parser_1.default)());
 //Routes
 server.use("/api/v1/user", user_route_1.default);

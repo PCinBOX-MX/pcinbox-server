@@ -72,6 +72,8 @@ function serializeCartItems(cartItems: any[]) {
 
       marcaId: item.products.marcaId ? String(item.products.marcaId) : null,
 
+      licenseType: item.products.licenseType ?? null,
+
       quantity: item.quantity != null ? String(item.quantity) : null,
 
     }))
@@ -92,33 +94,37 @@ export const getCart = async (req: CustomRequestI, res: Response) => {
 
 
 
-    await consolidateActiveCartItems(userId, cart.idCart);
+    const pageRaw = req.query.page;
+
+    const limitRaw = req.query.limit;
+
+    const wantsPagination =
+
+      pageRaw !== undefined || limitRaw !== undefined;
 
 
 
-    const cartItems = await prisma.cartItems.findMany({
+    // Consolidar solo en lectura full (checkout/sync). En listados paginados
+    // evita trabajo extra por cada página que abre el usuario.
+    if (!wantsPagination) {
 
-      where: {
+      await consolidateActiveCartItems(userId, cart.idCart);
 
-        carId: cart.idCart,
+    }
 
-        active: 1,
 
-      },
 
-      include: {
+    const productInclude = {
 
-        products: {
+      products: {
 
-          include: {
+        include: {
 
-            product_stock: {
+          product_stock: {
 
-              include: {
+            include: {
 
-                branches: true,
-
-              },
+              branches: true,
 
             },
 
@@ -128,7 +134,125 @@ export const getCart = async (req: CustomRequestI, res: Response) => {
 
       },
 
+    } as const;
+
+
+
+    const where = {
+
+      carId: cart.idCart,
+
+      active: 1,
+
+      quantity: { gt: 0 },
+
+    };
+
+
+
+    if (!wantsPagination) {
+
+      const cartItems = await prisma.cartItems.findMany({
+
+        where,
+
+        orderBy: { idCartItem: "asc" },
+
+        include: productInclude,
+
+      });
+
+
+
+      return res.status(200).json({
+
+        ok: true,
+
+        data: parseBigInts(serializeCartItems(cartItems)),
+
+      });
+
+    }
+
+
+
+    const page = Math.max(1, parseInt(String(pageRaw), 10) || 1);
+
+    const limit = Math.max(
+
+      1,
+
+      Math.min(50, parseInt(String(limitRaw), 10) || 5),
+
+    );
+
+
+
+    const [totalRows, summaryAgg] = await Promise.all([
+
+      prisma.cartItems.count({ where }),
+
+      prisma.$queryRaw<
+
+        { quantityTotal: bigint | number | null; subtotal: any }[]
+
+      >`
+
+        SELECT
+
+          COALESCE(SUM(ci.quantity), 0) AS quantityTotal,
+
+          COALESCE(SUM(ci.quantity * p.price), 0) AS subtotal
+
+        FROM cart_items ci
+
+        INNER JOIN products p ON p.idProduct = ci.productId
+
+        WHERE ci.carId = ${cart.idCart}
+
+          AND ci.active = 1
+
+          AND ci.quantity > 0
+
+      `,
+
+    ]);
+
+
+
+    const totalPages =
+
+      totalRows === 0 ? 0 : Math.ceil(totalRows / limit);
+
+    const safePage =
+
+      totalPages === 0 ? 1 : Math.min(page, totalPages);
+
+    const skip = (safePage - 1) * limit;
+
+
+
+    const cartItems = await prisma.cartItems.findMany({
+
+      where,
+
+      orderBy: { idCartItem: "asc" },
+
+      skip,
+
+      take: limit,
+
+      include: productInclude,
+
     });
+
+
+
+    const agg = summaryAgg?.[0];
+
+    const quantityTotal = Number(agg?.quantityTotal ?? 0);
+
+    const subtotal = Number(agg?.subtotal ?? 0);
 
 
 
@@ -137,6 +261,26 @@ export const getCart = async (req: CustomRequestI, res: Response) => {
       ok: true,
 
       data: parseBigInts(serializeCartItems(cartItems)),
+
+      pagination: {
+
+        page: safePage,
+
+        limit,
+
+        totalRows,
+
+        totalPages,
+
+      },
+
+      summary: {
+
+        quantityTotal,
+
+        subtotal,
+
+      },
 
     });
 

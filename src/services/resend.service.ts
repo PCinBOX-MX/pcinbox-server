@@ -1,9 +1,10 @@
 import { Resend } from "resend";
-import dotenv from "dotenv";
+import "../config/loadEnv";
 
-dotenv.config({ path: ".env.prod" });
-
-const resend = new Resend(process?.env?.RESEND_KEY || "");
+function getResendClient() {
+  const key = process.env.RESEND_KEY?.trim() || "";
+  return new Resend(key);
+}
 
 export const RESERVATION_STATUS_LABELS: Record<string, string> = {
   pending: "Pendiente",
@@ -15,6 +16,17 @@ export const RESERVATION_STATUS_LABELS: Record<string, string> = {
 export const getReservationStatusLabel = (status: string): string =>
   RESERVATION_STATUS_LABELS[status] || status;
 
+function normalizeTemplateVariables(
+  variables: Record<string, string | number>,
+): Record<string, string | number> {
+  // Resend templates suelen esperar strings en variables.
+  const normalized: Record<string, string | number> = {};
+  for (const [key, value] of Object.entries(variables || {})) {
+    normalized[key] = typeof value === "number" ? String(value) : value;
+  }
+  return normalized;
+}
+
 export const sendEmailResend = async (
   to: string | string[],
   subject: string,
@@ -22,22 +34,42 @@ export const sendEmailResend = async (
   variables: Record<string, string | number>,
 ): Promise<any> => {
   try {
+    if (!process.env.RESEND_KEY?.trim()) {
+      return {
+        status: 400,
+        error: "RESEND_KEY no está configurada en el servidor",
+      };
+    }
+    if (!process.env.FROM_EMAIL?.trim()) {
+      return {
+        status: 400,
+        error: "FROM_EMAIL no está configurada en el servidor",
+      };
+    }
+
+    const resend = getResendClient();
     const { error } = await resend.emails.send({
       from: process.env.FROM_EMAIL || "",
       to: typeof to === "string" ? [to] : to,
       subject: subject,
       template: {
         id: idTemplate,
-        variables,
+        variables: normalizeTemplateVariables(variables),
       },
     });
     if (error) {
+      console.error("[sendEmailResend] Resend error:", {
+        template: idTemplate,
+        message: error?.message,
+        error,
+      });
       return {
         status: 400,
         error: error?.message,
       };
     }
   } catch (error: any) {
+    console.error("[sendEmailResend] exception:", error?.message || error);
     return {
       status: 400,
       error: error?.message,
@@ -152,6 +184,7 @@ export const sendReservationStatusUpdateEmail = async (
   `;
 
   try {
+    const resend = getResendClient();
     const { error } = await resend.emails.send({
       from: process.env.FROM_EMAIL || "",
       to: [to],
@@ -171,4 +204,90 @@ export const sendReservationStatusUpdateEmail = async (
       error: error?.message,
     };
   }
+};
+
+export type LicenseKeyEmailParams = {
+  customerName: string;
+  idOrder: number | string;
+  productName: string;
+  licenseKeys: string[];
+  instructions?: string;
+};
+
+const LICENSE_CLIENT_TEMPLATE_ID = "license-client";
+
+const DEFAULT_LICENSE_INSTRUCTIONS =
+  "Usa la clave para activar tu producto. Si el fabricante requiere descarga, utiliza su portal oficial. Conserva este correo como comprobante.";
+
+function escapeHtml(value: string): string {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/** Una caja HTML por clave (para {{{LICENSE_KEYS_HTML}}} en Resend). */
+function buildLicenseKeysHtml(keys: string[]): string {
+  const wrapKeys =
+    "word-break: break-all; overflow-wrap: anywhere; word-wrap: break-word; -ms-word-break: break-all;";
+
+  return keys
+    .map((key, index) => {
+      const label =
+        keys.length > 1
+          ? `<p style="margin:0 0 6px;font-size:11px;font-weight:bold;color:#bb3d4b;text-transform:uppercase;letter-spacing:0.05em;">Clave ${index + 1} de ${keys.length}</p>`
+          : "";
+
+      return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="width:100%;table-layout:fixed;margin:0 0 10px 0;">
+  <tr>
+    <td width="100%" style="padding:12px 14px;background-color:#ffffff;border:1px dashed #d1d5db;border-radius:8px;font-family:Consolas,Monaco,monospace;font-size:14px;letter-spacing:0.2px;line-height:1.45;color:#222;${wrapKeys}">
+      ${label}${escapeHtml(key)}
+    </td>
+  </tr>
+</table>`;
+    })
+    .join("");
+}
+
+/** Correo de entrega digital vía plantilla Resend `license-client` (1..N claves). */
+export const sendLicenseKeyEmail = async (
+  to: string,
+  params: LicenseKeyEmailParams,
+): Promise<{ status?: number; error?: string } | void> => {
+  const keys = (params.licenseKeys || [])
+    .map((key) => String(key || "").trim())
+    .filter(Boolean);
+
+  if (!keys.length) {
+    return { status: 400, error: "Debes indicar al menos una clave" };
+  }
+
+  const instructions =
+    String(params.instructions || "").trim() || DEFAULT_LICENSE_INSTRUCTIONS;
+
+  const keyCount = keys.length;
+  const keysLabel =
+    keyCount === 1 ? "Clave de activación" : "Claves de activación";
+
+  return sendEmailResend(
+    to,
+    keyCount === 1
+      ? `Tu licencia PCInbox — Pedido #${params.idOrder}`
+      : `Tus ${keyCount} licencias PCInbox — Pedido #${params.idOrder}`,
+    LICENSE_CLIENT_TEMPLATE_ID,
+    {
+      NAME: String(params.customerName || "cliente").trim() || "cliente",
+      ORDER_ID: String(params.idOrder),
+      PRODUCT_NAME: String(params.productName || "Licencia digital").trim(),
+      KEY_COUNT: keyCount,
+      KEYS_LABEL: keysLabel,
+      // Texto plano (fallback): una clave por línea.
+      LICENSE_KEY: keys.join("\n"),
+      // HTML por clave (preferido en plantilla con {{{LICENSE_KEYS_HTML}}}).
+      LICENSE_KEYS_HTML: buildLicenseKeysHtml(keys),
+      INSTRUCTIONS: instructions,
+    },
+  );
 };

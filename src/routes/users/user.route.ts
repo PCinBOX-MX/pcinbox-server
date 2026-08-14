@@ -2,6 +2,8 @@ import { Router } from "express";
 import {
   Login,
   Register,
+  ResendRegisterCode,
+  ConfirmRegister,
   uploadPhoto,
   deletePhoto,
   getPhotoUser,
@@ -22,6 +24,8 @@ const router = Router();
 router.post("/login", Login);
 router.post("/loginGoogle", LoginGoogle);
 router.post("/register", Register);
+router.post("/register/resend-code", ResendRegisterCode);
+router.post("/register/confirm", ConfirmRegister);
 router.post(
   "/uploadPhotoUser",
   MiddleAuthRoute,

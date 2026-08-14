@@ -6,6 +6,7 @@ import {
   historySalesByUser,
   filterSales,
   cancelOrderByUser,
+  sendLicenseKeyEmailAdmin,
 } from "./../../controllers/sales/sales.controller";
 import { MiddleAuthRoute } from "./../../middleware/index.middleware";
 
@@ -17,5 +18,10 @@ router.post("/getSalesByUser", MiddleAuthRoute, getSalesByUser);
 router.post("/registerSales", MiddleAuthRoute, registerSales);
 router.post("/filterSales", MiddleAuthRoute, filterSales);
 router.post("/cancelOrder", MiddleAuthRoute, cancelOrderByUser);
+router.post(
+  "/admin/sendLicenseKey",
+  MiddleAuthRoute,
+  sendLicenseKeyEmailAdmin,
+);
 
 export default router;
