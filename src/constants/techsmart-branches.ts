@@ -4,7 +4,7 @@ import { TECHSMART_PROVIDER_ID } from "@pcinbox/core";
 
 export { TECHSMART_PROVIDER_ID };
 
-export const TECHSMART_DISABLED_BRANCH_NAMES = ["CDMX"] as const;
+export const TECHSMART_DISABLED_BRANCH_NAMES = [] as const;
 
 export function normalizeBranchName(name?: string | null): string {
   return String(name || "").trim().toUpperCase();
@@ -32,7 +32,7 @@ export async function getTechSmartBranchValidationError(
   });
 
   if (isTechSmartBranchDisabled(branch?.name)) {
-    return "La sucursal CDMX no está disponible para productos TechSmart.";
+    return "Hay una sucursal no disponible para productos TechSmart.";
   }
 
   return null;
