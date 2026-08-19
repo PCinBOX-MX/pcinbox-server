@@ -1,4 +1,8 @@
 import { prisma } from "../../db/prismaClient";
+import {
+  isPickupShippingMethod,
+  resolvePcinboxPickupBranchId,
+} from "../../constants/pcinbox-pickup.constants";
 
 export const ESTAFETA_FIXED_COST = 178.0;
 
@@ -28,6 +32,8 @@ export type DeliverySelectionInput = {
   shipping_method: string;
   idAddress?: number | null;
   wantsInsurance?: "si" | "no" | string | null;
+  /** Sucursal de recogida (p. ej. León); distinta del storeId de compra en la clave del grupo. */
+  pickupStoreId?: number | null;
 };
 
 export type CalculatedGroupCosts = {
@@ -182,6 +188,7 @@ export async function buildDataPurchaseFromSelections(
   >,
 ) {
   const dataPurchase: Record<string, any> = {};
+  const pickupStoreId = await resolvePcinboxPickupBranchId();
 
   for (const [groupKey, group] of Object.entries(groupedProducts)) {
     const costs = await calculateGroupCosts(group.products, group.selection);
@@ -189,13 +196,22 @@ export async function buildDataPurchaseFromSelections(
       throw new Error(costs.error);
     }
 
-    dataPurchase[groupKey] = {
+    const entry: Record<string, unknown> = {
       shipping_method: group.selection.shipping_method,
       idAddress: group.selection.idAddress ?? null,
       wantsInsurance: group.selection.wantsInsurance ?? null,
       costoEnvioProductByZone: costs.shippingCost,
       costoSeguroEnvio: costs.insuranceCost,
     };
+
+    if (
+      isPickupShippingMethod(group.selection.shipping_method) &&
+      pickupStoreId != null
+    ) {
+      entry.pickupStoreId = pickupStoreId;
+    }
+
+    dataPurchase[groupKey] = entry;
   }
 
   return dataPurchase;

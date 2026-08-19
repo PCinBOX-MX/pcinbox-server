@@ -199,6 +199,9 @@ export const getSalesByUser = async (req: CustomRequestI, res: Response) => {
         userId: Number(req.idUser),
       },
       include: {
+        users: {
+          select: { email: true },
+        },
         shipments: {
           include: {
             addresses: true,
@@ -296,8 +299,11 @@ export const getSalesByUser = async (req: CustomRequestI, res: Response) => {
       slcAllSalesUser.shipments,
     );
 
+    const { users, ...orderData } = slcAllSalesUser;
+
     const orderWithBranches = {
-      ...slcAllSalesUser,
+      ...orderData,
+      customerEmail: users?.email ?? null,
       sales,
       salesOverview,
       salesPagination: {
