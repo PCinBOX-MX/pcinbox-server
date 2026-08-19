@@ -180,7 +180,7 @@ export const getPedidosByUser = async (req: CustomRequestI, res: Response) => {
 
 export const getSalesByUser = async (req: CustomRequestI, res: Response) => {
   try {
-    const { idOrder } = req.body;
+    const { idOrder, page: rawPage, pageSize: rawPageSize } = req.body;
 
     if (!idOrder) {
       return res
@@ -188,20 +188,20 @@ export const getSalesByUser = async (req: CustomRequestI, res: Response) => {
         .json({ ok: false, message: "Falta mandar el idOrder en el body" });
     }
 
+    const page = Math.max(1, Number(rawPage) || 1);
+    const pageSize = Math.min(20, Math.max(1, Number(rawPageSize) || 4));
+    const skip = (page - 1) * pageSize;
+    const orderId = Number(idOrder);
+
     const slcAllSalesUser = await prisma.order.findFirst({
       where: {
-        idOrder: Number(idOrder),
+        idOrder: orderId,
         userId: Number(req.idUser),
       },
       include: {
         shipments: {
           include: {
             addresses: true,
-          },
-        },
-        sales: {
-          include: {
-            products: true,
           },
         },
       },
@@ -213,6 +213,58 @@ export const getSalesByUser = async (req: CustomRequestI, res: Response) => {
         message: "Orden no encontrada",
       });
     }
+
+    const [totalSales, paginatedSales, salesOverviewRows] = await Promise.all([
+      prisma.sales.count({ where: { orderId } }),
+      prisma.sales.findMany({
+        where: { orderId },
+        include: {
+          products: true,
+        },
+        orderBy: { idSale: "asc" },
+        skip,
+        take: pageSize,
+      }),
+      prisma.sales.findMany({
+        where: { orderId },
+        select: {
+          idSale: true,
+          shipmentId: true,
+          productId: true,
+          quantity: true,
+          products: {
+            select: {
+              name: true,
+              providerId: true,
+            },
+          },
+        },
+        orderBy: { idSale: "asc" },
+      }),
+    ]);
+
+    const totalPages = Math.max(1, Math.ceil(totalSales / pageSize));
+    const safePage = Math.min(page, totalPages);
+
+    let sales = paginatedSales;
+    if (safePage !== page) {
+      sales = await prisma.sales.findMany({
+        where: { orderId },
+        include: { products: true },
+        orderBy: { idSale: "asc" },
+        skip: (safePage - 1) * pageSize,
+        take: pageSize,
+      });
+    }
+
+    const salesOverview = salesOverviewRows.map((sale) => ({
+      idSale: sale.idSale,
+      shipmentId: sale.shipmentId,
+      productId: sale.productId,
+      quantity: sale.quantity,
+      name: sale.products?.name?.trim() || "Producto",
+      providerId: sale.products?.providerId ?? null,
+    }));
 
     const branchIds = [
       ...new Set(
@@ -246,6 +298,14 @@ export const getSalesByUser = async (req: CustomRequestI, res: Response) => {
 
     const orderWithBranches = {
       ...slcAllSalesUser,
+      sales,
+      salesOverview,
+      salesPagination: {
+        page: safePage,
+        pageSize,
+        totalItems: totalSales,
+        totalPages,
+      },
       shippingTotal,
       insuranceTotal,
       shipments: slcAllSalesUser.shipments.map((shipment) => ({
