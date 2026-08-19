@@ -212,6 +212,7 @@ export type LicenseKeyEmailParams = {
   productName: string;
   licenseKeys: string[];
   instructions?: string;
+  productImageUrl?: string | null;
 };
 
 const LICENSE_CLIENT_TEMPLATE_ID = "license-client";
@@ -226,6 +227,38 @@ function escapeHtml(value: string): string {
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+export function resolveProductImageUrl(raw: unknown): string | null {
+  if (raw == null) return null;
+
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    return trimmed.startsWith("http") ? trimmed : null;
+  }
+
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      const resolved = resolveProductImageUrl(item);
+      if (resolved) return resolved;
+    }
+    return null;
+  }
+
+  return null;
+}
+
+function buildProductImageHtml(imageUrl: string | null | undefined): string {
+  if (!imageUrl) return "";
+  const safeUrl = escapeHtml(imageUrl);
+  const safeAlt = escapeHtml("Producto PCinBOX");
+  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 16px 0;">
+  <tr>
+    <td align="center">
+      <img src="${safeUrl}" alt="${safeAlt}" width="120" height="120" style="display:block;width:120px;height:120px;object-fit:contain;border-radius:12px;border:1px solid #e5e7eb;background:#ffffff;" />
+    </td>
+  </tr>
+</table>`;
 }
 
 /** Una caja HTML por clave (para {{{LICENSE_KEYS_HTML}}} en Resend). */
@@ -270,6 +303,7 @@ export const sendLicenseKeyEmail = async (
   const keyCount = keys.length;
   const keysLabel =
     keyCount === 1 ? "Clave de activación" : "Claves de activación";
+  const productImageUrl = resolveProductImageUrl(params.productImageUrl);
 
   return sendEmailResend(
     to,
@@ -281,6 +315,8 @@ export const sendLicenseKeyEmail = async (
       NAME: String(params.customerName || "cliente").trim() || "cliente",
       ORDER_ID: String(params.idOrder),
       PRODUCT_NAME: String(params.productName || "Licencia digital").trim(),
+      PRODUCT_IMAGE_URL: productImageUrl || "",
+      PRODUCT_IMAGE_HTML: buildProductImageHtml(productImageUrl),
       KEY_COUNT: keyCount,
       KEYS_LABEL: keysLabel,
       // Texto plano (fallback): una clave por línea.

@@ -15,7 +15,86 @@ import {
   sumShipmentCostTotals,
   toMoneyNumber,
 } from "../../utils/shipmentCosts";
-import { sendLicenseKeyEmail } from "../../services/resend.service";
+import { sendLicenseKeyEmail, resolveProductImageUrl } from "../../services/resend.service";
+
+function isDigitalLicenseType(licenseType?: string | null): boolean {
+  const value = String(licenseType ?? "").toLowerCase();
+  return value === "windows" || value === "antivirus" || value === "office";
+}
+
+function isDigitalLicenseSale(params: {
+  licenseType?: string | null;
+  shippingMethod?: string | null;
+}): boolean {
+  return (
+    String(params.shippingMethod ?? "").toLowerCase() === "digital" ||
+    isDigitalLicenseType(params.licenseType)
+  );
+}
+
+async function markSaleLicenseDeliveredAndMaybeCloseShipment(params: {
+  idSale: number;
+  idOrder: number;
+  authorization: string;
+  userId: number;
+}): Promise<{ shipmentMarkedEntregado: boolean; idShipment: number | null }> {
+  const deliveredAt = new Date();
+
+  const sale = await prisma.sales.update({
+    where: { idSale: BigInt(params.idSale) },
+    data: { licenseDeliveredAt: deliveredAt },
+    select: {
+      shipmentId: true,
+      orderId: true,
+    },
+  });
+
+  const shipmentId = sale.shipmentId ? Number(sale.shipmentId) : null;
+  if (!shipmentId) {
+    return { shipmentMarkedEntregado: false, idShipment: null };
+  }
+
+  const shipment = await prisma.shipments.findUnique({
+    where: { idShipment: BigInt(shipmentId) },
+    select: { shipping_method: true, status: true },
+  });
+
+  const salesOnShipment = await prisma.sales.findMany({
+    where: { shipmentId: BigInt(shipmentId) },
+    select: {
+      licenseDeliveredAt: true,
+      products: { select: { licenseType: true } },
+    },
+  });
+
+  const shippingMethod = shipment?.shipping_method ?? null;
+  const allDigitalSalesDelivered = salesOnShipment.every((row) => {
+    const isDigital = isDigitalLicenseSale({
+      licenseType: row.products?.licenseType,
+      shippingMethod,
+    });
+    if (!isDigital) return true;
+    return row.licenseDeliveredAt != null;
+  });
+
+  if (!allDigitalSalesDelivered) {
+    return { shipmentMarkedEntregado: false, idShipment: shipmentId };
+  }
+
+  await prisma.shipments.update({
+    where: { idShipment: BigInt(shipmentId) },
+    data: { status: "entregado" },
+  });
+
+  await syncShipmentStatusOnPasarela({
+    idShipment: shipmentId,
+    status: "entregado",
+    idUser: params.userId,
+    authorization: params.authorization,
+  });
+
+  return { shipmentMarkedEntregado: true, idShipment: shipmentId };
+}
 
 function normalizeHistorySearchTerm(raw: unknown): string {
   return String(raw ?? "")
@@ -662,6 +741,7 @@ export const sendLicenseKeyEmailAdmin = async (
     const {
       idOrder,
       idShipment,
+      idSale,
       toEmail,
       customerName,
       productName,
@@ -679,11 +759,53 @@ export const sendLicenseKeyEmailAdmin = async (
           .map((k) => k.trim())
           .filter(Boolean);
 
-    if (!idOrder || !email || !productName || !keys.length) {
+    if (!idOrder || !email || !productName || !keys.length || !idSale) {
       return res.status(400).json({
         ok: false,
         message:
-          "Faltan campos: idOrder, toEmail, productName y al menos una clave.",
+          "Faltan campos: idOrder, idSale, toEmail, productName y al menos una clave.",
+      });
+    }
+
+    const saleRow = await prisma.sales.findFirst({
+      where: {
+        idSale: BigInt(Number(idSale)),
+        orderId: BigInt(Number(idOrder)),
+      },
+      include: {
+        products: { select: { name: true, licenseType: true, image_url: true } },
+        shipments: { select: { idShipment: true, shipping_method: true } },
+      },
+    });
+
+    if (!saleRow) {
+      return res.status(404).json({
+        ok: false,
+        message: `Venta #${idSale} no encontrada en la orden #${idOrder}.`,
+      });
+    }
+
+    if (
+      idShipment &&
+      saleRow.shipmentId &&
+      Number(saleRow.shipmentId) !== Number(idShipment)
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message: `La venta #${idSale} no pertenece al envío ${idShipment}.`,
+      });
+    }
+
+    const resolvedProductName =
+      String(productName).trim() ||
+      String(saleRow.products?.name || "").trim() ||
+      "Licencia";
+
+    const expectedKeys = Math.max(1, Number(saleRow.quantity) || 1);
+    if (keys.length < expectedKeys) {
+      return res.status(400).json({
+        ok: false,
+        message: `Esta línea tiene ${expectedKeys} unidad(es). Debes enviar ${expectedKeys} clave(s).`,
       });
     }
 
@@ -737,11 +859,14 @@ export const sendLicenseKeyEmailAdmin = async (
       [order.users?.name, order.users?.lastname].filter(Boolean).join(" ") ||
       "cliente";
 
+    const productImageUrl = resolveProductImageUrl(saleRow.products?.image_url);
+
     const mailResult = await sendLicenseKeyEmail(email, {
       customerName: resolvedName,
       idOrder: Number(idOrder),
-      productName: String(productName),
+      productName: resolvedProductName,
       licenseKeys: keys,
+      productImageUrl,
       ...(instructions
         ? { instructions: String(instructions) }
         : {}),
@@ -754,55 +879,43 @@ export const sendLicenseKeyEmailAdmin = async (
       });
     }
 
-    // Tras entregar la licencia por correo, marcar envío como entregado
-    // para bloquear cancelación/reembolso del cliente.
-    const shipmentIdsToClose = idShipment
-      ? [Number(idShipment)]
-      : (order.shipments || []).map((s) => Number(s.idShipment)).filter(Boolean);
-
     let shipmentMarkedEntregado = false;
-    if (shipmentIdsToClose.length > 0) {
-      try {
-        await prisma.shipments.updateMany({
-          where: {
-            orderId: Number(idOrder),
-            idShipment: { in: shipmentIdsToClose },
-          },
-          data: { status: "entregado" },
-        });
-        shipmentMarkedEntregado = true;
+    let resolvedShipmentId = saleRow.shipmentId
+      ? Number(saleRow.shipmentId)
+      : idShipment
+        ? Number(idShipment)
+        : null;
 
-        await Promise.all(
-          shipmentIdsToClose.map((shipId) =>
-            syncShipmentStatusOnPasarela({
-              idShipment: shipId,
-              status: "entregado",
-              idUser: Number(order.userId),
-              authorization: req.headers.authorization!,
-            }),
-          ),
-        );
-      } catch (statusError: any) {
-        console.error(
-          "[sendLicenseKeyEmailAdmin] Correo enviado pero falló marcar entregado",
-          statusError,
-        );
-        return res.status(500).json({
-          ok: false,
-          message:
-            `El correo de licencia se envió a ${email}, pero no se pudo marcar el envío como entregado. ` +
-            "Marca manualmente el status a «entregado» para bloquear cancelaciones/reembolsos.",
-          data: {
-            idOrder: Number(idOrder),
-            idShipment: idShipment ? Number(idShipment) : null,
-            toEmail: email,
-            keysSent: keys.length,
-            emailSent: true,
-            shipmentStatusUpdated: false,
-          },
-          error: statusError?.message,
-        });
-      }
+    try {
+      const deliveryResult = await markSaleLicenseDeliveredAndMaybeCloseShipment({
+        idSale: Number(idSale),
+        idOrder: Number(idOrder),
+        authorization: req.headers.authorization!,
+        userId: Number(order.userId),
+      });
+      shipmentMarkedEntregado = deliveryResult.shipmentMarkedEntregado;
+      resolvedShipmentId = deliveryResult.idShipment ?? resolvedShipmentId;
+    } catch (statusError: any) {
+      console.error(
+        "[sendLicenseKeyEmailAdmin] Correo enviado pero falló marcar entrega por venta",
+        statusError,
+      );
+      return res.status(500).json({
+        ok: false,
+        message:
+          `El correo de licencia se envió a ${email}, pero no se pudo registrar la entrega de la venta #${idSale}. ` +
+          "Revisa el panel e intenta de nuevo o marca manualmente el estado.",
+        data: {
+          idOrder: Number(idOrder),
+          idSale: Number(idSale),
+          idShipment: resolvedShipmentId,
+          toEmail: email,
+          keysSent: keys.length,
+          emailSent: true,
+          saleDelivered: false,
+        },
+        error: statusError?.message,
+      });
     }
 
     return res.status(200).json({
@@ -810,9 +923,11 @@ export const sendLicenseKeyEmailAdmin = async (
       message: `Correo de licencia enviado a ${email}`,
       data: {
         idOrder: Number(idOrder),
-        idShipment: idShipment ? Number(idShipment) : null,
+        idSale: Number(idSale),
+        idShipment: resolvedShipmentId,
         toEmail: email,
         keysSent: keys.length,
+        saleDelivered: true,
         shipmentStatus: shipmentMarkedEntregado ? "entregado" : null,
       },
     });

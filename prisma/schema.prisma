@@ -303,6 +303,7 @@ model order {
 model shipments {
   idShipment       BigInt                     @id @default(autoincrement())
   orderId          BigInt?
+  groupKey         String?                    @db.VarChar(255)
   addressId        BigInt?
   trackingNumber   String?                    @db.VarChar(255)
   lastStatus       String?                    @db.VarChar(255)
@@ -321,6 +322,7 @@ model shipments {
 
   @@index([orderId], map: "fk_order_id_shipments_idx")
   @@index([addressId], map: "db_address_id_shipments_idx")
+  @@index([groupKey], map: "shipments_group_key_idx")
 }
 
 model refunds {
@@ -365,8 +367,9 @@ model sales {
   invoiceNumber String?       @db.VarChar(255)
   quantity      Int?
   total         Decimal?      @db.Decimal(10, 2)
-  status        sales_status?
-  createdAt     DateTime?     @default(now()) @db.DateTime(0)
+  status              sales_status?
+  licenseDeliveredAt  DateTime?     @db.DateTime(0)
+  createdAt           DateTime?     @default(now()) @db.DateTime(0)
   order         order         @relation(fields: [orderId], references: [idOrder], onDelete: NoAction, onUpdate: NoAction, map: "fk_orderId_sales")
   products      products      @relation(fields: [productId], references: [idProduct], onDelete: NoAction, onUpdate: NoAction, map: "fk_productId_sales")
   shipments     shipments?    @relation(fields: [shipmentId], references: [idShipment], onDelete: NoAction, onUpdate: NoAction, map: "fk_shipmentId_sales")
