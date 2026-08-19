@@ -42,7 +42,10 @@ async function markSaleLicenseDeliveredAndMaybeCloseShipment(params: {
 
   const sale = await prisma.sales.update({
     where: { idSale: BigInt(params.idSale) },
-    data: { licenseDeliveredAt: deliveredAt },
+    data: {
+      licenseDeliveredAt: deliveredAt,
+      shipStatus: "entregado",
+    },
     select: {
       shipmentId: true,
       orderId: true,
@@ -535,6 +538,7 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
           const shipment = sale.shipments;
 
           return {
+            idSale: Number(sale.idSale),
             idShipment: shipment?.idShipment ?? sale.shipmentId,
             description: sale.products?.description,
             price: sale?.products?.price,
@@ -542,7 +546,7 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
             name: sale.products.name,
             quantity: sale.quantity,
             providerId: sale.products?.providerId,
-            statusShip: shipment?.status,
+            statusShip: sale.shipStatus ?? shipment?.status ?? null,
             shipping_method: shipment?.shipping_method,
             status: sale.status,
             image_url: sale?.products?.image_url,
@@ -773,7 +777,16 @@ export const sendLicenseKeyEmailAdmin = async (
         orderId: BigInt(Number(idOrder)),
       },
       include: {
-        products: { select: { name: true, licenseType: true, image_url: true } },
+        products: {
+          select: {
+            name: true,
+            licenseType: true,
+            image_url: true,
+            description: true,
+            upc: true,
+            sku: true,
+          },
+        },
         shipments: { select: { idShipment: true, shipping_method: true } },
       },
     });
@@ -865,6 +878,10 @@ export const sendLicenseKeyEmailAdmin = async (
       customerName: resolvedName,
       idOrder: Number(idOrder),
       productName: resolvedProductName,
+      productDescription: saleRow.products?.description ?? null,
+      productUpc: saleRow.products?.upc ?? null,
+      productSku: saleRow.products?.sku ?? null,
+      quantity: expectedKeys,
       licenseKeys: keys,
       productImageUrl,
       ...(instructions
@@ -928,6 +945,7 @@ export const sendLicenseKeyEmailAdmin = async (
         toEmail: email,
         keysSent: keys.length,
         saleDelivered: true,
+        shipStatus: "entregado",
         shipmentStatus: shipmentMarkedEntregado ? "entregado" : null,
       },
     });

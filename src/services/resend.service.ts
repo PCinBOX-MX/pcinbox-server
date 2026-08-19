@@ -210,15 +210,21 @@ export type LicenseKeyEmailParams = {
   customerName: string;
   idOrder: number | string;
   productName: string;
+  productDescription?: string | null;
+  productUpc?: string | null;
+  productSku?: string | null;
+  quantity?: number;
   licenseKeys: string[];
   instructions?: string;
   productImageUrl?: string | null;
+  platformUrl?: string | null;
 };
 
-const LICENSE_CLIENT_TEMPLATE_ID = "license-client";
-
 const DEFAULT_LICENSE_INSTRUCTIONS =
-  "Usa la clave para activar tu producto. Si el fabricante requiere descarga, utiliza su portal oficial. Conserva este correo como comprobante.";
+  "Activa tu producto con la clave indicada. Si el fabricante requiere descarga, usa su portal oficial. Conserva este correo como comprobante de tu licencia PCinBOX.";
+
+const PCINBOX_LOGO_URL =
+  "https://ik.imagekit.io/pcinboxkit/logos/logo.png?updatedAt=1759534318587";
 
 function escapeHtml(value: string): string {
   return String(value || "")
@@ -248,20 +254,7 @@ export function resolveProductImageUrl(raw: unknown): string | null {
   return null;
 }
 
-function buildProductImageHtml(imageUrl: string | null | undefined): string {
-  if (!imageUrl) return "";
-  const safeUrl = escapeHtml(imageUrl);
-  const safeAlt = escapeHtml("Producto PCinBOX");
-  return `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="margin:0 0 16px 0;">
-  <tr>
-    <td align="center">
-      <img src="${safeUrl}" alt="${safeAlt}" width="120" height="120" style="display:block;width:120px;height:120px;object-fit:contain;border-radius:12px;border:1px solid #e5e7eb;background:#ffffff;" />
-    </td>
-  </tr>
-</table>`;
-}
-
-/** Una caja HTML por clave (para {{{LICENSE_KEYS_HTML}}} en Resend). */
+/** Una caja HTML por clave. */
 function buildLicenseKeysHtml(keys: string[]): string {
   const wrapKeys =
     "word-break: break-all; overflow-wrap: anywhere; word-wrap: break-word; -ms-word-break: break-all;";
@@ -284,7 +277,182 @@ function buildLicenseKeysHtml(keys: string[]): string {
     .join("");
 }
 
-/** Correo de entrega digital vía plantilla Resend `license-client` (1..N claves). */
+/** Filas opcionales del detalle de producto (UPC, SKU, descripción). */
+function buildProductMetaRowsHtml(params: {
+  productUpc?: string | null;
+  productSku?: string | null;
+  productDescription?: string | null;
+}): string {
+  const rows: string[] = [];
+
+  if (params.productUpc) {
+    rows.push(`
+      <tr>
+        <td style="padding:6px 0;color:#6b7280;width:120px;vertical-align:top;">UPC</td>
+        <td style="padding:6px 0;"><strong>${escapeHtml(params.productUpc)}</strong></td>
+      </tr>`);
+  }
+
+  if (params.productSku) {
+    rows.push(`
+      <tr>
+        <td style="padding:6px 0;color:#6b7280;width:120px;vertical-align:top;">SKU</td>
+        <td style="padding:6px 0;"><strong>${escapeHtml(params.productSku)}</strong></td>
+      </tr>`);
+  }
+
+  if (params.productDescription) {
+    rows.push(`
+      <tr>
+        <td style="padding:6px 0;color:#6b7280;width:120px;vertical-align:top;">Descripción</td>
+        <td style="padding:6px 0;color:#374151;line-height:1.5;">${escapeHtml(params.productDescription)}</td>
+      </tr>`);
+  }
+
+  return rows.join("");
+}
+
+function buildLicenseEmailHtml(params: {
+  customerName: string;
+  idOrder: number | string;
+  productName: string;
+  productDescription?: string | null;
+  productUpc?: string | null;
+  productSku?: string | null;
+  quantity: number;
+  keysLabel: string;
+  licenseKeysHtml: string;
+  instructions: string;
+  productImageUrl: string | null;
+  platformUrl: string;
+}): string {
+  const safeName = escapeHtml(params.customerName);
+  const safeOrder = escapeHtml(String(params.idOrder));
+  const safeProduct = escapeHtml(params.productName);
+  const safeInstructions = escapeHtml(params.instructions);
+  const safePlatformUrl = escapeHtml(params.platformUrl);
+  const keysLabel = escapeHtml(params.keysLabel);
+  const quantity = Math.max(1, params.quantity);
+  const productMetaRows = buildProductMetaRowsHtml({
+    productUpc: params.productUpc ?? null,
+    productSku: params.productSku ?? null,
+    productDescription: params.productDescription ?? null,
+  });
+
+  const productImageBlock = params.productImageUrl
+    ? `<tr>
+        <td align="center" style="padding:0 0 16px 0;">
+          <img src="${escapeHtml(params.productImageUrl)}" alt="${escapeHtml(params.productName)}" width="120" height="120" style="display:block;width:120px;height:120px;object-fit:contain;border-radius:12px;border:1px solid #e5e7eb;background:#ffffff;" />
+        </td>
+      </tr>`
+    : "";
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tu licencia digital PCinbox</title>
+</head>
+<body style="margin:0;padding:0;background:#f3f4f6;font-family:Arial,Helvetica,sans-serif;color:#1f2937;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#f3f4f6;padding:24px 12px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:600px;width:100%;">
+          <tr>
+            <td align="center" style="background:#bb3d4b;padding:16px 24px;border-radius:12px 12px 0 0;">
+              <p style="margin:0;color:#ffffff;font-size:16px;font-weight:700;letter-spacing:0.02em;">Tu licencia digital PCinbox</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="background:#ffffff;padding:28px 24px 8px 24px;border-left:1px solid #e5e7eb;border-right:1px solid #e5e7eb;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
+                ${productImageBlock}
+                <tr>
+                  <td align="center" style="padding:0 0 20px 0;">
+                    <img src="${PCINBOX_LOGO_URL}" alt="PCinBOX" width="160" style="display:block;width:160px;max-width:100%;height:auto;" />
+                  </td>
+                </tr>
+                <tr>
+                  <td align="center" style="padding:0 0 12px 0;">
+                    <h1 style="margin:0;font-size:28px;line-height:1.2;color:#111827;">¡Pago confirmado!</h1>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:0 0 24px 0;font-size:15px;line-height:1.6;color:#374151;text-align:center;">
+                    Hola <strong>${safeName}</strong>, gracias por tu compra. El equipo PCinBOX te envía la información de activación
+                    (${quantity === 1 ? "1 clave de activación" : `${quantity} claves de activación`}).
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="background:#ffffff;padding:0 24px 24px 24px;border-left:1px solid #e5e7eb;border-right:1px solid #e5e7eb;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #e5e7eb;border-radius:12px;background:#f9fafb;">
+                <tr>
+                  <td style="padding:16px 18px;">
+                    <p style="margin:0 0 12px 0;font-size:11px;font-weight:700;color:#6b7280;letter-spacing:0.08em;text-transform:uppercase;">Detalle del pedido</p>
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="font-size:14px;">
+                      <tr>
+                        <td style="padding:6px 0;color:#6b7280;width:120px;">Pedido</td>
+                        <td style="padding:6px 0;"><strong>#${safeOrder}</strong></td>
+                      </tr>
+                      <tr>
+                        <td style="padding:6px 0;color:#6b7280;width:120px;">Producto</td>
+                        <td style="padding:6px 0;"><strong>${safeProduct}</strong></td>
+                      </tr>
+                      <tr>
+                        <td style="padding:6px 0;color:#6b7280;width:120px;">Licencias</td>
+                        <td style="padding:6px 0;"><strong>${quantity}</strong></td>
+                      </tr>
+                      ${productMetaRows}
+                    </table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="background:#ffffff;padding:0 24px 24px 24px;border-left:1px solid #e5e7eb;border-right:1px solid #e5e7eb;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="border:1px solid #f3c4c9;border-radius:12px;background:#fff5f6;">
+                <tr>
+                  <td style="padding:18px;">
+                    <p style="margin:0 0 14px 0;font-size:12px;font-weight:700;color:#bb3d4b;letter-spacing:0.08em;text-transform:uppercase;">${keysLabel}</p>
+                    ${params.licenseKeysHtml}
+                    <p style="margin:18px 0 8px 0;font-size:11px;font-weight:700;color:#6b7280;letter-spacing:0.08em;text-transform:uppercase;">Instrucciones</p>
+                    <p style="margin:0;font-size:14px;line-height:1.6;color:#4b5563;">${safeInstructions}</p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="background:#ffffff;padding:0 24px 24px 24px;border-left:1px solid #e5e7eb;border-right:1px solid #e5e7eb;">
+              <p style="margin:0;font-size:13px;line-height:1.6;color:#6b7280;text-align:center;">
+                Conserva este correo. Si tienes problemas para activar, contacta a soporte indicando el pedido #${safeOrder}.
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="background:#ffffff;padding:0 24px 28px 24px;border-left:1px solid #e5e7eb;border-right:1px solid #e5e7eb;border-bottom:1px solid #e5e7eb;border-radius:0 0 12px 12px;">
+              <a href="${safePlatformUrl}" style="display:inline-block;background:#bb3d4b;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:10px;font-size:15px;font-weight:700;">Ir a la plataforma</a>
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="padding:18px 8px 0 8px;font-size:12px;color:#9ca3af;">
+              © ${new Date().getFullYear()} PCinBOX Bajío. Todos los derechos reservados.
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`;
+}
+
+/** Correo de entrega digital con HTML inline (1..N claves). */
 export const sendLicenseKeyEmail = async (
   to: string,
   params: LicenseKeyEmailParams,
@@ -297,33 +465,73 @@ export const sendLicenseKeyEmail = async (
     return { status: 400, error: "Debes indicar al menos una clave" };
   }
 
+  if (!process.env.RESEND_KEY?.trim()) {
+    return {
+      status: 400,
+      error: "RESEND_KEY no está configurada en el servidor",
+    };
+  }
+
+  if (!process.env.FROM_EMAIL?.trim()) {
+    return {
+      status: 400,
+      error: "FROM_EMAIL no está configurada en el servidor",
+    };
+  }
+
   const instructions =
     String(params.instructions || "").trim() || DEFAULT_LICENSE_INSTRUCTIONS;
 
   const keyCount = keys.length;
+  const quantity = Math.max(1, Number(params.quantity) || keyCount);
   const keysLabel =
     keyCount === 1 ? "Clave de activación" : "Claves de activación";
   const productImageUrl = resolveProductImageUrl(params.productImageUrl);
+  const platformUrl =
+    String(params.platformUrl || process.env.BASE_URL_APP || "").trim() ||
+    "https://pcinbox.com.mx";
 
-  return sendEmailResend(
-    to,
+  const html = buildLicenseEmailHtml({
+    customerName: String(params.customerName || "cliente").trim() || "cliente",
+    idOrder: params.idOrder,
+    productName: String(params.productName || "Licencia digital").trim(),
+    productDescription: params.productDescription ?? null,
+    productUpc: params.productUpc ?? null,
+    productSku: params.productSku ?? null,
+    quantity,
+    keysLabel,
+    licenseKeysHtml: buildLicenseKeysHtml(keys),
+    instructions,
+    productImageUrl,
+    platformUrl,
+  });
+
+  const subject =
     keyCount === 1
       ? `Tu licencia PCInbox — Pedido #${params.idOrder}`
-      : `Tus ${keyCount} licencias PCInbox — Pedido #${params.idOrder}`,
-    LICENSE_CLIENT_TEMPLATE_ID,
-    {
-      NAME: String(params.customerName || "cliente").trim() || "cliente",
-      ORDER_ID: String(params.idOrder),
-      PRODUCT_NAME: String(params.productName || "Licencia digital").trim(),
-      PRODUCT_IMAGE_URL: productImageUrl || "",
-      PRODUCT_IMAGE_HTML: buildProductImageHtml(productImageUrl),
-      KEY_COUNT: keyCount,
-      KEYS_LABEL: keysLabel,
-      // Texto plano (fallback): una clave por línea.
-      LICENSE_KEY: keys.join("\n"),
-      // HTML por clave (preferido en plantilla con {{{LICENSE_KEYS_HTML}}}).
-      LICENSE_KEYS_HTML: buildLicenseKeysHtml(keys),
-      INSTRUCTIONS: instructions,
-    },
-  );
+      : `Tus ${keyCount} licencias PCInbox — Pedido #${params.idOrder}`;
+
+  try {
+    const resend = getResendClient();
+    const { error } = await resend.emails.send({
+      from: process.env.FROM_EMAIL || "",
+      to: [to],
+      subject,
+      html,
+    });
+
+    if (error) {
+      console.error("[sendLicenseKeyEmail] Resend error:", error?.message, error);
+      return {
+        status: 400,
+        error: error?.message,
+      };
+    }
+  } catch (error: any) {
+    console.error("[sendLicenseKeyEmail] exception:", error?.message || error);
+    return {
+      status: 400,
+      error: error?.message,
+    };
+  }
 };

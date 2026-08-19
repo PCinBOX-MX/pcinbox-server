@@ -368,7 +368,8 @@ model sales {
   quantity      Int?
   total         Decimal?      @db.Decimal(10, 2)
   status              sales_status?
-  licenseDeliveredAt  DateTime?     @db.DateTime(0)
+  shipStatus          shipments_status?
+  licenseDeliveredAt  DateTime?          @db.DateTime(0)
   createdAt           DateTime?     @default(now()) @db.DateTime(0)
   order         order         @relation(fields: [orderId], references: [idOrder], onDelete: NoAction, onUpdate: NoAction, map: "fk_orderId_sales")
   products      products      @relation(fields: [productId], references: [idProduct], onDelete: NoAction, onUpdate: NoAction, map: "fk_productId_sales")
