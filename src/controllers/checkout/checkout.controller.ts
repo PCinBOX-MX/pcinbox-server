@@ -181,14 +181,23 @@ async function resolveCheckoutProducts(
   return loadCartProducts(userId);
 }
 
-/** Misma convención que el client: `${storeId|null}-${providerId}`. */
+/** Misma convención que el client: `${storeId|null}-${providerId}` (+ `-digital` para licencias). */
+function isDigitalLicenseType(licenseType?: string | null): boolean {
+  const value = String(licenseType ?? "").toLowerCase();
+  return value === "windows" || value === "antivirus" || value === "office";
+}
+
 function deliveryGroupKeyFromProduct(product: ShippingProductInput): string {
   const storeRaw = product.storeId;
   const storeId =
     storeRaw == null || String(storeRaw) === "" || String(storeRaw) === "null"
       ? "null"
       : String(storeRaw);
-  return `${storeId}-${String(product.providerId ?? "")}`;
+  const base = `${storeId}-${String(product.providerId ?? "")}`;
+  if (isDigitalLicenseType(product.licenseType)) {
+    return `${base}-digital`;
+  }
+  return base;
 }
 
 function groupProducts(products: ShippingProductInput[]) {
