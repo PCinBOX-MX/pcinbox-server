@@ -95,7 +95,7 @@ export const registerAddress = async (req: CustomRequestI, res: Response) => {
         a.city === b.city &&
         a.state === b.state &&
         a.country === b.country &&
-        a.postalCode === b.postalCode &&
+        String(a.postalCode) === String(b.codePostal ?? b.postalCode) &&
         a.noExt === b.noExt &&
         a.noInt === b.noInt
       );
@@ -118,7 +118,7 @@ export const registerAddress = async (req: CustomRequestI, res: Response) => {
         state,
         country,
         street,
-        postalCode: codePostal,
+        postalCode: String(codePostal).trim(),
         userId,
         noExt,
         noInt,
@@ -270,7 +270,7 @@ export const updatedAddress = async (req: CustomRequestI, res: Response) => {
     await prisma.addresses.update({
       data: {
         city,
-        postalCode: codePostal.toString(),
+        postalCode: String(codePostal).trim(),
         cologne,
         country,
         noExt,
