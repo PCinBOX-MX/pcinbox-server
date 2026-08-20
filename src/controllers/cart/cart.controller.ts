@@ -975,7 +975,7 @@ export const changeSucursal = async (req: CustomRequestI, res: Response) => {
 
         .status(400)
 
-        .json({ ok: false, message: "Faltan campos por enviar" });
+        .json({ ok: false, message: "Elige un producto y una sucursal para continuar." });
 
     }
 

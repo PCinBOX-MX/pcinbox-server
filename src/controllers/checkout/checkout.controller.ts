@@ -451,7 +451,7 @@ export const calculateGroupQuote = async (
     };
 
     if (!selection?.shipping_method) {
-      return res.status(400).json({ ok: false, message: "Falta shipping_method" });
+      return res.status(400).json({ ok: false, message: "Selecciona un método de entrega para continuar." });
     }
 
     const priceValidation = await validateProductPrices(products || []);
@@ -703,10 +703,11 @@ export const buildPaymentPayload = async (
       },
     });
   } catch (error: any) {
+    console.error("[checkout] buildPaymentPayload:", error);
     return res.status(500).json({
       ok: false,
-      message: error.message || "Error al preparar pago",
-      error: error.message,
+      message:
+        "No pudimos preparar el pago. Revisa tu carrito y la entrega e inténtalo de nuevo.",
     });
   }
 };

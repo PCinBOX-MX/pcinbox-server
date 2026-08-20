@@ -58,7 +58,7 @@ export const registerAddress = async (req: CustomRequestI, res: Response) => {
       !phone1 ||
       !country
     ) {
-      return res.status(400).json({ ok: false, message: "Faltan campos" });
+      return res.status(400).json({ ok: false, message: "Completa los datos de la dirección para guardar." });
     }
 
     const dataRespExcelCP = await readExcelImageKit(
