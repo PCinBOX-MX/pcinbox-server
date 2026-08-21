@@ -375,33 +375,38 @@ export const rescheduleReservation = async (req: Request, res: Response) => {
         const dateFormatter = new Intl.DateTimeFormat('es-MX', { timeZone: 'UTC', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
         const formattedDate = updated.date ? dateFormatter.format(new Date(updated.date)) : updated.createdAt?.toDateString()!;
 
-        await sendEmailResend(
-          updated.contactEmail,
-          "Reserva reprogramada con éxito",
-          "reservation-client", {
-          USERNAME: updated.contactName,
-          FOLIO: updated.reference,
-          DATE: formattedDate,
-          TIME: updated.time,
-          DEVICE: `${updated.deviceType} (${updated.brand} ${updated.model})`,
-          DESCRIPTION: updated.description,
-          SERVICE: updated.service
-        })
+        try {
+          await sendEmailResend(
+            updated.contactEmail,
+            "Reserva reprogramada con éxito",
+            "reservation-client", {
+            USERNAME: updated.contactName,
+            FOLIO: updated.reference,
+            DATE: formattedDate,
+            TIME: updated.time,
+            DEVICE: `${updated.deviceType} (${updated.brand} ${updated.model})`,
+            DESCRIPTION: updated.description,
+            SERVICE: updated.service
+          });
 
-        await sendEmailResend(
-          "admon@pcinbox.com.mx",
-          "Reserva reprogramada con éxito",
-          "reservation-admin", {
-          USERNAME: updated.contactName,
-          EMAIL: updated.contactEmail,
-          PHONE: updated.contactPhone,
-          FOLIO: updated.reference,
-          DATE: formattedDate,
-          TIME: updated.time,
-          DEVICE: `${updated.deviceType} (${updated.brand} ${updated.model})`,
-          DESCRIPTION: updated.description,
-          SERVICE: updated.service
-        })
+          await sendEmailResend(
+            "admon@pcinbox.com.mx",
+            "Reserva reprogramada con éxito",
+            "reservation-admin", {
+            USERNAME: updated.contactName,
+            EMAIL: updated.contactEmail,
+            PHONE: updated.contactPhone,
+            FOLIO: updated.reference,
+            DATE: formattedDate,
+            TIME: updated.time,
+            DEVICE: `${updated.deviceType} (${updated.brand} ${updated.model})`,
+            DESCRIPTION: updated.description,
+            SERVICE: updated.service
+          });
+        } catch (emailErr) {
+          console.error("Error enviando correos de reprogramación:", emailErr);
+        }
+
       return res.status(201).json({
         ok: true,
         message: "Reserva reprogramada con éxito",
