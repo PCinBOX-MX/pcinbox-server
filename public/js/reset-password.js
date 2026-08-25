@@ -1,125 +1,177 @@
-document.addEventListener("DOMContentLoaded", () => {
-  const formSubmit = document.getElementById("formSubmit");
-  const password = document.getElementById("password");
-  const confirmPassword = document.getElementById("confirmPassword");
+(function () {
+  "use strict";
 
-  const successMessage = document.getElementById("successMessage");
-  const errorMessage = document.getElementById("errorMessage");
-  const errorText = document.getElementById("errorText");
+  function $(id) {
+    return document.getElementById(id);
+  }
 
-  const submitBtn = document.getElementById("submitBtn");
-
-  // Estado inicial
-  successMessage.style.display = "none";
-  errorMessage.style.display = "none";
-
-  formSubmit.addEventListener("submit", async (e) => {
-    e.preventDefault();
-
-    const pass = password.value.trim();
-    const confirm = confirmPassword.value.trim();
-
-    // Validación básica
-    if (!pass || !confirm) {
-      showError("Campos vacíos");
-      return;
-    }
-
-    if (pass !== confirm) {
-      showError("Las contraseñas no coinciden");
-      return;
-    }
-
-    const paramsUrl = new URLSearchParams(window.location.search);
-    const token = paramsUrl.get("token");
-    const idUser = paramsUrl.get("idUser");
-
-    if (!token || !idUser) {
-      showError("Token inválido o faltante");
-      return;
-    }
-
-    setLoading(true);
-
+  function stripSensitiveQuery() {
     try {
-      const response = await fetch("/api/v1/resetpassword/changePassword", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          newPassword: confirm,
-          token,
-          idUser,
-        }),
+      var url = new URL(window.location.href);
+      var keys = [
+        "password",
+        "confirmPassword",
+        "newPassword",
+        "pass",
+        "pwd",
+        "np1",
+        "np2",
+      ];
+      var changed = false;
+      keys.forEach(function (k) {
+        if (url.searchParams.has(k)) {
+          url.searchParams.delete(k);
+          changed = true;
+        }
       });
+      if (changed) {
+        window.history.replaceState({}, document.title, url.pathname + url.search);
+      }
+    } catch (_) {}
+  }
 
-      const data = await response.json();
+  function show(el, text) {
+    if (!el) return;
+    if (el.id === "errMsg") {
+      var t = $("errText");
+      if (t) t.textContent = text || "";
+    } else {
+      el.textContent = text || "";
+    }
+    el.classList.add("show");
+  }
 
-      if (!response.ok) {
-        throw new Error(data?.message || "Error al cambiar contraseña");
+  function hide(el) {
+    if (el) el.classList.remove("show");
+  }
+
+  function clearPasswords() {
+    ["np1", "np2"].forEach(function (id) {
+      var input = $(id);
+      if (input) input.value = "";
+    });
+  }
+
+  document.addEventListener("DOMContentLoaded", function () {
+    stripSensitiveQuery();
+    clearPasswords();
+
+    var form = $("resetForm");
+    var np1 = $("np1");
+    var np2 = $("np2");
+    var tokenEl = $("token");
+    var idUserEl = $("idUser");
+    var okMsg = $("okMsg");
+    var errMsg = $("errMsg");
+    var submitBtn = $("submitBtn");
+    var doneBox = $("doneBox");
+
+    var params = new URLSearchParams(window.location.search);
+    var token = params.get("token") || "";
+    var idUser = params.get("idUser") || "";
+
+    if (tokenEl) tokenEl.value = token;
+    if (idUserEl) idUserEl.value = idUser;
+
+    [np1, np2].forEach(function (input) {
+      if (!input) return;
+      input.addEventListener("focus", function () {
+        input.removeAttribute("readonly");
+      });
+    });
+
+    // Autofill tardío del navegador
+    window.setTimeout(clearPasswords, 50);
+    window.setTimeout(function () {
+      [np1, np2].forEach(function (input) {
+        if (input && document.activeElement !== input) input.value = "";
+      });
+    }, 400);
+
+    document.querySelectorAll(".eye").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var id = btn.getAttribute("data-target");
+        var field = id ? $(id) : null;
+        if (!field) return;
+        var showText = field.type === "password";
+        field.type = showText ? "text" : "password";
+        btn.classList.toggle("on", showText);
+        btn.setAttribute(
+          "aria-label",
+          showText ? "Ocultar contraseña" : "Mostrar contraseña",
+        );
+      });
+    });
+
+    if (!form) return;
+
+    form.addEventListener("submit", async function (e) {
+      e.preventDefault();
+      hide(okMsg);
+      hide(errMsg);
+
+      var pass = (np1 && np1.value ? np1.value : "").trim();
+      var confirm = (np2 && np2.value ? np2.value : "").trim();
+
+      if (!token || !idUser) {
+        show(errMsg, "El enlace no es válido o está incompleto. Solicita uno nuevo.");
+        return;
+      }
+      if (!pass || !confirm) {
+        show(errMsg, "Completa ambos campos.");
+        return;
+      }
+      if (pass.length < 8) {
+        show(errMsg, "La contraseña debe tener al menos 8 caracteres.");
+        return;
+      }
+      if (pass !== confirm) {
+        show(errMsg, "Las contraseñas no coinciden.");
+        return;
       }
 
-      showSuccess("¡Contraseña actualizada correctamente!");
-      formSubmit.reset();
-    } catch (err) {
-      showError(err.message);
-    } finally {
-      setLoading(false);
-    }
+      if (submitBtn) {
+        submitBtn.disabled = true;
+        submitBtn.classList.add("loading");
+      }
+
+      try {
+        var res = await fetch("/api/v1/resetpassword/changePassword", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            newPassword: pass,
+            token: token,
+            idUser: idUser,
+          }),
+          cache: "no-store",
+        });
+
+        var data = {};
+        try {
+          data = await res.json();
+        } catch (_) {}
+
+        if (!res.ok) {
+          throw new Error(data.message || "No se pudo actualizar la contraseña.");
+        }
+
+        show(okMsg, data.message || "Contraseña actualizada correctamente.");
+        form.reset();
+        clearPasswords();
+        form.style.display = "none";
+        if (doneBox) doneBox.classList.add("show");
+      } catch (err) {
+        show(errMsg, (err && err.message) || "Error al cambiar la contraseña.");
+      } finally {
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.classList.remove("loading");
+        }
+      }
+    });
   });
-
-  function showError(msg) {
-    errorMessage.style.display = "block";
-    errorText.innerText = msg;
-
-    setTimeout(() => {
-      errorMessage.style.display = "none";
-    }, 3000);
-  }
-
-  function showSuccess(msg) {
-    successMessage.style.display = "block";
-    successMessage.innerText = msg;
-
-    setTimeout(() => {
-      successMessage.style.display = "none";
-    }, 3000);
-  }
-
-  function setLoading(state) {
-    submitBtn.disabled = state;
-
-    if (state) {
-      submitBtn.classList.add("loading");
-    } else {
-      submitBtn.classList.remove("loading");
-    }
-  }
-});
-
-/**
- * Toggle de visibilidad de contraseña
- * (esto SÍ puede estar global porque lo llamas desde onclick en EJS)
- */
-function togglePassword(fieldId) {
-  const field = document.getElementById(fieldId);
-  const button = field.nextElementSibling;
-  const svg = button.querySelector("svg");
-
-  if (field.type === "password") {
-    field.type = "text";
-
-    svg.innerHTML = `
-      <path d="M10.5 8a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0"/>
-      <path d="M0 8s3-5.5 8-5.5S16 8 16 8s-3 5.5-8 5.5S0 8 0 8m8 3.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7"/>
-    `;
-  } else {
-    field.type = "password";
-
-    svg.innerHTML = `
-      <path d="m10.79 12.912-1.614-1.615a3.5 3.5 0 0 1-4.474-4.474l-2.06-2.06C.938 6.278 0 8 0 8s3 5.5 8 5.5a7 7 0 0 0 2.79-.588M5.21 3.088A7 7 0 0 1 8 2.5c5 0 8 5.5 8 5.5s-.939 1.721-2.641 3.238l-2.062-2.062a3.5 3.5 0 0 0-4.474-4.474z"/>
-      <path d="M5.525 7.646a2.5 2.5 0 0 0 2.829 2.829zm4.95.708-2.829-2.83a2.5 2.5 0 0 1 2.829 2.829zm3.171 6-12-12 .708-.708 12 12z"/>
-    `;
-  }
-}
+})();
