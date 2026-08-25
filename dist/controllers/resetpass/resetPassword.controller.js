@@ -116,9 +116,12 @@ const resFileLinkResetPass = async (req, res) => {
         if (!fs_1.default.existsSync(pathHtml)) {
             throw new Error(`No se encontró la plantilla en: ${pathHtml}`);
         }
+        res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, private");
+        res.setHeader("Pragma", "no-cache");
+        res.setHeader("Referrer-Policy", "no-referrer");
         return res.render(pathHtml, {
             server: process.env.SERVER || "",
-            linkApp: `${process.env.BASE_URL_APP}/principal`,
+            linkApp: `${process.env.BASE_URL_APP || process.env.CLIENT_URL || ""}/principal`,
         });
     }
     catch (error) {
