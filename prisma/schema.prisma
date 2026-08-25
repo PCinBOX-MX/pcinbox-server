@@ -36,16 +36,21 @@ model products {
   providerId      BigInt
   isPC            Int?            @db.TinyInt
   licenseType     String?         @db.VarChar(20)
+  requiresSerial  Boolean         @default(false)
+  warrantyMonths  Int?            @default(12)
   createdAt       DateTime?       @default(now()) @db.DateTime(0)
   active          Int?            @default(1) @db.TinyInt
-  cartItems       cartItems[]
-  favorites       favorites[]
-  product_stock   product_stock[]
-  categories      categories?     @relation(fields: [categoryId], references: [idCategorie], onDelete: NoAction, onUpdate: NoAction, map: "fk_categorieId_products")
-  marca           marca?          @relation(fields: [marcaId], references: [idMarca], onDelete: NoAction, onUpdate: NoAction, map: "fk_marcaId_products")
-  providers       providers       @relation(fields: [providerId], references: [idProvider], onDelete: NoAction, onUpdate: NoAction, map: "fk_providerId_products")
-  reviews         reviews[]
-  sales           sales[]
+  cartItems            cartItems[]
+  favorites            favorites[]
+  product_stock        product_stock[]
+  categories           categories?     @relation(fields: [categoryId], references: [idCategorie], onDelete: NoAction, onUpdate: NoAction, map: "fk_categorieId_products")
+  marca                marca?          @relation(fields: [marcaId], references: [idMarca], onDelete: NoAction, onUpdate: NoAction, map: "fk_marcaId_products")
+  providers            providers       @relation(fields: [providerId], references: [idProvider], onDelete: NoAction, onUpdate: NoAction, map: "fk_providerId_products")
+  reviews              reviews[]
+  sales                sales[]
+  pos_sale_items       pos_sale_items[]
+  inventory_movements  inventory_movements[]
+  product_serials      product_serials[]
 
   @@index([providerId], map: "fk_providerId_products_idx")
   @@index([marcaId], map: "fk_marcaId_products_idx")
@@ -87,8 +92,16 @@ model users {
   order          order[]
   cotizaciones   cotizaciones[]
   reservas       reservas[]
-  resetpassword  resetpassword[]
-  sales          sales[]
+  resetpassword           resetpassword[]
+  sales                   sales[]
+  pos_sales_cashier       pos_sales[]            @relation("pos_sales_cashier")
+  pos_sales_customer      pos_sales[]            @relation("pos_sales_customer")
+  pos_sale_events         pos_sale_events[]
+  inventory_movements     inventory_movements[]
+  pos_cash_opened         pos_cash_sessions[]    @relation("pos_cash_opened_by")
+  pos_cash_closed         pos_cash_sessions[]    @relation("pos_cash_closed_by")
+  pos_cash_movements      pos_cash_movements[]
+  product_serials_customer product_serials[]     @relation("product_serials_customer")
 }
 
 model resetpassword {
@@ -409,14 +422,227 @@ model marcamapeo {
 }
 
 model branches {
-  idBranche     BigInt          @id @default(autoincrement())
-  name          String?         @db.VarChar(255)
-  city          String?         @db.VarChar(255)
-  providerId    BigInt
-  providers     providers       @relation(fields: [providerId], references: [idProvider], onDelete: NoAction, onUpdate: NoAction, map: "fk_providerId_branches")
-  product_stock product_stock[]
+  idBranche            BigInt                 @id @default(autoincrement())
+  name                 String?                @db.VarChar(255)
+  city                 String?                @db.VarChar(255)
+  providerId           BigInt
+  providers            providers              @relation(fields: [providerId], references: [idProvider], onDelete: NoAction, onUpdate: NoAction, map: "fk_providerId_branches")
+  product_stock        product_stock[]
+  pos_sales            pos_sales[]
+  inventory_movements  inventory_movements[]
+  pos_cash_sessions    pos_cash_sessions[]
+  product_serials      product_serials[]
 
   @@index([providerId], map: "fk_providerId_branches_idx")
+}
+
+/// Ventas de mostrador (Punto de Venta). Independientes de `order` web.
+model pos_sales {
+  idPosSale        BigInt              @id @default(autoincrement())
+  folio            String              @unique(map: "uk_pos_sales_folio") @db.VarChar(32)
+  branchId         BigInt
+  cashierUserId    BigInt
+  customerUserId   BigInt?
+  customerName     String?             @db.VarChar(255)
+  status           pos_sales_status    @default(completed)
+  subtotal         Decimal             @db.Decimal(12, 2)
+  discountTotal    Decimal             @default(0) @db.Decimal(12, 2)
+  total            Decimal             @db.Decimal(12, 2)
+  notes            String?             @db.Text
+  cancelReason     String?             @db.Text
+  cancelledAt      DateTime?           @db.DateTime(0)
+  cancelledByUserId BigInt?
+  customerEmail    String?             @db.VarChar(255)
+  customerPhone    String?             @db.VarChar(45)
+  paymentLinkUrl   String?             @db.Text
+  checkoutLinkUrl  String?             @db.Text
+  linkReferencia   String?             @db.VarChar(64)
+  idLinkPago       Int?
+  cashSessionId    BigInt?
+  createdAt        DateTime            @default(now()) @db.DateTime(0)
+  updatedAt        DateTime            @default(now()) @updatedAt @db.DateTime(0)
+  branches         branches            @relation(fields: [branchId], references: [idBranche], onDelete: NoAction, onUpdate: NoAction, map: "fk_pos_sales_branchId")
+  cashier          users               @relation("pos_sales_cashier", fields: [cashierUserId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "fk_pos_sales_cashierUserId")
+  customer         users?              @relation("pos_sales_customer", fields: [customerUserId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "fk_pos_sales_customerUserId")
+  cashSession      pos_cash_sessions?  @relation(fields: [cashSessionId], references: [idCashSession], onDelete: NoAction, onUpdate: NoAction, map: "fk_pos_sales_cashSessionId")
+  items            pos_sale_items[]
+  payments         pos_payments[]
+  events           pos_sale_events[]
+  serials          product_serials[]
+
+  @@index([branchId], map: "idx_pos_sales_branchId")
+  @@index([cashierUserId], map: "idx_pos_sales_cashierUserId")
+  @@index([customerUserId], map: "idx_pos_sales_customerUserId")
+  @@index([status, createdAt], map: "idx_pos_sales_status_createdAt")
+  @@index([createdAt], map: "idx_pos_sales_createdAt")
+  @@index([cashSessionId], map: "idx_pos_sales_cashSessionId")
+}
+
+model pos_sale_items {
+  idPosSaleItem  BigInt   @id @default(autoincrement())
+  posSaleId      BigInt
+  productId      BigInt
+  productName    String   @db.VarChar(255)
+  productSku     String?  @db.VarChar(255)
+  productUpc     String?  @db.VarChar(255)
+  quantity       Int
+  unitPrice      Decimal  @db.Decimal(12, 2)
+  discountPct    Decimal  @default(0) @db.Decimal(5, 2)
+  lineTotal      Decimal  @db.Decimal(12, 2)
+  pos_sales      pos_sales @relation(fields: [posSaleId], references: [idPosSale], onDelete: Cascade, onUpdate: NoAction, map: "fk_pos_sale_items_posSaleId")
+  products       products  @relation(fields: [productId], references: [idProduct], onDelete: NoAction, onUpdate: NoAction, map: "fk_pos_sale_items_productId")
+  serials        product_serials[]
+
+  @@index([posSaleId], map: "idx_pos_sale_items_posSaleId")
+  @@index([productId], map: "idx_pos_sale_items_productId")
+}
+
+/// Unidades serializadas (GPU, laptop, etc.) — Fase 3 POS.
+model product_serials {
+  idProductSerial   BigInt                 @id @default(autoincrement())
+  productId         BigInt
+  serialNumber      String                 @db.VarChar(128)
+  branchId          BigInt?
+  status            product_serial_status  @default(available)
+  posSaleId         BigInt?
+  posSaleItemId     BigInt?
+  customerUserId    BigInt?
+  customerName      String?                @db.VarChar(255)
+  soldAt            DateTime?              @db.DateTime(0)
+  warrantyMonths    Int?
+  warrantyExpiresAt DateTime?              @db.DateTime(0)
+  notes             String?                @db.VarChar(500)
+  createdAt         DateTime               @default(now()) @db.DateTime(0)
+  updatedAt         DateTime               @default(now()) @updatedAt @db.DateTime(0)
+  products          products               @relation(fields: [productId], references: [idProduct], onDelete: NoAction, onUpdate: NoAction, map: "fk_product_serials_productId")
+  branches          branches?              @relation(fields: [branchId], references: [idBranche], onDelete: NoAction, onUpdate: NoAction, map: "fk_product_serials_branchId")
+  pos_sales         pos_sales?             @relation(fields: [posSaleId], references: [idPosSale], onDelete: NoAction, onUpdate: NoAction, map: "fk_product_serials_posSaleId")
+  pos_sale_items    pos_sale_items?        @relation(fields: [posSaleItemId], references: [idPosSaleItem], onDelete: NoAction, onUpdate: NoAction, map: "fk_product_serials_posSaleItemId")
+  customer          users?                 @relation("product_serials_customer", fields: [customerUserId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "fk_product_serials_customer")
+
+  @@unique([serialNumber], map: "uk_product_serials_serialNumber")
+  @@index([productId], map: "idx_product_serials_productId")
+  @@index([status], map: "idx_product_serials_status")
+  @@index([posSaleId], map: "idx_product_serials_posSaleId")
+}
+
+enum product_serial_status {
+  available
+  sold
+  rma
+  returned
+}
+
+model pos_payments {
+  idPosPayment BigInt              @id @default(autoincrement())
+  posSaleId    BigInt
+  method       pos_payment_method
+  amount       Decimal             @db.Decimal(12, 2)
+  reference    String?             @db.VarChar(255)
+  createdAt    DateTime            @default(now()) @db.DateTime(0)
+  pos_sales    pos_sales           @relation(fields: [posSaleId], references: [idPosSale], onDelete: Cascade, onUpdate: NoAction, map: "fk_pos_payments_posSaleId")
+
+  @@index([posSaleId], map: "idx_pos_payments_posSaleId")
+}
+
+model pos_sale_events {
+  idPosSaleEvent BigInt   @id @default(autoincrement())
+  posSaleId      BigInt
+  userId         BigInt?
+  eventType      String   @db.VarChar(64)
+  reason         String?  @db.Text
+  payload        Json?
+  createdAt      DateTime @default(now()) @db.DateTime(0)
+  pos_sales      pos_sales @relation(fields: [posSaleId], references: [idPosSale], onDelete: Cascade, onUpdate: NoAction, map: "fk_pos_sale_events_posSaleId")
+  users          users?    @relation(fields: [userId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "fk_pos_sale_events_userId")
+
+  @@index([posSaleId], map: "idx_pos_sale_events_posSaleId")
+  @@index([createdAt], map: "idx_pos_sale_events_createdAt")
+}
+
+model inventory_movements {
+  idInventoryMovement BigInt   @id @default(autoincrement())
+  productId           BigInt
+  branchId            BigInt?
+  userId              BigInt?
+  delta               Int
+  reason              String   @db.VarChar(64)
+  refType             String?  @db.VarChar(64)
+  refId               String?  @db.VarChar(64)
+  note                String?  @db.VarChar(255)
+  createdAt           DateTime @default(now()) @db.DateTime(0)
+  products            products  @relation(fields: [productId], references: [idProduct], onDelete: NoAction, onUpdate: NoAction, map: "fk_inventory_movements_productId")
+  branches            branches? @relation(fields: [branchId], references: [idBranche], onDelete: NoAction, onUpdate: NoAction, map: "fk_inventory_movements_branchId")
+  users               users?    @relation(fields: [userId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "fk_inventory_movements_userId")
+
+  @@index([productId, createdAt], map: "idx_inventory_movements_product_created")
+  @@index([branchId], map: "idx_inventory_movements_branchId")
+  @@index([refType, refId], map: "idx_inventory_movements_ref")
+}
+
+enum pos_sales_status {
+  completed
+  cancelled
+  pending_payment
+}
+
+enum pos_payment_method {
+  efectivo_sucursal
+  tarjeta_sucursal
+  transferencia_bancaria
+  openpay_link
+}
+
+/// Sesión de caja por sucursal (Fase 2 POS).
+model pos_cash_sessions {
+  idCashSession   BigInt                    @id @default(autoincrement())
+  branchId        BigInt
+  openedByUserId  BigInt
+  closedByUserId  BigInt?
+  status          pos_cash_session_status   @default(open)
+  openingFloat    Decimal                   @db.Decimal(12, 2)
+  closingCounted  Decimal?                  @db.Decimal(12, 2)
+  expectedCash    Decimal?                  @db.Decimal(12, 2)
+  difference      Decimal?                  @db.Decimal(12, 2)
+  notes           String?                   @db.Text
+  openedAt        DateTime                  @default(now()) @db.DateTime(0)
+  closedAt        DateTime?                 @db.DateTime(0)
+  branches        branches                  @relation(fields: [branchId], references: [idBranche], onDelete: NoAction, onUpdate: NoAction, map: "fk_pos_cash_sessions_branchId")
+  openedBy        users                     @relation("pos_cash_opened_by", fields: [openedByUserId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "fk_pos_cash_sessions_openedBy")
+  closedBy        users?                    @relation("pos_cash_closed_by", fields: [closedByUserId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "fk_pos_cash_sessions_closedBy")
+  movements       pos_cash_movements[]
+  sales           pos_sales[]
+
+  @@index([branchId, status], map: "idx_pos_cash_sessions_branch_status")
+  @@index([openedAt], map: "idx_pos_cash_sessions_openedAt")
+}
+
+model pos_cash_movements {
+  idCashMovement  BigInt                   @id @default(autoincrement())
+  cashSessionId   BigInt
+  userId          BigInt
+  type            pos_cash_movement_type
+  amount          Decimal                  @db.Decimal(12, 2)
+  reason          String?                  @db.VarChar(255)
+  posSaleId       BigInt?
+  createdAt       DateTime                 @default(now()) @db.DateTime(0)
+  session         pos_cash_sessions        @relation(fields: [cashSessionId], references: [idCashSession], onDelete: Cascade, onUpdate: NoAction, map: "fk_pos_cash_movements_session")
+  users           users                    @relation(fields: [userId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "fk_pos_cash_movements_userId")
+
+  @@index([cashSessionId], map: "idx_pos_cash_movements_session")
+  @@index([createdAt], map: "idx_pos_cash_movements_createdAt")
+}
+
+enum pos_cash_session_status {
+  open
+  closed
+}
+
+enum pos_cash_movement_type {
+  cash_in
+  cash_out
+  sale_cash
+  sale_cash_void
 }
 
 model product_stock {

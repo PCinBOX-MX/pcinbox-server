@@ -13,6 +13,7 @@ exports.calculateProductsSubtotal = calculateProductsSubtotal;
 exports.calculateExtrasTotal = calculateExtrasTotal;
 exports.validateProductPrices = validateProductPrices;
 const prismaClient_1 = require("../../db/prismaClient");
+const pcinbox_pickup_constants_1 = require("../../constants/pcinbox-pickup.constants");
 exports.ESTAFETA_FIXED_COST = 178.0;
 exports.PAQUETE_EXPRESS_TARIFAS = [
     { max: 5, price: 303 },
@@ -81,7 +82,7 @@ async function calculateGroupCosts(products, selection) {
     const method = selection.shipping_method;
     let shippingCost = 0;
     let insuranceCost = 0;
-    if (method === "sucursal") {
+    if (method === "sucursal" || method === "digital") {
         return { shippingCost: 0, insuranceCost: 0, totalExtra: 0 };
     }
     if (method === "estafeta") {
@@ -127,18 +128,24 @@ async function calculateGroupCosts(products, selection) {
 }
 async function buildDataPurchaseFromSelections(groupedProducts) {
     const dataPurchase = {};
+    const pickupStoreId = await (0, pcinbox_pickup_constants_1.resolvePcinboxPickupBranchId)();
     for (const [groupKey, group] of Object.entries(groupedProducts)) {
         const costs = await calculateGroupCosts(group.products, group.selection);
         if (costs.error) {
             throw new Error(costs.error);
         }
-        dataPurchase[groupKey] = {
+        const entry = {
             shipping_method: group.selection.shipping_method,
             idAddress: group.selection.idAddress ?? null,
             wantsInsurance: group.selection.wantsInsurance ?? null,
             costoEnvioProductByZone: costs.shippingCost,
             costoSeguroEnvio: costs.insuranceCost,
         };
+        if ((0, pcinbox_pickup_constants_1.isPickupShippingMethod)(group.selection.shipping_method) &&
+            pickupStoreId != null) {
+            entry.pickupStoreId = pickupStoreId;
+        }
+        dataPurchase[groupKey] = entry;
     }
     return dataPurchase;
 }

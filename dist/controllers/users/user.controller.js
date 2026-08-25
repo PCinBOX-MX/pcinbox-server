@@ -1,12 +1,14 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.removeAccount = exports.deletePhoto = exports.ChangePassword = exports.getPhotoUser = exports.uploadPhoto = exports.LoginGoogle = exports.Register = exports.Login = void 0;
+exports.removeAccount = exports.deletePhoto = exports.ChangePassword = exports.getPhotoUser = exports.uploadPhoto = exports.updatePhone = exports.dismissPhonePrompt = exports.getPhone = exports.LoginGoogle = exports.ConfirmRegister = exports.ResendRegisterCode = exports.Register = exports.Login = void 0;
 const prismaClient_1 = require("../../db/prismaClient");
 const index_service_1 = require("./../../services/index.service");
 const luxon_1 = require("luxon");
 const imagekit_1 = require("./../../imagekit/imagekit");
 require("../../config/loadEnv");
 const resend_service_1 = require("../../services/resend.service");
+const phoneMask_util_1 = require("../../utils/phoneMask.util");
+const registerEmailVerification_service_1 = require("../../services/registerEmailVerification.service");
 const fechaLocal = luxon_1.DateTime.now().setZone("America/Mexico_City");
 const Login = async (req, res) => {
     try {
@@ -87,54 +89,25 @@ const Login = async (req, res) => {
     }
 };
 exports.Login = Login;
+/**
+ * Paso 1 del registro: valida datos, NO crea la cuenta, envía código al correo.
+ * (Reemplaza la creación directa anterior.)
+ */
 const Register = async (req, res) => {
     try {
-        const { name, lastname, email, password, rol, phone, } = req.body;
-        if (!name || !email || !password || !lastname || !phone)
-            return res
-                .status(400)
-                .json({ ok: false, message: "Completa los campos" });
-        //Validamos que no este registrado el email entrante en la DB
-        const isExistEmail = await prismaClient_1.prisma.users.findFirst({
-            where: {
-                email: email.toString().trim(),
-            },
-            select: {
-                email: true,
-            },
+        const { name, lastname, email, password, phone } = req.body || {};
+        const result = await (0, registerEmailVerification_service_1.requestRegisterVerificationCode)({
+            name,
+            lastname,
+            email,
+            password,
+            phone,
         });
-        if (isExistEmail) {
-            return res.status(400).json({
-                ok: false,
-                message: `El correo ${email} ya está registrado o se desvinculó del sistema`,
-            });
-        }
-        //Encriptamos la password
-        const hPass = await (0, index_service_1.hasPassword)(password);
-        await prismaClient_1.prisma.users.create({
-            data: {
-                name: name,
-                email: email,
-                password: hPass,
-                lastname: lastname,
-                createdAT: fechaLocal.toISO(),
-                role: !rol ? "customer" : rol,
-                phone: phone,
-            },
-        });
-        try {
-            //await SendEmailWelcomeUser(`${name} ${lastname}`, email);
-            await (0, resend_service_1.sendEmailResend)(email, "Bienvenido a PCinBOX", "welcome-email-1", {
-                NAME: `${name} ${lastname}`,
-            });
-        }
-        catch (error) {
-            //Notificar cuando no se haya enviado el correo
-            (0, index_service_1.writeErrorLogs)(error);
-        }
-        return res.status(200).json({
-            ok: true,
-            mesage: `Usuario ${name} registrado correctamente`,
+        return res.status(result.status).json({
+            ok: result.ok,
+            message: result.message,
+            ...(result.data ? { data: result.data } : {}),
+            needsEmailVerification: result.ok,
         });
     }
     catch (error) {
@@ -146,6 +119,45 @@ const Register = async (req, res) => {
     }
 };
 exports.Register = Register;
+const ResendRegisterCode = async (req, res) => {
+    try {
+        const { email } = req.body || {};
+        const result = await (0, registerEmailVerification_service_1.resendRegisterVerificationCode)(email);
+        return res.status(result.status).json({
+            ok: result.ok,
+            message: result.message,
+            ...(result.data ? { data: result.data } : {}),
+        });
+    }
+    catch (error) {
+        return res.status(500).json({
+            ok: false,
+            error: error.message,
+            message: "Error interno del servidor",
+        });
+    }
+};
+exports.ResendRegisterCode = ResendRegisterCode;
+/** Paso 2: valida el código y crea la cuenta. */
+const ConfirmRegister = async (req, res) => {
+    try {
+        const { email, code } = req.body || {};
+        const result = await (0, registerEmailVerification_service_1.confirmRegisterVerificationCode)({ email, code });
+        return res.status(result.status).json({
+            ok: result.ok,
+            message: result.message,
+            ...(result.data ? { data: result.data } : {}),
+        });
+    }
+    catch (error) {
+        return res.status(500).json({
+            ok: false,
+            error: error.message,
+            message: "Error interno del servidor",
+        });
+    }
+};
+exports.ConfirmRegister = ConfirmRegister;
 const LoginGoogle = async (req, res) => {
     try {
         const { email, name } = req.body;
@@ -250,6 +262,159 @@ const LoginGoogle = async (req, res) => {
     }
 };
 exports.LoginGoogle = LoginGoogle;
+const getPhone = async (req, res) => {
+    try {
+        const user = await prismaClient_1.prisma.users.findUnique({
+            where: {
+                idUser: Number(req.idUser),
+            },
+            select: {
+                phone: true,
+                password: true,
+                phonePromptDismissedAt: true,
+            },
+        });
+        if (!user) {
+            return res.status(404).json({
+                ok: false,
+                message: "Usuario no encontrado",
+            });
+        }
+        const phone = user.phone?.trim() || null;
+        const hasPhone = (0, phoneMask_util_1.hasUserPhone)(phone);
+        const isGoogleAccount = user.password === null;
+        const reminder = (0, phoneMask_util_1.buildPhoneReminderState)({
+            isGoogleAccount,
+            hasPhone,
+            dismissedAt: user.phonePromptDismissedAt,
+        });
+        return res.status(200).json({
+            ok: true,
+            message: "Teléfono obtenido correctamente",
+            data: {
+                hasPhone,
+                phoneMasked: (0, phoneMask_util_1.maskUserPhone)(phone),
+                isGoogleAccount,
+                reminderDue: reminder.reminderDue,
+                reminderAvailableAt: reminder.reminderAvailableAt,
+            },
+        });
+    }
+    catch (error) {
+        return res.status(500).json({
+            ok: false,
+            message: "Error interno del servidor",
+            error: error.message,
+        });
+    }
+};
+exports.getPhone = getPhone;
+const dismissPhonePrompt = async (req, res) => {
+    try {
+        const user = await prismaClient_1.prisma.users.findUnique({
+            where: {
+                idUser: Number(req.idUser),
+            },
+            select: {
+                idUser: true,
+                phone: true,
+                password: true,
+            },
+        });
+        if (!user) {
+            return res.status(404).json({
+                ok: false,
+                message: "Usuario no encontrado",
+            });
+        }
+        const now = new Date();
+        await prismaClient_1.prisma.users.update({
+            where: { idUser: user.idUser },
+            data: { phonePromptDismissedAt: now },
+        });
+        const hasPhone = (0, phoneMask_util_1.hasUserPhone)(user.phone);
+        const isGoogleAccount = user.password === null;
+        const reminder = (0, phoneMask_util_1.buildPhoneReminderState)({
+            isGoogleAccount,
+            hasPhone,
+            dismissedAt: now,
+        });
+        return res.status(200).json({
+            ok: true,
+            message: "Recordatorio pospuesto",
+            data: {
+                reminderDue: reminder.reminderDue,
+                reminderAvailableAt: reminder.reminderAvailableAt,
+            },
+        });
+    }
+    catch (error) {
+        return res.status(500).json({
+            ok: false,
+            message: "Error interno del servidor",
+            error: error.message,
+        });
+    }
+};
+exports.dismissPhonePrompt = dismissPhonePrompt;
+const updatePhone = async (req, res) => {
+    try {
+        const phone = typeof req.body?.phone === "string"
+            ? req.body.phone.trim().replace(/\s+/g, " ")
+            : "";
+        if (!/^\+\d{1,3} \d{10}$/.test(phone)) {
+            return res.status(400).json({
+                ok: false,
+                message: "El teléfono debe incluir una LADA válida y 10 dígitos, por ejemplo: +52 4771234567",
+            });
+        }
+        const user = await prismaClient_1.prisma.users.findUnique({
+            where: {
+                idUser: Number(req.idUser),
+            },
+            select: {
+                idUser: true,
+            },
+        });
+        if (!user) {
+            return res.status(404).json({
+                ok: false,
+                message: "Usuario no encontrado",
+            });
+        }
+        const updatedUser = await prismaClient_1.prisma.users.update({
+            where: {
+                idUser: user.idUser,
+            },
+            data: {
+                phone,
+                phonePromptDismissedAt: null,
+            },
+            select: {
+                phone: true,
+            },
+        });
+        const saved = updatedUser.phone?.trim() || phone;
+        return res.status(200).json({
+            ok: true,
+            message: "Teléfono actualizado correctamente",
+            data: {
+                hasPhone: true,
+                phoneMasked: (0, phoneMask_util_1.maskUserPhone)(saved),
+                reminderDue: false,
+                reminderAvailableAt: null,
+            },
+        });
+    }
+    catch (error) {
+        return res.status(500).json({
+            ok: false,
+            message: "Error interno del servidor",
+            error: error.message,
+        });
+    }
+};
+exports.updatePhone = updatePhone;
 const uploadPhoto = async (req, res) => {
     try {
         const file = req.file;

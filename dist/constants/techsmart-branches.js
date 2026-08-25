@@ -7,7 +7,7 @@ exports.getTechSmartBranchValidationError = getTechSmartBranchValidationError;
 const prismaClient_1 = require("../db/prismaClient");
 const core_1 = require("@pcinbox/core");
 Object.defineProperty(exports, "TECHSMART_PROVIDER_ID", { enumerable: true, get: function () { return core_1.TECHSMART_PROVIDER_ID; } });
-exports.TECHSMART_DISABLED_BRANCH_NAMES = ["CDMX"];
+exports.TECHSMART_DISABLED_BRANCH_NAMES = [];
 function normalizeBranchName(name) {
     return String(name || "").trim().toUpperCase();
 }
@@ -23,7 +23,7 @@ async function getTechSmartBranchValidationError(providerId, storeId) {
         select: { name: true },
     });
     if (isTechSmartBranchDisabled(branch?.name)) {
-        return "La sucursal CDMX no está disponible para productos TechSmart.";
+        return "Hay una sucursal no disponible para productos TechSmart.";
     }
     return null;
 }

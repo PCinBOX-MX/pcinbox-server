@@ -201,17 +201,36 @@ export const registerSales = async (req: CustomRequestI, res: Response) => {
     }
 
     for (const sale of slcSales) {
+      const quantity = Number(sale.quantity);
+      const productId = Number(sale.productId);
       await prisma.products.update({
         where: {
-          idProduct: Number(sale.productId),
+          idProduct: productId,
           stock: {
-            gte: Number(sale.quantity!),
+            gte: quantity,
           },
         },
         data: {
-          stock: { decrement: Number(sale.quantity) },
+          stock: { decrement: quantity },
         },
       });
+
+      try {
+        await prisma.inventory_movements.create({
+          data: {
+            productId,
+            branchId: null,
+            userId: Number(req.idUser) || null,
+            delta: -quantity,
+            reason: "web_sale",
+            refType: "order",
+            refId: String(idOrder),
+            note: `Venta web orden ${idOrder}`,
+          },
+        });
+      } catch {
+        // tabla puede no existir aún si no corrieron migraciones POS
+      }
     }
 
     return res.status(200).json({
