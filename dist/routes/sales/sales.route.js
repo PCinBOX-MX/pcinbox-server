@@ -10,5 +10,6 @@ router.post("/getSalesByUser", index_middleware_1.MiddleAuthRoute, sales_control
 router.post("/registerSales", index_middleware_1.MiddleAuthRoute, sales_controller_1.registerSales);
 router.post("/filterSales", index_middleware_1.MiddleAuthRoute, sales_controller_1.filterSales);
 router.post("/cancelOrder", index_middleware_1.MiddleAuthRoute, sales_controller_1.cancelOrderByUser);
+router.post("/admin/sendLicenseKey", index_middleware_1.MiddleAuthRoute, sales_controller_1.sendLicenseKeyEmailAdmin);
 exports.default = router;
 //# sourceMappingURL=sales.route.js.map

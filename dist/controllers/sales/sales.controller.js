@@ -3,13 +3,75 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.cancelOrderByUser = exports.filterSales = exports.historySalesByUser = exports.getSalesByUser = exports.getPedidosByUser = exports.registerSales = void 0;
+exports.sendLicenseKeyEmailAdmin = exports.cancelOrderByUser = exports.filterSales = exports.historySalesByUser = exports.getSalesByUser = exports.getPedidosByUser = exports.registerSales = void 0;
 const prismaClient_1 = require("../../db/prismaClient");
 const index_service_1 = require("./../../services/index.service");
 const pasarelaPagos_service_1 = require("../../services/pasarelaPagos.service");
 const orderCancellationWindow_service_1 = require("../../services/orderCancellationWindow.service");
 const axios_1 = __importDefault(require("axios"));
 const shipmentCosts_1 = require("../../utils/shipmentCosts");
+const resend_service_1 = require("../../services/resend.service");
+function isDigitalLicenseType(licenseType) {
+    const value = String(licenseType ?? "").toLowerCase();
+    return value === "windows" || value === "antivirus" || value === "office";
+}
+function isDigitalLicenseSale(params) {
+    return (String(params.shippingMethod ?? "").toLowerCase() === "digital" ||
+        isDigitalLicenseType(params.licenseType));
+}
+async function markSaleLicenseDeliveredAndMaybeCloseShipment(params) {
+    const deliveredAt = new Date();
+    const sale = await prismaClient_1.prisma.sales.update({
+        where: { idSale: BigInt(params.idSale) },
+        data: {
+            licenseDeliveredAt: deliveredAt,
+            shipStatus: "entregado",
+        },
+        select: {
+            shipmentId: true,
+            orderId: true,
+        },
+    });
+    const shipmentId = sale.shipmentId ? Number(sale.shipmentId) : null;
+    if (!shipmentId) {
+        return { shipmentMarkedEntregado: false, idShipment: null };
+    }
+    const shipment = await prismaClient_1.prisma.shipments.findUnique({
+        where: { idShipment: BigInt(shipmentId) },
+        select: { shipping_method: true, status: true },
+    });
+    const salesOnShipment = await prismaClient_1.prisma.sales.findMany({
+        where: { shipmentId: BigInt(shipmentId) },
+        select: {
+            licenseDeliveredAt: true,
+            products: { select: { licenseType: true } },
+        },
+    });
+    const shippingMethod = shipment?.shipping_method ?? null;
+    const allDigitalSalesDelivered = salesOnShipment.every((row) => {
+        const isDigital = isDigitalLicenseSale({
+            licenseType: row.products?.licenseType,
+            shippingMethod,
+        });
+        if (!isDigital)
+            return true;
+        return row.licenseDeliveredAt != null;
+    });
+    if (!allDigitalSalesDelivered) {
+        return { shipmentMarkedEntregado: false, idShipment: shipmentId };
+    }
+    await prismaClient_1.prisma.shipments.update({
+        where: { idShipment: BigInt(shipmentId) },
+        data: { status: "entregado" },
+    });
+    await (0, pasarelaPagos_service_1.syncShipmentStatusOnPasarela)({
+        idShipment: shipmentId,
+        status: "entregado",
+        idUser: params.userId,
+        authorization: params.authorization,
+    });
+    return { shipmentMarkedEntregado: true, idShipment: shipmentId };
+}
 function normalizeHistorySearchTerm(raw) {
     return String(raw ?? "")
         .trim()
@@ -143,26 +205,28 @@ const getPedidosByUser = async (req, res) => {
 exports.getPedidosByUser = getPedidosByUser;
 const getSalesByUser = async (req, res) => {
     try {
-        const { idOrder } = req.body;
+        const { idOrder, page: rawPage, pageSize: rawPageSize } = req.body;
         if (!idOrder) {
             return res
                 .status(400)
                 .json({ ok: false, message: "Falta mandar el idOrder en el body" });
         }
+        const page = Math.max(1, Number(rawPage) || 1);
+        const pageSize = Math.min(20, Math.max(1, Number(rawPageSize) || 4));
+        const skip = (page - 1) * pageSize;
+        const orderId = Number(idOrder);
         const slcAllSalesUser = await prismaClient_1.prisma.order.findFirst({
             where: {
-                idOrder: Number(idOrder),
+                idOrder: orderId,
                 userId: Number(req.idUser),
             },
             include: {
+                users: {
+                    select: { email: true },
+                },
                 shipments: {
                     include: {
                         addresses: true,
-                    },
-                },
-                sales: {
-                    include: {
-                        products: true,
                     },
                 },
             },
@@ -173,6 +237,54 @@ const getSalesByUser = async (req, res) => {
                 message: "Orden no encontrada",
             });
         }
+        const [totalSales, paginatedSales, salesOverviewRows] = await Promise.all([
+            prismaClient_1.prisma.sales.count({ where: { orderId } }),
+            prismaClient_1.prisma.sales.findMany({
+                where: { orderId },
+                include: {
+                    products: true,
+                },
+                orderBy: { idSale: "asc" },
+                skip,
+                take: pageSize,
+            }),
+            prismaClient_1.prisma.sales.findMany({
+                where: { orderId },
+                select: {
+                    idSale: true,
+                    shipmentId: true,
+                    productId: true,
+                    quantity: true,
+                    products: {
+                        select: {
+                            name: true,
+                            providerId: true,
+                        },
+                    },
+                },
+                orderBy: { idSale: "asc" },
+            }),
+        ]);
+        const totalPages = Math.max(1, Math.ceil(totalSales / pageSize));
+        const safePage = Math.min(page, totalPages);
+        let sales = paginatedSales;
+        if (safePage !== page) {
+            sales = await prismaClient_1.prisma.sales.findMany({
+                where: { orderId },
+                include: { products: true },
+                orderBy: { idSale: "asc" },
+                skip: (safePage - 1) * pageSize,
+                take: pageSize,
+            });
+        }
+        const salesOverview = salesOverviewRows.map((sale) => ({
+            idSale: sale.idSale,
+            shipmentId: sale.shipmentId,
+            productId: sale.productId,
+            quantity: sale.quantity,
+            name: sale.products?.name?.trim() || "Producto",
+            providerId: sale.products?.providerId ?? null,
+        }));
         const branchIds = [
             ...new Set(slcAllSalesUser.shipments
                 .map((shipment) => shipment.storeId)
@@ -192,8 +304,18 @@ const getSalesByUser = async (req, res) => {
             : [];
         const branchById = new Map(branches.map((branch) => [Number(branch.idBranche), branch]));
         const { shippingTotal, insuranceTotal } = (0, shipmentCosts_1.sumShipmentCostTotals)(slcAllSalesUser.shipments);
+        const { users, ...orderData } = slcAllSalesUser;
         const orderWithBranches = {
-            ...slcAllSalesUser,
+            ...orderData,
+            customerEmail: users?.email ?? null,
+            sales,
+            salesOverview,
+            salesPagination: {
+                page: safePage,
+                pageSize,
+                totalItems: totalSales,
+                totalPages,
+            },
             shippingTotal,
             insuranceTotal,
             shipments: slcAllSalesUser.shipments.map((shipment) => ({
@@ -315,6 +437,7 @@ const filterSales = async (req, res) => {
                 products: order.sales.map((sale) => {
                     const shipment = sale.shipments;
                     return {
+                        idSale: Number(sale.idSale),
                         idShipment: shipment?.idShipment ?? sale.shipmentId,
                         description: sale.products?.description,
                         price: sale?.products?.price,
@@ -322,7 +445,7 @@ const filterSales = async (req, res) => {
                         name: sale.products.name,
                         quantity: sale.quantity,
                         providerId: sale.products?.providerId,
-                        statusShip: shipment?.status,
+                        statusShip: sale.shipStatus ?? shipment?.status ?? null,
                         shipping_method: shipment?.shipping_method,
                         status: sale.status,
                         image_url: sale?.products?.image_url,
@@ -438,6 +561,9 @@ const cancelOrderByUser = async (req, res) => {
             });
         }
         const pasarelaResult = await (0, pasarelaPagos_service_1.cancelOrderWithGatewayRefund)(Number(order.idOrder), Number(req.idUser), req.headers.authorization);
+        const gateway = pasarelaResult?.data?.data?.gateway;
+        const refunded = Boolean(pasarelaResult?.data?.data?.refunded ??
+            (gateway === "mercadopago" || gateway === "openpay"));
         return res.status(200).json({
             ok: true,
             message: pasarelaResult?.message ?? "Compra cancelada correctamente",
@@ -445,14 +571,18 @@ const cancelOrderByUser = async (req, res) => {
                 data: {
                     idOrder: Number(order.idOrder),
                     payment_method: order.pay_method,
-                    refunded: pasarelaResult?.data?.data?.refunded ?? false,
+                    refunded,
+                    gateway: gateway ?? null,
                 },
             },
         });
     }
     catch (error) {
         if (axios_1.default.isAxiosError(error) && error.response) {
-            return res.status(error.response.status).json({
+            const upstreamStatus = Number(error.response.status) || 502;
+            // No reenviar 404 de la pasarela como si /sales/cancelOrder no existiera.
+            const status = upstreamStatus === 404 ? 502 : upstreamStatus;
+            return res.status(status).json({
                 ok: false,
                 message: error.response.data?.message ||
                     "No se pudo cancelar la compra en la pasarela de pagos",
@@ -467,4 +597,197 @@ const cancelOrderByUser = async (req, res) => {
     }
 };
 exports.cancelOrderByUser = cancelOrderByUser;
+/** Admin: envía correo de entrega digital con clave(s) de licencia. */
+const sendLicenseKeyEmailAdmin = async (req, res) => {
+    try {
+        const adminUser = await prismaClient_1.prisma.users.findUnique({
+            where: { idUser: Number(req.idUser) },
+            select: { role: true },
+        });
+        if (!adminUser || adminUser.role !== "admin") {
+            return res.status(403).json({
+                ok: false,
+                message: "Acceso denegado. Se requieren permisos de administrador.",
+            });
+        }
+        const { idOrder, idShipment, idSale, toEmail, customerName, productName, licenseKeys, instructions, } = req.body || {};
+        const email = String(toEmail || "")
+            .trim()
+            .toLowerCase();
+        const keys = Array.isArray(licenseKeys)
+            ? licenseKeys.map((k) => String(k || "").trim()).filter(Boolean)
+            : String(licenseKeys || "")
+                .split(/\r?\n/)
+                .map((k) => k.trim())
+                .filter(Boolean);
+        if (!idOrder || !email || !productName || !keys.length || !idSale) {
+            return res.status(400).json({
+                ok: false,
+                message: "Faltan campos: idOrder, idSale, toEmail, productName y al menos una clave.",
+            });
+        }
+        const saleRow = await prismaClient_1.prisma.sales.findFirst({
+            where: {
+                idSale: BigInt(Number(idSale)),
+                orderId: BigInt(Number(idOrder)),
+            },
+            include: {
+                products: {
+                    select: {
+                        name: true,
+                        licenseType: true,
+                        image_url: true,
+                        description: true,
+                        upc: true,
+                        sku: true,
+                    },
+                },
+                shipments: { select: { idShipment: true, shipping_method: true } },
+            },
+        });
+        if (!saleRow) {
+            return res.status(404).json({
+                ok: false,
+                message: `Venta #${idSale} no encontrada en la orden #${idOrder}.`,
+            });
+        }
+        if (idShipment &&
+            saleRow.shipmentId &&
+            Number(saleRow.shipmentId) !== Number(idShipment)) {
+            return res.status(400).json({
+                ok: false,
+                message: `La venta #${idSale} no pertenece al envío ${idShipment}.`,
+            });
+        }
+        const resolvedProductName = String(productName).trim() ||
+            String(saleRow.products?.name || "").trim() ||
+            "Licencia";
+        const expectedKeys = Math.max(1, Number(saleRow.quantity) || 1);
+        if (keys.length < expectedKeys) {
+            return res.status(400).json({
+                ok: false,
+                message: `Esta línea tiene ${expectedKeys} unidad(es). Debes enviar ${expectedKeys} clave(s).`,
+            });
+        }
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+            return res.status(400).json({
+                ok: false,
+                message: "El correo del destinatario no es válido.",
+            });
+        }
+        const order = await prismaClient_1.prisma.order.findFirst({
+            where: { idOrder: Number(idOrder) },
+            include: {
+                users: { select: { name: true, lastname: true, email: true } },
+                shipments: idShipment
+                    ? { where: { idShipment: Number(idShipment) } }
+                    : true,
+            },
+        });
+        if (!order) {
+            return res.status(404).json({
+                ok: false,
+                message: `Orden #${idOrder} no encontrada.`,
+            });
+        }
+        const paymentStatus = String(order.status || "")
+            .toLowerCase()
+            .trim();
+        if (paymentStatus !== "paid" && paymentStatus !== "approved") {
+            return res.status(400).json({
+                ok: false,
+                message: "Solo se puede enviar la licencia cuando la orden está pagada.",
+            });
+        }
+        if (idShipment) {
+            const shipment = order.shipments?.[0];
+            if (!shipment) {
+                return res.status(404).json({
+                    ok: false,
+                    message: `Shipment ${idShipment} no pertenece a la orden #${idOrder}.`,
+                });
+            }
+        }
+        const resolvedName = String(customerName || "").trim() ||
+            [order.users?.name, order.users?.lastname].filter(Boolean).join(" ") ||
+            "cliente";
+        const productImageUrl = (0, resend_service_1.resolveProductImageUrl)(saleRow.products?.image_url);
+        const mailResult = await (0, resend_service_1.sendLicenseKeyEmail)(email, {
+            customerName: resolvedName,
+            idOrder: Number(idOrder),
+            productName: resolvedProductName,
+            productDescription: saleRow.products?.description ?? null,
+            productUpc: saleRow.products?.upc ?? null,
+            productSku: saleRow.products?.sku ?? null,
+            quantity: expectedKeys,
+            licenseKeys: keys,
+            productImageUrl,
+            ...(instructions
+                ? { instructions: String(instructions) }
+                : {}),
+        });
+        if (mailResult?.status === 400) {
+            return res.status(400).json({
+                ok: false,
+                message: mailResult.error || "No se pudo enviar el correo.",
+            });
+        }
+        let shipmentMarkedEntregado = false;
+        let resolvedShipmentId = saleRow.shipmentId
+            ? Number(saleRow.shipmentId)
+            : idShipment
+                ? Number(idShipment)
+                : null;
+        try {
+            const deliveryResult = await markSaleLicenseDeliveredAndMaybeCloseShipment({
+                idSale: Number(idSale),
+                idOrder: Number(idOrder),
+                authorization: req.headers.authorization,
+                userId: Number(order.userId),
+            });
+            shipmentMarkedEntregado = deliveryResult.shipmentMarkedEntregado;
+            resolvedShipmentId = deliveryResult.idShipment ?? resolvedShipmentId;
+        }
+        catch (statusError) {
+            console.error("[sendLicenseKeyEmailAdmin] Correo enviado pero falló marcar entrega por venta", statusError);
+            return res.status(500).json({
+                ok: false,
+                message: `El correo de licencia se envió a ${email}, pero no se pudo registrar la entrega de la venta #${idSale}. ` +
+                    "Revisa el panel e intenta de nuevo o marca manualmente el estado.",
+                data: {
+                    idOrder: Number(idOrder),
+                    idSale: Number(idSale),
+                    idShipment: resolvedShipmentId,
+                    toEmail: email,
+                    keysSent: keys.length,
+                    emailSent: true,
+                    saleDelivered: false,
+                },
+                error: statusError?.message,
+            });
+        }
+        return res.status(200).json({
+            ok: true,
+            message: `Correo de licencia enviado a ${email}`,
+            data: {
+                idOrder: Number(idOrder),
+                idSale: Number(idSale),
+                idShipment: resolvedShipmentId,
+                toEmail: email,
+                keysSent: keys.length,
+                saleDelivered: true,
+                shipStatus: "entregado",
+                shipmentStatus: shipmentMarkedEntregado ? "entregado" : null,
+            },
+        });
+    }
+    catch (error) {
+        return res.status(500).json({
+            ok: false,
+            message: "Error interno al enviar la licencia por correo",
+            error: error?.message,
+        });
+    }
+};
+exports.sendLicenseKeyEmailAdmin = sendLicenseKeyEmailAdmin;
 //# sourceMappingURL=sales.controller.js.map

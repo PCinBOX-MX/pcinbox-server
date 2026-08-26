@@ -44,7 +44,7 @@ const registerAddress = async (req, res) => {
             !city ||
             !phone1 ||
             !country) {
-            return res.status(400).json({ ok: false, message: "Faltan campos" });
+            return res.status(400).json({ ok: false, message: "Completa los datos de la dirección para guardar." });
         }
         const dataRespExcelCP = await (0, index_service_1.readExcelImageKit)(process.env.URL_EXCEL_CP_PE || "");
         if (dataRespExcelCP.length == 0) {
@@ -69,7 +69,7 @@ const registerAddress = async (req, res) => {
                 a.city === b.city &&
                 a.state === b.state &&
                 a.country === b.country &&
-                a.postalCode === b.postalCode &&
+                String(a.postalCode) === String(b.codePostal ?? b.postalCode) &&
                 a.noExt === b.noExt &&
                 a.noInt === b.noInt);
         };
@@ -87,7 +87,7 @@ const registerAddress = async (req, res) => {
                 state,
                 country,
                 street,
-                postalCode: codePostal,
+                postalCode: String(codePostal).trim(),
                 userId,
                 noExt,
                 noInt,
@@ -210,7 +210,7 @@ const updatedAddress = async (req, res) => {
         await prismaClient_1.prisma.addresses.update({
             data: {
                 city,
-                postalCode: codePostal.toString(),
+                postalCode: String(codePostal).trim(),
                 cologne,
                 country,
                 noExt,

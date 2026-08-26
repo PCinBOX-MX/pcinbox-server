@@ -87,6 +87,7 @@ async function loadCartProducts(userId) {
         height: item.products.height,
         largo: item.products.largo,
         stock: item.products.stock,
+        licenseType: item.products.licenseType ?? null,
     }));
 }
 async function loadBuyNowProduct(buyNow) {
@@ -112,6 +113,7 @@ async function loadBuyNowProduct(buyNow) {
             height: product.height,
             largo: product.largo,
             stock: product.stock,
+            licenseType: product.licenseType ?? null,
         },
     ];
 }
@@ -124,15 +126,52 @@ async function resolveCheckoutProducts(userId, draft, bodyProducts) {
     }
     return loadCartProducts(userId);
 }
+/** Misma convención que el client: `${storeId|null}-${providerId}` (+ `-digital` para licencias). */
+function isDigitalLicenseType(licenseType) {
+    const value = String(licenseType ?? "").toLowerCase();
+    return value === "windows" || value === "antivirus" || value === "office";
+}
+function deliveryGroupKeyFromProduct(product) {
+    const storeRaw = product.storeId;
+    const storeId = storeRaw == null || String(storeRaw) === "" || String(storeRaw) === "null"
+        ? "null"
+        : String(storeRaw);
+    const base = `${storeId}-${String(product.providerId ?? "")}`;
+    if (isDigitalLicenseType(product.licenseType)) {
+        return `${base}-digital`;
+    }
+    return base;
+}
 function groupProducts(products) {
     const groups = {};
     for (const product of products) {
-        const key = `${product.storeId ?? "null"}-${product.providerId ?? "null"}`;
+        const key = deliveryGroupKeyFromProduct(product);
         if (!groups[key])
             groups[key] = [];
         groups[key].push(product);
     }
     return groups;
+}
+/**
+ * Verifica que cada grupo de productos tenga método de entrega.
+ * No exige igualdad de conteo (pueden quedar keys stale en el draft).
+ */
+function missingDeliverySelection(grouped, deliveryGroups) {
+    for (const groupKey of Object.keys(grouped)) {
+        if (!deliveryGroups[groupKey]?.shipping_method) {
+            return "Configura la entrega para todos los grupos de productos";
+        }
+    }
+    return null;
+}
+function pruneDeliveryGroupsAgainstProducts(draft, products) {
+    if (!draft?.deliveryGroups)
+        return draft;
+    const validKeys = new Set(Object.keys(groupProducts(products)));
+    return {
+        ...draft,
+        deliveryGroups: Object.fromEntries(Object.entries(draft.deliveryGroups).filter(([key]) => validKeys.has(key))),
+    };
 }
 async function pruneDeliveryGroups(userId, draft) {
     const products = await resolveCheckoutProducts(userId, draft);
@@ -161,19 +200,38 @@ const saveCheckoutDraft = async (req, res) => {
         }
         const incoming = req.body;
         const current = (await readDraft(userId)) || {};
+        // Merge superficial, pero entrega/pago admiten `null` para resetear
+        // (p. ej. vaciar carrito / nuevo comprar-ahora). `{}` solo no borra.
         let merged = {
             ...current,
             ...incoming,
-            deliveryGroups: {
-                ...(current.deliveryGroups || {}),
-                ...(incoming.deliveryGroups || {}),
-            },
         };
-        if (incoming.paymentMethod !== undefined) {
+        if (incoming.deliveryGroups === null) {
+            merged.deliveryGroups = {};
+        }
+        else if (incoming.deliveryGroups !== undefined) {
+            merged.deliveryGroups = {
+                ...(current.deliveryGroups || {}),
+                ...incoming.deliveryGroups,
+            };
+        }
+        else if (current.deliveryGroups !== undefined) {
+            merged.deliveryGroups = current.deliveryGroups;
+        }
+        else {
+            delete merged.deliveryGroups;
+        }
+        if (incoming.paymentMethod === null) {
+            merged.paymentMethod = null;
+        }
+        else if (incoming.paymentMethod !== undefined) {
             merged.paymentMethod = incoming.paymentMethod;
         }
         else if (current.paymentMethod !== undefined) {
             merged.paymentMethod = current.paymentMethod;
+        }
+        else {
+            delete merged.paymentMethod;
         }
         merged = await pruneDeliveryGroups(userId, merged);
         await upsertDraft(userId, merged);
@@ -284,7 +342,7 @@ const calculateGroupQuote = async (req, res) => {
     try {
         const { products, selection } = req.body;
         if (!selection?.shipping_method) {
-            return res.status(400).json({ ok: false, message: "Falta shipping_method" });
+            return res.status(400).json({ ok: false, message: "Selecciona un método de entrega para continuar." });
         }
         const priceValidation = await (0, shippingCalculation_service_1.validateProductPrices)(products || []);
         if (!priceValidation.ok) {
@@ -311,15 +369,16 @@ const getCheckoutSummary = async (req, res) => {
         if (!userId) {
             return res.status(401).json({ ok: false, message: "Usuario no autenticado" });
         }
-        const draft = await readDraft(userId);
+        const rawDraft = await readDraft(userId);
         const bodyProducts = req.body?.products;
-        const products = await resolveCheckoutProducts(userId, draft, bodyProducts);
+        const products = await resolveCheckoutProducts(userId, rawDraft, bodyProducts);
         if (!products.length) {
             return res.status(400).json({
                 ok: false,
                 message: "No hay productos en el checkout",
             });
         }
+        const draft = pruneDeliveryGroupsAgainstProducts(rawDraft, products);
         const priceValidation = await (0, shippingCalculation_service_1.validateProductPrices)(products);
         if (!priceValidation.ok) {
             return res.status(400).json({
@@ -329,21 +388,27 @@ const getCheckoutSummary = async (req, res) => {
         }
         const grouped = groupProducts(products);
         const deliveryGroups = draft?.deliveryGroups || {};
-        if (Object.keys(grouped).length !== Object.keys(deliveryGroups).length) {
-            return res.status(400).json({
-                ok: false,
-                message: "Configura la entrega para todos los grupos de productos",
+        const incompleteDelivery = missingDeliverySelection(grouped, deliveryGroups);
+        if (incompleteDelivery) {
+            const subtotal = (0, shippingCalculation_service_1.calculateProductsSubtotal)(products);
+            return res.status(200).json({
+                ok: true,
+                data: {
+                    draft,
+                    products,
+                    dataPurchase: {},
+                    subtotal,
+                    shippingTotal: 0,
+                    total: subtotal,
+                    paymentMethod: draft?.paymentMethod ?? null,
+                    needsDeliveryConfig: true,
+                    message: incompleteDelivery,
+                },
             });
         }
         const groupedForCalc = {};
         for (const [groupKey, groupProductsList] of Object.entries(grouped)) {
             const selection = deliveryGroups[groupKey];
-            if (!selection?.shipping_method) {
-                return res.status(400).json({
-                    ok: false,
-                    message: `Falta método de entrega para ${groupKey}`,
-                });
-            }
             groupedForCalc[groupKey] = {
                 products: groupProductsList,
                 selection: {
@@ -355,7 +420,21 @@ const getCheckoutSummary = async (req, res) => {
         }
         const deliveryError = validateDeliverySelections(groupedForCalc);
         if (deliveryError) {
-            return res.status(400).json({ ok: false, message: deliveryError });
+            const subtotal = (0, shippingCalculation_service_1.calculateProductsSubtotal)(products);
+            return res.status(200).json({
+                ok: true,
+                data: {
+                    draft,
+                    products,
+                    dataPurchase: {},
+                    subtotal,
+                    shippingTotal: 0,
+                    total: subtotal,
+                    paymentMethod: draft?.paymentMethod ?? null,
+                    needsDeliveryConfig: true,
+                    message: deliveryError,
+                },
+            });
         }
         const dataPurchase = await (0, shippingCalculation_service_1.buildDataPurchaseFromSelections)(groupedForCalc);
         const subtotal = (0, shippingCalculation_service_1.calculateProductsSubtotal)(products);
@@ -371,6 +450,7 @@ const getCheckoutSummary = async (req, res) => {
                 shippingTotal,
                 total,
                 paymentMethod: draft?.paymentMethod ?? null,
+                needsDeliveryConfig: false,
             },
         });
     }
@@ -390,14 +470,15 @@ const buildPaymentPayload = async (req, res) => {
             return res.status(401).json({ ok: false, message: "Usuario no autenticado" });
         }
         const { requiredFactura, products: bodyProducts } = req.body;
-        const draft = await readDraft(userId);
-        const products = await resolveCheckoutProducts(userId, draft, bodyProducts);
+        const rawDraft = await readDraft(userId);
+        const products = await resolveCheckoutProducts(userId, rawDraft, bodyProducts);
         if (!products.length) {
             return res.status(400).json({
                 ok: false,
                 message: "No hay productos en el checkout",
             });
         }
+        const draft = pruneDeliveryGroupsAgainstProducts(rawDraft, products);
         if (!draft?.paymentMethod?.name) {
             return res.status(400).json({
                 ok: false,
@@ -406,21 +487,16 @@ const buildPaymentPayload = async (req, res) => {
         }
         const grouped = groupProducts(products);
         const deliveryGroups = draft.deliveryGroups || {};
-        if (Object.keys(grouped).length !== Object.keys(deliveryGroups).length) {
+        const incompleteDelivery = missingDeliverySelection(grouped, deliveryGroups);
+        if (incompleteDelivery) {
             return res.status(400).json({
                 ok: false,
-                message: "Configura la entrega para todos los grupos de productos",
+                message: incompleteDelivery,
             });
         }
         const groupedForCalc = {};
         for (const [groupKey, groupProductsList] of Object.entries(grouped)) {
             const selection = deliveryGroups[groupKey];
-            if (!selection?.shipping_method) {
-                return res.status(400).json({
-                    ok: false,
-                    message: `Falta método de entrega para ${groupKey}`,
-                });
-            }
             groupedForCalc[groupKey] = {
                 products: groupProductsList,
                 selection: {
@@ -466,10 +542,10 @@ const buildPaymentPayload = async (req, res) => {
         });
     }
     catch (error) {
+        console.error("[checkout] buildPaymentPayload:", error);
         return res.status(500).json({
             ok: false,
-            message: error.message || "Error al preparar pago",
-            error: error.message,
+            message: "No pudimos preparar el pago. Revisa tu carrito y la entrega e inténtalo de nuevo.",
         });
     }
 };

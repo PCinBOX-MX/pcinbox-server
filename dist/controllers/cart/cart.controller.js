@@ -28,6 +28,7 @@ function serializeCartItems(cartItems) {
             ? String(item.products.categoryId)
             : null,
         marcaId: item.products.marcaId ? String(item.products.marcaId) : null,
+        licenseType: item.products.licenseType ?? null,
         quantity: item.quantity != null ? String(item.quantity) : null,
     }))
         .filter((product) => product.quantity != "0");
@@ -36,27 +37,91 @@ const getCart = async (req, res) => {
     try {
         const userId = Number(req?.idUser.toString());
         const cart = await (0, cart_service_1.getOrCreateActiveCart)(userId);
-        await (0, cart_service_1.consolidateActiveCartItems)(userId, cart.idCart);
-        const cartItems = await prismaClient_1.prisma.cartItems.findMany({
-            where: {
-                carId: cart.idCart,
-                active: 1,
-            },
-            include: {
-                products: {
-                    include: {
-                        product_stock: {
-                            include: {
-                                branches: true,
-                            },
+        const pageRaw = req.query.page;
+        const limitRaw = req.query.limit;
+        const wantsPagination = pageRaw !== undefined || limitRaw !== undefined;
+        // Consolidar solo en lectura full (checkout/sync). En listados paginados
+        // evita trabajo extra por cada página que abre el usuario.
+        if (!wantsPagination) {
+            await (0, cart_service_1.consolidateActiveCartItems)(userId, cart.idCart);
+        }
+        const productInclude = {
+            products: {
+                include: {
+                    product_stock: {
+                        include: {
+                            branches: true,
                         },
                     },
                 },
             },
+        };
+        const where = {
+            carId: cart.idCart,
+            active: 1,
+            quantity: { gt: 0 },
+        };
+        if (!wantsPagination) {
+            const cartItems = await prismaClient_1.prisma.cartItems.findMany({
+                where,
+                orderBy: { idCartItem: "asc" },
+                include: productInclude,
+            });
+            return res.status(200).json({
+                ok: true,
+                data: (0, index_service_1.parseBigInts)(serializeCartItems(cartItems)),
+            });
+        }
+        const page = Math.max(1, parseInt(String(pageRaw), 10) || 1);
+        const limit = Math.max(1, Math.min(50, parseInt(String(limitRaw), 10) || 5));
+        const [totalRows, summaryAgg] = await Promise.all([
+            prismaClient_1.prisma.cartItems.count({ where }),
+            prismaClient_1.prisma.$queryRaw `
+
+        SELECT
+
+          COALESCE(SUM(ci.quantity), 0) AS quantityTotal,
+
+          COALESCE(SUM(ci.quantity * p.price), 0) AS subtotal
+
+        FROM cart_items ci
+
+        INNER JOIN products p ON p.idProduct = ci.productId
+
+        WHERE ci.carId = ${cart.idCart}
+
+          AND ci.active = 1
+
+          AND ci.quantity > 0
+
+      `,
+        ]);
+        const totalPages = totalRows === 0 ? 0 : Math.ceil(totalRows / limit);
+        const safePage = totalPages === 0 ? 1 : Math.min(page, totalPages);
+        const skip = (safePage - 1) * limit;
+        const cartItems = await prismaClient_1.prisma.cartItems.findMany({
+            where,
+            orderBy: { idCartItem: "asc" },
+            skip,
+            take: limit,
+            include: productInclude,
         });
+        const agg = summaryAgg?.[0];
+        const quantityTotal = Number(agg?.quantityTotal ?? 0);
+        const subtotal = Number(agg?.subtotal ?? 0);
         return res.status(200).json({
             ok: true,
             data: (0, index_service_1.parseBigInts)(serializeCartItems(cartItems)),
+            pagination: {
+                page: safePage,
+                limit,
+                totalRows,
+                totalPages,
+            },
+            summary: {
+                quantityTotal,
+                subtotal,
+            },
         });
     }
     catch (error) {
@@ -393,7 +458,7 @@ const changeSucursal = async (req, res) => {
         if (!idProduct || !storeId) {
             return res
                 .status(400)
-                .json({ ok: false, message: "Faltan campos por enviar" });
+                .json({ ok: false, message: "Elige un producto y una sucursal para continuar." });
         }
         const userId = Number(req.idUser);
         const cart = await (0, cart_service_1.getOrCreateActiveCart)(userId);

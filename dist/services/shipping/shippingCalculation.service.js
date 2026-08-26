@@ -13,6 +13,8 @@ exports.calculateProductsSubtotal = calculateProductsSubtotal;
 exports.calculateExtrasTotal = calculateExtrasTotal;
 exports.validateProductPrices = validateProductPrices;
 const prismaClient_1 = require("../../db/prismaClient");
+const pcinbox_pickup_constants_1 = require("../../constants/pcinbox-pickup.constants");
+const cache_util_1 = require("../../infra/redis/cache.util");
 exports.ESTAFETA_FIXED_COST = 178.0;
 exports.PAQUETE_EXPRESS_TARIFAS = [
     { max: 5, price: 303 },
@@ -60,6 +62,11 @@ function sumGroupSubtotal(products) {
 async function getZoneShippingCost(idAddress, userId) {
     if (!idAddress)
         return 0;
+    const cacheKey = `shipping:zone:${Number(idAddress)}:${userId ?? "any"}`;
+    const cached = await (0, cache_util_1.cacheGetJson)(cacheKey);
+    if (cached != null && Number.isFinite(cached)) {
+        return cached;
+    }
     const slcAddress = await prismaClient_1.prisma.addresses.findFirst({
         where: {
             idAddress: Number(idAddress),
@@ -75,13 +82,15 @@ async function getZoneShippingCost(idAddress, userId) {
     if (!findZone) {
         throw new Error(`La ciudad seleccionada (${slcAddress.city}) no tiene cobertura para Envío Personalizado.`);
     }
-    return Number(findZone.price);
+    const price = Number(findZone.price);
+    void (0, cache_util_1.cacheSetJson)(cacheKey, price, 300);
+    return price;
 }
 async function calculateGroupCosts(products, selection) {
     const method = selection.shipping_method;
     let shippingCost = 0;
     let insuranceCost = 0;
-    if (method === "sucursal") {
+    if (method === "sucursal" || method === "digital") {
         return { shippingCost: 0, insuranceCost: 0, totalExtra: 0 };
     }
     if (method === "estafeta") {
@@ -127,18 +136,24 @@ async function calculateGroupCosts(products, selection) {
 }
 async function buildDataPurchaseFromSelections(groupedProducts) {
     const dataPurchase = {};
+    const pickupStoreId = await (0, pcinbox_pickup_constants_1.resolvePcinboxPickupBranchId)();
     for (const [groupKey, group] of Object.entries(groupedProducts)) {
         const costs = await calculateGroupCosts(group.products, group.selection);
         if (costs.error) {
             throw new Error(costs.error);
         }
-        dataPurchase[groupKey] = {
+        const entry = {
             shipping_method: group.selection.shipping_method,
             idAddress: group.selection.idAddress ?? null,
             wantsInsurance: group.selection.wantsInsurance ?? null,
             costoEnvioProductByZone: costs.shippingCost,
             costoSeguroEnvio: costs.insuranceCost,
         };
+        if ((0, pcinbox_pickup_constants_1.isPickupShippingMethod)(group.selection.shipping_method) &&
+            pickupStoreId != null) {
+            entry.pickupStoreId = pickupStoreId;
+        }
+        dataPurchase[groupKey] = entry;
     }
     return dataPurchase;
 }
@@ -156,15 +171,29 @@ function calculateExtrasTotal(dataPurchase) {
     }, 0);
 }
 async function validateProductPrices(products) {
-    for (const product of products) {
+    const activeLines = products.filter((p) => Number(p.quantity) > 0);
+    const ids = [
+        ...new Set(activeLines
+            .map((p) => Number(p.idProduct))
+            .filter((id) => Number.isFinite(id) && id > 0)),
+    ];
+    if (!ids.length) {
+        return { ok: false, message: "No hay productos para validar" };
+    }
+    const dbProducts = await prismaClient_1.prisma.products.findMany({
+        where: {
+            idProduct: { in: ids.map((id) => BigInt(id)) },
+            active: 1,
+        },
+        select: { idProduct: true, price: true, stock: true },
+    });
+    const byId = new Map(dbProducts.map((row) => [Number(row.idProduct), row]));
+    for (const product of activeLines) {
         const qty = Number(product.quantity) || 0;
         if (qty <= 0) {
             return { ok: false, message: `Cantidad inválida para producto ${product.idProduct}` };
         }
-        const dbProduct = await prismaClient_1.prisma.products.findFirst({
-            where: { idProduct: BigInt(product.idProduct), active: 1 },
-            select: { price: true, stock: true },
-        });
+        const dbProduct = byId.get(Number(product.idProduct));
         if (!dbProduct) {
             return { ok: false, message: `Producto ${product.idProduct} no encontrado` };
         }

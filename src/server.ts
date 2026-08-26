@@ -21,8 +21,23 @@ import {
   ensureQuoteStorage,
   getQuoteStorageRoot,
 } from "./services/quoteStorage.service";
+import {
+  applySecurityBaseline,
+  authPathRateLimiter,
+  blockMaliciousProbePaths,
+  checkoutPathRateLimiter,
+  globalRateLimiter,
+} from "./middleware/security.middleware";
+import { closeRedisClient, redisPing } from "./infra/redis/redis.client";
 
 const server = express();
+
+applySecurityBaseline(server);
+
+server.use(blockMaliciousProbePaths);
+server.use(globalRateLimiter.middleware);
+server.use(authPathRateLimiter);
+server.use(checkoutPathRateLimiter);
 
 server.use(express.static(path.join(__dirname, "../public")));
 server.set("view engine", "ejs");
@@ -100,14 +115,30 @@ server.get("/", (req, res) => {
   res.send("Servidor funcionando correctamente");
 });
 
+server.get("/api/v1/health/redis", async (_req, res) => {
+  const ok = await redisPing();
+  res.status(ok ? 200 : 503).json({ ok, redis: ok ? "up" : "down" });
+});
+
 const startServer = async () => {
   await ensureQuoteStorage();
+  const redisOk = await redisPing();
+  console.log(
+    `[pcinbox-server] Redis: ${redisOk ? "conectado" : "no disponible (fallback memoria)"}`,
+  );
   server.listen(Number(process.env.PORT) || 8000, () => {
     console.log(`Server running in the por ${process.env.SERVER_PORT || 8000}`);
     console.log(`Access front end ${allowedOrigins}`);
     console.log(`Cotizaciones storage: ${getQuoteStorageRoot()}`);
   });
 };
+
+process.on("SIGTERM", () => {
+  void closeRedisClient();
+});
+process.on("SIGINT", () => {
+  void closeRedisClient();
+});
 
 void startServer().catch((error) => {
   console.error("No fue posible iniciar el servidor", error);

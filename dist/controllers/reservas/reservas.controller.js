@@ -307,26 +307,31 @@ const rescheduleReservation = async (req, res) => {
         if (updated) {
             const dateFormatter = new Intl.DateTimeFormat('es-MX', { timeZone: 'UTC', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
             const formattedDate = updated.date ? dateFormatter.format(new Date(updated.date)) : updated.createdAt?.toDateString();
-            await (0, resend_service_1.sendEmailResend)(updated.contactEmail, "Reserva reprogramada con éxito", "reservation-client", {
-                USERNAME: updated.contactName,
-                FOLIO: updated.reference,
-                DATE: formattedDate,
-                TIME: updated.time,
-                DEVICE: `${updated.deviceType} (${updated.brand} ${updated.model})`,
-                DESCRIPTION: updated.description,
-                SERVICE: updated.service
-            });
-            await (0, resend_service_1.sendEmailResend)("admon@pcinbox.com.mx", "Reserva reprogramada con éxito", "reservation-admin", {
-                USERNAME: updated.contactName,
-                EMAIL: updated.contactEmail,
-                PHONE: updated.contactPhone,
-                FOLIO: updated.reference,
-                DATE: formattedDate,
-                TIME: updated.time,
-                DEVICE: `${updated.deviceType} (${updated.brand} ${updated.model})`,
-                DESCRIPTION: updated.description,
-                SERVICE: updated.service
-            });
+            try {
+                await (0, resend_service_1.sendEmailResend)(updated.contactEmail, "Reserva reprogramada con éxito", "reservation-client", {
+                    USERNAME: updated.contactName,
+                    FOLIO: updated.reference,
+                    DATE: formattedDate,
+                    TIME: updated.time,
+                    DEVICE: `${updated.deviceType} (${updated.brand} ${updated.model})`,
+                    DESCRIPTION: updated.description,
+                    SERVICE: updated.service
+                });
+                await (0, resend_service_1.sendEmailResend)("admon@pcinbox.com.mx", "Reserva reprogramada con éxito", "reservation-admin", {
+                    USERNAME: updated.contactName,
+                    EMAIL: updated.contactEmail,
+                    PHONE: updated.contactPhone,
+                    FOLIO: updated.reference,
+                    DATE: formattedDate,
+                    TIME: updated.time,
+                    DEVICE: `${updated.deviceType} (${updated.brand} ${updated.model})`,
+                    DESCRIPTION: updated.description,
+                    SERVICE: updated.service
+                });
+            }
+            catch (emailErr) {
+                console.error("Error enviando correos de reprogramación:", emailErr);
+            }
             return res.status(201).json({
                 ok: true,
                 message: "Reserva reprogramada con éxito",
@@ -349,7 +354,7 @@ const getUserReservations = async (req, res) => {
             return res.status(400).json({ ok: false, message: "Usuario no autenticado" });
         }
         const page = parseInt(req.query.page) || 1;
-        const limit = parseInt(req.query.limit) || 15;
+        const limit = parseInt(req.query.limit) || 5;
         const skip = (page - 1) * limit;
         const status = req.query.status;
         const search = req.query.search;

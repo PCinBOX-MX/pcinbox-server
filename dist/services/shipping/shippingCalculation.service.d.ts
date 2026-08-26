@@ -20,11 +20,14 @@ export type ShippingProductInput = {
     storeId?: number | string | null;
     name?: string;
     stock?: number | string | null;
+    licenseType?: string | null;
 };
 export type DeliverySelectionInput = {
     shipping_method: string;
     idAddress?: number | null;
     wantsInsurance?: "si" | "no" | string | null;
+    /** Sucursal de recogida (p. ej. León); distinta del storeId de compra en la clave del grupo. */
+    pickupStoreId?: number | null;
 };
 export type CalculatedGroupCosts = {
     shippingCost: number;
