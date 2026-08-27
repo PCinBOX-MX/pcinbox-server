@@ -3,6 +3,11 @@ import { Response } from "express";
 import { readExcelImageKit } from "./../../services/index.service";
 import "../../config/loadEnv";
 import CustomRequestI from "./../../interfaces/customrequest.interface";
+import { cacheDelByPrefix } from "../../infra/redis/cache.util";
+
+function invalidateZoneShippingCache(idAddress: number | string) {
+  void cacheDelByPrefix(`shipping:zone:${Number(idAddress)}:`);
+}
 
 export const hasAddressUser = async (req: CustomRequestI, res: Response) => {
   try {
@@ -188,6 +193,8 @@ export const removeAddress = async (req: CustomRequestI, res: Response) => {
       },
     });
 
+    invalidateZoneShippingCache(idAddress);
+
     let findAdrress = await prisma.addresses.findMany({
       where: {
         userId: Number(req.idUser.toString()),
@@ -284,6 +291,8 @@ export const updatedAddress = async (req: CustomRequestI, res: Response) => {
         idAddress: idAddress,
       },
     });
+
+    invalidateZoneShippingCache(idAddress);
 
     let findAdrress = await prisma.addresses.findMany({
       where: {
