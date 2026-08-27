@@ -51,6 +51,10 @@ model products {
   @@index([marcaId], map: "fk_marcaId_products_idx")
   @@index([categoryId], map: "fk_categoriaId_products_idx")
   @@index([licenseType], map: "products_software_license_idx")
+  @@index([categoryId, active, providerId], map: "products_catalog_list_idx")
+  @@index([active, providerId], map: "products_active_provider_idx")
+  @@index([sku], map: "products_sku_idx")
+  @@index([upc], map: "products_upc_idx")
 }
 
 model providers {
@@ -256,6 +260,7 @@ model favorites {
 
   @@index([productId], map: "productId")
   @@index([userId], map: "userId")
+  @@index([userId, productId], map: "favorites_user_product_idx")
 }
 
 model cards {
