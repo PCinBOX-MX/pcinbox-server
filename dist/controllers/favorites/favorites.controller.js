@@ -116,39 +116,47 @@ const addFavorites = async (req, res) => {
                 },
             });
         }
-        let dataFinal = await prismaClient_1.prisma.favorites.findMany({
-            where: {
-                active: 1,
-                userId: req.idUser,
-            },
-            include: {
-                products: {
-                    include: {
-                        reviews: true,
-                    },
+        // Respuesta ligera: solo el favorito tocado + conteo (no toda la lista).
+        const [favoriteRow, totalFavorites] = await Promise.all([
+            prismaClient_1.prisma.favorites.findFirst({
+                where: { idFavorite: findProductFavorite.idFavorite },
+                include: {
+                    products: true,
                 },
-            },
-        });
-        const serializedFavorites = dataFinal.map((item) => ({
-            productId: Number(item.productId),
-            idFavorite: Number(item.idFavorite),
-            userId: Number(item.userId),
-            image_url: item.products.image_url,
-            createdAt: item.favoritedAt,
+            }),
+            prismaClient_1.prisma.favorites.count({
+                where: {
+                    active: 1,
+                    userId: req.idUser,
+                },
+            }),
+        ]);
+        if (!favoriteRow) {
+            return res.status(500).json({
+                ok: false,
+                message: "No se pudo leer el favorito creado",
+            });
+        }
+        const favorite = {
+            productId: Number(favoriteRow.productId),
+            idFavorite: Number(favoriteRow.idFavorite),
+            userId: Number(favoriteRow.userId),
+            image_url: favoriteRow.products.image_url,
+            createdAt: favoriteRow.favoritedAt,
             products: {
-                ...item.products,
-                idProduct: Number(item.products.idProduct),
-                categoryId: Number(item.products.categoryId),
-                providerId: Number(item.products.providerId),
-                marcaId: Number(item.products.marcaId),
-                reviews: (0, index_service_1.parseBigInts)(item.products.reviews),
+                ...favoriteRow.products,
+                idProduct: Number(favoriteRow.products.idProduct),
+                categoryId: Number(favoriteRow.products.categoryId),
+                providerId: Number(favoriteRow.products.providerId),
+                marcaId: Number(favoriteRow.products.marcaId),
             },
-        }));
+        };
         return res.status(200).json({
             ok: true,
             message: "Producto agregado a favoritos correctamente",
             data: {
-                data: serializedFavorites,
+                favorite: (0, index_service_1.parseBigInts)(favorite),
+                totalFavorites,
             },
         });
     }
@@ -189,39 +197,18 @@ const removeFavorites = async (req, rest) => {
                 active: 0,
             },
         });
-        let listFavoritesByUser = await prismaClient_1.prisma.favorites.findMany({
+        const totalFavorites = await prismaClient_1.prisma.favorites.count({
             where: {
                 active: 1,
                 userId: Number(req.idUser),
             },
-            include: {
-                products: {
-                    include: {
-                        reviews: true,
-                    },
-                },
-            },
         });
-        let dataFinal = listFavoritesByUser.map((item) => ({
-            productId: Number(item.productId),
-            idFavorite: Number(item.idFavorite),
-            userId: Number(item.userId),
-            image_url: item.products.image_url,
-            createdAt: item.favoritedAt,
-            products: {
-                ...item.products,
-                idProduct: Number(item.products.idProduct),
-                categoryId: Number(item.products.categoryId),
-                providerId: Number(item.products.providerId),
-                marcaId: Number(item.products.marcaId),
-                reviews: (0, index_service_1.parseBigInts)(item.products.reviews),
-            },
-        }));
         return rest.status(200).json({
             ok: true,
             message: `${findFavorite.products.name} eliminado de favoritos correctamente`,
             data: {
-                data: dataFinal,
+                productId: Number(idProduct),
+                totalFavorites,
             },
         });
     }

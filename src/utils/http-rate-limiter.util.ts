@@ -1,4 +1,5 @@
 import { NextFunction, Request, Response } from "express";
+import { ensureRedisConnected } from "../infra/redis/redis.client";
 
 type RateBucket = {
   timestamps: number[];
@@ -15,6 +16,17 @@ export function resolveClientIp(req: Request): string {
   return req.ip || req.socket.remoteAddress || "unknown";
 }
 
+function useRedisBackend(): boolean {
+  const backend = (process.env.RATE_LIMIT_BACKEND || "auto").toLowerCase();
+  if (backend === "memory") return false;
+  if (backend === "redis") return true;
+  return Boolean(process.env.REDIS_URL?.trim());
+}
+
+function failMode(): "open" | "closed" {
+  return process.env.RATE_LIMIT_FAIL_MODE === "closed" ? "closed" : "open";
+}
+
 export class HttpRateLimiter {
   private readonly buckets = new Map<string, RateBucket>();
 
@@ -24,13 +36,7 @@ export class HttpRateLimiter {
     private readonly name: string,
   ) {}
 
-  middleware = (req: Request, res: Response, next: NextFunction): void => {
-    if (process.env.RATE_LIMIT_ENABLED === "false") {
-      next();
-      return;
-    }
-
-    const key = `${this.name}:${resolveClientIp(req)}`;
+  private consumeMemory(key: string): { allowed: boolean; retryAfterSec: number } {
     const now = Date.now();
     const bucket = this.buckets.get(key) ?? { timestamps: [] };
 
@@ -41,26 +47,88 @@ export class HttpRateLimiter {
     if (bucket.timestamps.length >= this.maxRequests) {
       const retryAfterSec = Math.max(
         1,
-        Math.ceil(
-          (this.windowMs - (now - bucket.timestamps[0]!)) / 1000,
-        ),
+        Math.ceil((this.windowMs - (now - bucket.timestamps[0]!)) / 1000),
       );
-
-      res.setHeader("Retry-After", String(retryAfterSec));
-      console.warn(
-        `[rate-limit][${this.name}] IP ${resolveClientIp(req)} excedió ${this.maxRequests}/${this.windowMs}ms en ${req.method} ${req.path}`,
-      );
-
-      res.status(429).json({
-        ok: false,
-        message: "Demasiadas solicitudes. Intenta de nuevo en unos momentos.",
-        retryAfterSeconds: retryAfterSec,
-      });
-      return;
+      return { allowed: false, retryAfterSec };
     }
 
     bucket.timestamps.push(now);
     this.buckets.set(key, bucket);
+    return { allowed: true, retryAfterSec: 0 };
+  }
+
+  private async consumeRedis(
+    key: string,
+  ): Promise<{ allowed: boolean; retryAfterSec: number } | null> {
+    const redis = await ensureRedisConnected();
+    if (!redis) return null;
+
+    const windowSec = Math.max(1, Math.ceil(this.windowMs / 1000));
+    const bucketId = Math.floor(Date.now() / this.windowMs);
+    const redisKey = `rl:${this.name}:${key}:${bucketId}`;
+
+    const count = await redis.incr(redisKey);
+    if (count === 1) {
+      await redis.expire(redisKey, windowSec);
+    }
+
+    if (count > this.maxRequests) {
+      const ttl = await redis.ttl(redisKey);
+      return {
+        allowed: false,
+        retryAfterSec: Math.max(1, ttl > 0 ? ttl : windowSec),
+      };
+    }
+
+    return { allowed: true, retryAfterSec: 0 };
+  }
+
+  middleware = async (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    if (process.env.RATE_LIMIT_ENABLED === "false") {
+      next();
+      return;
+    }
+
+    const key = resolveClientIp(req);
+    let decision = { allowed: true, retryAfterSec: 0 };
+
+    if (useRedisBackend()) {
+      try {
+        const redisDecision = await this.consumeRedis(key);
+        if (redisDecision) {
+          decision = redisDecision;
+        } else if (failMode() === "closed") {
+          res.status(503).json({
+            ok: false,
+            message: "Servicio temporalmente no disponible. Intenta de nuevo.",
+          });
+          return;
+        } else {
+          decision = this.consumeMemory(key);
+        }
+      } catch {
+        decision = failMode() === "closed"
+          ? { allowed: false, retryAfterSec: 60 }
+          : this.consumeMemory(key);
+      }
+    } else {
+      decision = this.consumeMemory(key);
+    }
+
+    if (!decision.allowed) {
+      res.setHeader("Retry-After", String(decision.retryAfterSec));
+      res.status(429).json({
+        ok: false,
+        message: "Demasiadas solicitudes. Intenta de nuevo en unos momentos.",
+        retryAfterSeconds: decision.retryAfterSec,
+      });
+      return;
+    }
+
     next();
   };
 }
@@ -80,6 +148,6 @@ export function createPathPrefixRateLimiter(
       return;
     }
 
-    limiter.middleware(req, res, next);
+    void limiter.middleware(req, res, next);
   };
 }

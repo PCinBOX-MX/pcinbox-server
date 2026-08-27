@@ -18,10 +18,19 @@ const review_route_1 = __importDefault(require("./routes/review/review.route"));
 const sales_route_1 = __importDefault(require("./routes/sales/sales.route"));
 const reservas_route_1 = __importDefault(require("./routes/reservas/reservas.route"));
 const checkout_route_1 = __importDefault(require("./routes/checkout/checkout.route"));
+const cotizaciones_route_1 = __importDefault(require("./routes/cotizaciones/cotizaciones.route"));
 const cookie_parser_1 = __importDefault(require("cookie-parser"));
 const path_1 = __importDefault(require("path"));
 const helmet_1 = __importDefault(require("helmet"));
+const quoteStorage_service_1 = require("./services/quoteStorage.service");
+const security_middleware_1 = require("./middleware/security.middleware");
+const redis_client_1 = require("./infra/redis/redis.client");
 const server = (0, express_1.default)();
+(0, security_middleware_1.applySecurityBaseline)(server);
+server.use(security_middleware_1.blockMaliciousProbePaths);
+server.use(security_middleware_1.globalRateLimiter.middleware);
+server.use(security_middleware_1.authPathRateLimiter);
+server.use(security_middleware_1.checkoutPathRateLimiter);
 server.use(express_1.default.static(path_1.default.join(__dirname, "../public")));
 server.set("view engine", "ejs");
 server.set("views", path_1.default.join(__dirname, "views"));
@@ -81,11 +90,32 @@ server.use("/api/v1/review", review_route_1.default);
 server.use("/api/v1/sales", sales_route_1.default);
 server.use("/api/v1/reservas", reservas_route_1.default);
 server.use("/api/v1/checkout", checkout_route_1.default);
+server.use("/api/v1/cotizaciones", cotizaciones_route_1.default);
 server.get("/", (req, res) => {
     res.send("Servidor funcionando correctamente");
 });
-server.listen(Number(process.env.PORT) || 8000, () => {
-    console.log(`Server running in the por ${process.env.SERVER_PORT || 8000}`);
-    console.log(`Access front end ${allowedOrigins}`);
+server.get("/api/v1/health/redis", async (_req, res) => {
+    const ok = await (0, redis_client_1.redisPing)();
+    res.status(ok ? 200 : 503).json({ ok, redis: ok ? "up" : "down" });
+});
+const startServer = async () => {
+    await (0, quoteStorage_service_1.ensureQuoteStorage)();
+    const redisOk = await (0, redis_client_1.redisPing)();
+    console.log(`[pcinbox-server] Redis: ${redisOk ? "conectado" : "no disponible (fallback memoria)"}`);
+    server.listen(Number(process.env.PORT) || 8000, () => {
+        console.log(`Server running in the por ${process.env.SERVER_PORT || 8000}`);
+        console.log(`Access front end ${allowedOrigins}`);
+        console.log(`Cotizaciones storage: ${(0, quoteStorage_service_1.getQuoteStorageRoot)()}`);
+    });
+};
+process.on("SIGTERM", () => {
+    void (0, redis_client_1.closeRedisClient)();
+});
+process.on("SIGINT", () => {
+    void (0, redis_client_1.closeRedisClient)();
+});
+void startServer().catch((error) => {
+    console.error("No fue posible iniciar el servidor", error);
+    process.exit(1);
 });
 //# sourceMappingURL=server.js.map

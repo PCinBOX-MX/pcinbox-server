@@ -3,6 +3,7 @@ import {
   isPickupShippingMethod,
   resolvePcinboxPickupBranchId,
 } from "../../constants/pcinbox-pickup.constants";
+import { cacheGetJson, cacheSetJson } from "../../infra/redis/cache.util";
 
 export const ESTAFETA_FIXED_COST = 178.0;
 
@@ -104,6 +105,12 @@ export async function getZoneShippingCost(
 ): Promise<number> {
   if (!idAddress) return 0;
 
+  const cacheKey = `shipping:zone:${Number(idAddress)}:${userId ?? "any"}`;
+  const cached = await cacheGetJson<number>(cacheKey);
+  if (cached != null && Number.isFinite(cached)) {
+    return cached;
+  }
+
   const slcAddress = await prisma.addresses.findFirst({
     where: {
       idAddress: Number(idAddress),
@@ -122,7 +129,9 @@ export async function getZoneShippingCost(
     throw new Error(`La ciudad seleccionada (${slcAddress.city}) no tiene cobertura para Envío Personalizado.`);
   }
 
-  return Number(findZone.price);
+  const price = Number(findZone.price);
+  void cacheSetJson(cacheKey, price, 300);
+  return price;
 }
 
 export async function calculateGroupCosts(
@@ -244,17 +253,38 @@ export function calculateExtrasTotal(
 export async function validateProductPrices(
   products: ShippingProductInput[],
 ): Promise<{ ok: boolean; message?: string }> {
-  for (const product of products) {
+  const activeLines = products.filter((p) => Number(p.quantity) > 0);
+  const ids = [
+    ...new Set(
+      activeLines
+        .map((p) => Number(p.idProduct))
+        .filter((id) => Number.isFinite(id) && id > 0),
+    ),
+  ];
+
+  if (!ids.length) {
+    return { ok: false, message: "No hay productos para validar" };
+  }
+
+  const dbProducts = await prisma.products.findMany({
+    where: {
+      idProduct: { in: ids.map((id) => BigInt(id)) },
+      active: 1,
+    },
+    select: { idProduct: true, price: true, stock: true },
+  });
+
+  const byId = new Map(
+    dbProducts.map((row) => [Number(row.idProduct), row]),
+  );
+
+  for (const product of activeLines) {
     const qty = Number(product.quantity) || 0;
     if (qty <= 0) {
       return { ok: false, message: `Cantidad inválida para producto ${product.idProduct}` };
     }
 
-    const dbProduct = await prisma.products.findFirst({
-      where: { idProduct: BigInt(product.idProduct!), active: 1 },
-      select: { price: true, stock: true },
-    });
-
+    const dbProduct = byId.get(Number(product.idProduct));
     if (!dbProduct) {
       return { ok: false, message: `Producto ${product.idProduct} no encontrado` };
     }
