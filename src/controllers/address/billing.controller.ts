@@ -79,7 +79,10 @@ export const createBilling = async (req: CustomRequestI, res: Response) => {
         cfdi,
         taxRegimen,
         methodPay,
-        codePostal,
+        codePostal:
+          codePostal != null && String(codePostal).trim() !== ""
+            ? String(codePostal).replace(/\D/g, "").slice(0, 10)
+            : null,
         cologne: "",
         state,
         city,
