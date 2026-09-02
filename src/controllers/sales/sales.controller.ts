@@ -697,21 +697,47 @@ export const cancelOrderByUser = async (req: CustomRequestI, res: Response) => {
     );
 
     const gateway = pasarelaResult?.data?.data?.gateway;
-    const refunded = Boolean(
-      pasarelaResult?.data?.data?.refunded ??
-        (gateway === "mercadopago" || gateway === "openpay"),
-    );
+    const refunded = pasarelaResult?.data?.data?.refunded === true;
+    const refundError =
+      pasarelaResult?.data?.data?.refundError != null
+        ? String(pasarelaResult.data.data.refundError)
+        : null;
+
+    // Misma BD: la pasarela ya marcó order/sales/shipments; reforzamos status local.
+    await prisma.order.update({
+      where: { idOrder: Number(order.idOrder) },
+      data: {
+        status: "cancelled",
+        cancelReason: trimmedCancelReason,
+        updatedAt: new Date(),
+      },
+    });
+    await prisma.sales.updateMany({
+      where: {
+        orderId: Number(order.idOrder),
+        userId: Number(req.idUser),
+      },
+      data: { status: "cancelled", shipStatus: "cancelado" },
+    });
+    await prisma.shipments.updateMany({
+      where: { orderId: Number(order.idOrder) },
+      data: { status: "cancelado" },
+    });
 
     return res.status(200).json({
       ok: true,
-      message: pasarelaResult?.message ?? "Compra cancelada correctamente",
+      message: refundError
+        ? "Compra cancelada. El reembolso automático quedó pendiente."
+        : pasarelaResult?.message ?? "Compra cancelada correctamente",
       data: {
         data: {
           idOrder: Number(order.idOrder),
           payment_method: order.pay_method,
           refunded,
+          refundError,
           gateway: gateway ?? null,
           cancelReason: trimmedCancelReason,
+          status: "cancelled",
         },
       },
     });
