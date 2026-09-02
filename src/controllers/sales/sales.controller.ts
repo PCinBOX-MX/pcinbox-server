@@ -533,6 +533,7 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
         updatedAt: order?.updatedAt,
         payment_method: order.pay_method,
         orderStatus: order.status,
+        cancelReason: order.cancelReason ?? null,
         idUser: Number(order.userId),
         products: order.sales.map((sale) => {
           const shipment = sale.shipments;
@@ -631,12 +632,23 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
 
 export const cancelOrderByUser = async (req: CustomRequestI, res: Response) => {
   try {
-    const { idOrder } = req.body;
+    const { idOrder, cancelReason } = req.body;
+    const trimmedCancelReason =
+      cancelReason != null && String(cancelReason).trim()
+        ? String(cancelReason).trim()
+        : "";
 
     if (!idOrder) {
       return res.status(400).json({
         ok: false,
         message: "Falta idOrder",
+      });
+    }
+
+    if (!trimmedCancelReason) {
+      return res.status(400).json({
+        ok: false,
+        message: "El motivo de cancelación es obligatorio",
       });
     }
 
@@ -681,6 +693,7 @@ export const cancelOrderByUser = async (req: CustomRequestI, res: Response) => {
       Number(order.idOrder),
       Number(req.idUser),
       req.headers.authorization,
+      trimmedCancelReason,
     );
 
     const gateway = pasarelaResult?.data?.data?.gateway;
@@ -698,6 +711,7 @@ export const cancelOrderByUser = async (req: CustomRequestI, res: Response) => {
           payment_method: order.pay_method,
           refunded,
           gateway: gateway ?? null,
+          cancelReason: trimmedCancelReason,
         },
       },
     });

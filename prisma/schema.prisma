@@ -296,6 +296,7 @@ model order {
   updatedAt             DateTime?              @db.DateTime(0)
   requiredFactura       Int?                   @db.TinyInt
   active                Int?                   @default(1) @db.TinyInt
+  cancelReason          String?                @db.Text
   users                 users                  @relation(fields: [userId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "fk_userId_order")
   purchases             purchases[]
   refunds               refunds[]
