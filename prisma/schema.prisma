@@ -315,7 +315,6 @@ model shipments {
   lastLocation     String?                    @db.VarChar(255)
   lastUpdated      DateTime?                  @db.DateTime(0)
   status           shipments_status?
-  statusChangedAt  DateTime?                  @db.DateTime(0)
   storeId          Int?
   shipping_method  shipments_shipping_method?
   shippingCost     Decimal?                   @db.Decimal(10, 2)
