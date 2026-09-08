@@ -5,10 +5,13 @@ import CustomRequestI from "../../interfaces/customrequest.interface";
 import {
   assertDiscountAllowed,
   computeLineTotal,
+  getProductSerialFlags,
+  invalidatePosSearchCatalog,
   nextPosFolio,
   roundMoney,
   searchPosProducts,
 } from "../../services/pos/pos.service";
+import { productsHaveSerialColumns } from "../../services/pos/posSerialFlags.service";
 import {
   decrementPosStock,
   restorePosStock,
@@ -36,10 +39,13 @@ import {
 } from "../../services/pos/posSerial.service";
 import { completePendingPosSale } from "../../services/pos/posComplete.service";
 import { createLinkPayOnline } from "../../services/pasarelaPagos.service";
+import { resolvePosCashBranchId } from "../../constants/pcinbox-pickup.constants";
 
 const PAYMENT_METHODS = new Set([
   "efectivo_sucursal",
   "tarjeta_sucursal",
+  "tarjeta_credito_sucursal",
+  "tarjeta_debito_sucursal",
   "transferencia_bancaria",
   "openpay_link",
 ]);
@@ -50,12 +56,84 @@ function money(n: unknown): number {
   return roundMoney(v);
 }
 
-async function resolveIsAdmin(userId: number): Promise<boolean> {
+/** Efectivo puede exceder (cambio); otros métodos no. */
+function settlePosPayments(
+  total: number,
+  payments: Array<{ method: string; amount: number }>,
+) {
+  let nonCashSum = 0;
+  let cashReceived = 0;
+  for (const p of payments) {
+    if (p.method === "efectivo_sucursal") {
+      cashReceived = roundMoney(cashReceived + p.amount);
+    } else {
+      nonCashSum = roundMoney(nonCashSum + p.amount);
+    }
+  }
+  const safeTotal = roundMoney(Math.max(0, total));
+  const nonCashOverpay = roundMoney(Math.max(0, nonCashSum - safeTotal));
+  const cashDue = roundMoney(
+    Math.max(0, safeTotal - Math.min(nonCashSum, safeTotal)),
+  );
+  const changeDue = roundMoney(Math.max(0, cashReceived - cashDue));
+  const appliedCash = roundMoney(Math.min(cashReceived, cashDue));
+  const paidApplied = roundMoney(Math.min(nonCashSum, safeTotal) + appliedCash);
+  const remaining = roundMoney(Math.max(0, safeTotal - paidApplied));
+  return {
+    nonCashSum,
+    cashReceived,
+    cashDue,
+    changeDue,
+    paidApplied,
+    remaining,
+    nonCashOverpay,
+    balanced: remaining <= 0.009 && nonCashOverpay <= 0.009,
+  };
+}
+
+async function resolvePosRole(
+  req: CustomRequestI,
+): Promise<"admin" | "support"> {
+  if (req.posRole === "admin" || req.posRole === "support") {
+    return req.posRole;
+  }
+  const userId = Number(req.idUser);
   const user = await prisma.users.findFirst({
     where: { idUser: userId, active: 1 },
     select: { role: true },
   });
-  return user?.role === "admin";
+  if (user?.role === "support") return "support";
+  return "admin";
+}
+
+function calendarDateInMexicoCity(d: Date): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Mexico_City",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
+}
+
+/**
+ * support: pending_payment siempre; completed solo el mismo día (CDMX).
+ * admin: cualquier venta no cancelada.
+ */
+function assertPosCancelAllowed(
+  role: "admin" | "support",
+  sale: { status: string; createdAt: Date },
+): void {
+  if (role === "admin") return;
+  if (sale.status === "pending_payment") return;
+  if (sale.status === "completed") {
+    const saleDay = calendarDateInMexicoCity(new Date(sale.createdAt));
+    const today = calendarDateInMexicoCity(new Date());
+    if (saleDay === today) return;
+    throw new Error(
+      "Como soporte solo puedes cancelar ventas completadas del mismo día. Solicita a un administrador el override.",
+    );
+  }
+  throw new Error("No se puede cancelar esta venta con tu rol");
 }
 
 function serializeSale(sale: any) {
@@ -94,6 +172,13 @@ function serializeSale(sale: any) {
     items: (sale.items || []).map((it: any) => ({
       idPosSaleItem: Number(it.idPosSaleItem),
       productId: Number(it.productId),
+      branchId: it.branchId != null ? Number(it.branchId) : null,
+      branchName: it.branches?.name || null,
+      branchCity: it.branches?.city || null,
+      branchLabel: it.branches
+        ? [it.branches.name, it.branches.city].filter(Boolean).join(" — ") ||
+          null
+        : null,
       productName: it.productName,
       productSku: it.productSku,
       productUpc: it.productUpc,
@@ -133,6 +218,7 @@ const saleInclude = {
   customer: { select: { name: true, lastname: true, email: true } },
   items: {
     include: {
+      branches: { select: { name: true, city: true } },
       serials: {
         select: {
           idProductSerial: true,
@@ -150,6 +236,8 @@ const saleInclude = {
 
 export const listPosBranches = async (_req: Request, res: Response) => {
   try {
+    const cashBranchId = await resolvePosCashBranchId();
+
     const branches = await prisma.branches.findMany({
       orderBy: [{ city: "asc" }, { name: "asc" }],
       select: {
@@ -160,23 +248,47 @@ export const listPosBranches = async (_req: Request, res: Response) => {
         providers: { select: { companyName: true } },
       },
     });
+
+    const mapped = branches.map((b) => {
+      const providerName = b.providers?.companyName?.trim() || null;
+      const place = [b.name, b.city].filter(Boolean).join(" — ");
+      const label =
+        [place, providerName].filter(Boolean).join(" · ") ||
+        `Sucursal ${b.idBranche}`;
+      const id = Number(b.idBranche);
+      const providerId = Number(b.providerId);
+      return {
+        idBranche: id,
+        name: b.name,
+        city: b.city,
+        providerId,
+        providerName,
+        label,
+        isCashPoint: cashBranchId != null && id === cashBranchId,
+      };
+    });
+
+    const cashBranch =
+      (cashBranchId
+        ? mapped.find((b) => b.idBranche === cashBranchId)
+        : null) ||
+      (cashBranchId
+        ? {
+            idBranche: cashBranchId,
+            name: "pcinbox",
+            city: null,
+            providerId: 1,
+            providerName: "PCinBOX",
+            label: "Sucursal PCinBOX",
+            isCashPoint: true,
+          }
+        : null);
+
     return res.json({
       ok: true,
-      data: branches.map((b) => {
-        const providerName = b.providers?.companyName?.trim() || null;
-        const place = [b.name, b.city].filter(Boolean).join(" — ");
-        const label =
-          [place, providerName].filter(Boolean).join(" · ") ||
-          `Sucursal ${b.idBranche}`;
-        return {
-          idBranche: Number(b.idBranche),
-          name: b.name,
-          city: b.city,
-          providerId: Number(b.providerId),
-          providerName,
-          label,
-        };
-      }),
+      data: mapped,
+      cashBranchId: cashBranchId,
+      cashBranch,
     });
   } catch (error: any) {
     return res.status(500).json({
@@ -189,14 +301,7 @@ export const listPosBranches = async (_req: Request, res: Response) => {
 export const searchPosProductsHandler = async (req: Request, res: Response) => {
   try {
     const q = String(req.query.q || "");
-    const branchId = Number(req.query.branchId);
-    if (!Number.isSafeInteger(branchId) || branchId <= 0) {
-      return res.status(400).json({
-        ok: false,
-        message: "Selecciona una sucursal válida",
-      });
-    }
-    const data = await searchPosProducts(q, branchId);
+    const data = await searchPosProducts(q);
     return res.json({ ok: true, data });
   } catch (error: any) {
     return res.status(500).json({
@@ -270,11 +375,6 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       payments,
     } = req.body || {};
 
-    const branch = Number(branchId);
-    if (!Number.isSafeInteger(branch) || branch <= 0) {
-      return res.status(400).json({ ok: false, message: "Sucursal requerida" });
-    }
-
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ ok: false, message: "Agrega al menos un producto" });
     }
@@ -283,10 +383,12 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       return res.status(400).json({ ok: false, message: "Registra al menos una forma de pago" });
     }
 
-    const isAdmin = await resolveIsAdmin(cashierUserId);
+    const posRole = await resolvePosRole(req);
+    const isAdmin = posRole === "admin";
 
     const normalizedItems: Array<{
       productId: number;
+      branchId: number | null;
       quantity: number;
       unitPrice: number;
       discountPct: number;
@@ -308,6 +410,11 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       const productId = Number(raw.productId);
       const quantity = Number(raw.quantity);
       const discountPct = Number(raw.discountPct ?? 0);
+      const itemBranchId =
+        raw.branchId != null && raw.branchId !== ""
+          ? Number(raw.branchId)
+          : null;
+
       if (!Number.isSafeInteger(productId) || productId <= 0) {
         return res.status(400).json({ ok: false, message: "Producto inválido" });
       }
@@ -328,8 +435,8 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
           price: true,
           sku: true,
           upc: true,
-          requiresSerial: true,
-          warrantyMonths: true,
+          stock: true,
+          providerId: true,
         },
       });
       if (!product) {
@@ -337,6 +444,63 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
           ok: false,
           message: `Producto ${productId} no encontrado`,
         });
+      }
+
+      const serialFlags = await getProductSerialFlags(productId);
+
+      const providerBranches = await prisma.branches.findMany({
+        where: { providerId: product.providerId },
+        select: { idBranche: true },
+      });
+      const providerBranchIds = new Set(
+        providerBranches.map((b) => Number(b.idBranche)),
+      );
+      const stockRows = await prisma.product_stock.findMany({
+        where: { productId },
+        select: { branchId: true, stock: true },
+      });
+      const hasBranchStockRows = stockRows.length > 0;
+
+      let resolvedBranchId: number | null = itemBranchId;
+      if (hasBranchStockRows || providerBranchIds.size > 0) {
+        if (
+          resolvedBranchId == null ||
+          !Number.isSafeInteger(resolvedBranchId) ||
+          resolvedBranchId <= 0
+        ) {
+          return res.status(400).json({
+            ok: false,
+            message: `Elige bodega/almacén para: ${product.name}`,
+          });
+        }
+        if (
+          providerBranchIds.size > 0 &&
+          !providerBranchIds.has(resolvedBranchId)
+        ) {
+          return res.status(400).json({
+            ok: false,
+            message: `La bodega elegida no pertenece al proveedor de ${product.name}`,
+          });
+        }
+        const row = stockRows.find(
+          (r) => Number(r.branchId) === resolvedBranchId,
+        );
+        const available = Number(row?.stock ?? 0);
+        if (available < quantity) {
+          return res.status(400).json({
+            ok: false,
+            message: `Stock insuficiente en bodega para ${product.name} (disponible ${available})`,
+          });
+        }
+      } else {
+        // PCinbox u otros sin product_stock: solo stock global
+        resolvedBranchId = null;
+        if (Number(product.stock) < quantity) {
+          return res.status(400).json({
+            ok: false,
+            message: `Stock global insuficiente para ${product.name}`,
+          });
+        }
       }
 
       const unitPrice =
@@ -351,7 +515,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       try {
         serials = normalizeItemSerials(
           quantity,
-          Boolean(product.requiresSerial),
+          Boolean(serialFlags.requiresSerial),
           raw.serials,
           product.name,
         );
@@ -367,6 +531,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
 
       normalizedItems.push({
         productId,
+        branchId: resolvedBranchId,
         quantity,
         unitPrice,
         discountPct: roundMoney(discountPct),
@@ -375,8 +540,8 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
         productSku: product.sku,
         productUpc: product.upc,
         serials,
-        warrantyMonths: product.warrantyMonths ?? 12,
-        requiresSerial: Boolean(product.requiresSerial),
+        warrantyMonths: serialFlags.warrantyMonths,
+        requiresSerial: Boolean(serialFlags.requiresSerial),
       });
     }
 
@@ -395,7 +560,6 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       amount: number;
       reference: string | null;
     }> = [];
-    let paidSum = 0;
     for (const raw of payments) {
       const method = String(raw.method || "");
       const amount = money(raw.amount);
@@ -412,7 +576,6 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
         });
       }
       if (method === "openpay_link") hasOpenpayOnlyPending = true;
-      paidSum = roundMoney(paidSum + amount);
       normalizedPayments.push({
         method,
         amount,
@@ -420,18 +583,59 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       });
     }
 
-    if (Math.abs(paidSum - total) > 0.009) {
+    const settlement = settlePosPayments(total, normalizedPayments);
+    if (settlement.nonCashOverpay > 0.009) {
       return res.status(400).json({
         ok: false,
-        message: `La suma de pagos (${paidSum}) debe igualar el total (${total})`,
+        message:
+          "Tarjeta/transferencia no pueden superar el total. El excedente solo aplica en efectivo (cambio).",
+      });
+    }
+    if (!settlement.balanced) {
+      return res.status(400).json({
+        ok: false,
+        message: `Falta por cubrir ${settlement.remaining}. Recibido en efectivo: ${settlement.cashReceived}; adeudo efectivo: ${settlement.cashDue}.`,
+      });
+    }
+
+    // Persistir monto aplicado a la venta (no el billete); recibido/cambio en reference.
+    const nonCashPayments = normalizedPayments.filter(
+      (p) => p.method !== "efectivo_sucursal",
+    );
+    const cashUserRefs = normalizedPayments
+      .filter((p) => p.method === "efectivo_sucursal")
+      .map((p) => p.reference)
+      .filter(Boolean)
+      .join(" | ");
+    const cashRefParts = [
+      settlement.cashReceived > settlement.cashDue + 0.009
+        ? `Recibido ${settlement.cashReceived.toFixed(2)}`
+        : null,
+      settlement.changeDue > 0.009
+        ? `Cambio ${settlement.changeDue.toFixed(2)}`
+        : null,
+      cashUserRefs || null,
+    ].filter(Boolean);
+    const finalPayments: Array<{
+      method: any;
+      amount: number;
+      reference: string | null;
+    }> = [...nonCashPayments];
+    if (settlement.cashDue > 0.009) {
+      finalPayments.push({
+        method: "efectivo_sucursal",
+        amount: settlement.cashDue,
+        reference: cashRefParts.length
+          ? cashRefParts.join(" · ").slice(0, 255)
+          : null,
       });
     }
 
     // OpenPay link alone → pending (no stock yet). Mixed with immediate methods not allowed with openpay in MVP.
     const onlyOpenpay =
-      normalizedPayments.length === 1 &&
-      normalizedPayments[0]?.method === "openpay_link";
-    const hasOpenpay = normalizedPayments.some((p) => p.method === "openpay_link");
+      finalPayments.length === 1 &&
+      finalPayments[0]?.method === "openpay_link";
+    const hasOpenpay = finalPayments.some((p) => p.method === "openpay_link");
     if (hasOpenpay && !onlyOpenpay) {
       return res.status(400).json({
         ok: false,
@@ -443,11 +647,25 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
     const status = onlyOpenpay ? "pending_payment" : "completed";
     void hasOpenpayOnlyPending;
 
-    const cashAmount = roundMoney(
-      normalizedPayments
-        .filter((p) => p.method === "efectivo_sucursal")
-        .reduce((s, p) => s + p.amount, 0),
-    );
+    const cashAmount = settlement.cashDue;
+
+    // Encabezado / caja: siempre sucursal física PCinBOX (no se elige en UI)
+    let branch = await resolvePosCashBranchId();
+    if (branchId != null && branchId !== "") {
+      const explicit = Number(branchId);
+      if (Number.isSafeInteger(explicit) && explicit > 0) branch = explicit;
+    }
+    if (!branch || !Number.isSafeInteger(branch) || branch <= 0) {
+      const fromItems = normalizedItems.find((it) => it.branchId != null)?.branchId;
+      branch = fromItems != null ? Number(fromItems) : NaN;
+    }
+    if (!Number.isSafeInteger(branch) || branch <= 0) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          "No está configurada la sucursal de cobro PCinBOX (sin branch providerId=1 ni leon2). Revisa branches en BD.",
+      });
+    }
 
     let guestEmail = String(customerEmail || "").trim();
     let guestPhone = String(customerPhone || "").trim();
@@ -521,6 +739,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
           items: {
             create: normalizedItems.map((it) => ({
               productId: it.productId,
+              branchId: it.branchId,
               productName: it.productName,
               productSku: it.productSku,
               productUpc: it.productUpc,
@@ -531,7 +750,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
             })),
           },
           payments: {
-            create: normalizedPayments.map((p) => ({
+            create: finalPayments.map((p) => ({
               method: p.method,
               amount: new Prisma.Decimal(p.amount),
               reference: p.reference,
@@ -548,7 +767,16 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
                   total,
                   itemCount: normalizedItems.length,
                   isAdmin,
+                  posRole,
                   cashAmount: cashAmount > 0 ? cashAmount : undefined,
+                  cashReceived:
+                    settlement.cashReceived > 0
+                      ? settlement.cashReceived
+                      : undefined,
+                  changeDue:
+                    settlement.changeDue > 0.009
+                      ? settlement.changeDue
+                      : undefined,
                 } as Prisma.InputJsonValue,
               },
               ...(status === "pending_payment" &&
@@ -563,6 +791,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
                           .filter((it) => it.serials.length > 0)
                           .map((it) => ({
                             productId: it.productId,
+                            branchId: it.branchId,
                             serials: it.serials,
                             warrantyMonths: it.warrantyMonths,
                           })),
@@ -598,7 +827,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
             if (!itemRow) continue;
             await assignSerialsOnSale(tx, {
               productId: norm.productId,
-              branchId: branch,
+              branchId: norm.branchId ?? branch,
               posSaleId: created.idPosSale,
               posSaleItemId: itemRow.idPosSaleItem,
               serials: norm.serials,
@@ -616,11 +845,12 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
           normalizedItems.map((it) => ({
             productId: it.productId,
             quantity: it.quantity,
+            branchId: it.branchId,
           })),
-          branch,
           cashierUserId,
           folio,
         );
+        invalidatePosSearchCatalog();
       }
 
       return tx.pos_sales.findFirst({
@@ -845,6 +1075,8 @@ export const cancelPosSale = async (req: CustomRequestI, res: Response) => {
       });
     }
 
+    const posRole = await resolvePosRole(req);
+
     const updated = await prisma.$transaction(async (tx) => {
       const sale = await tx.pos_sales.findFirst({
         where: { idPosSale: id },
@@ -855,17 +1087,23 @@ export const cancelPosSale = async (req: CustomRequestI, res: Response) => {
         throw new Error("Esta venta ya está cancelada");
       }
 
+      assertPosCancelAllowed(posRole, {
+        status: sale.status,
+        createdAt: sale.createdAt,
+      });
+
       if (sale.status === "completed") {
         await restorePosStock(
           tx,
           sale.items.map((it) => ({
             productId: Number(it.productId),
             quantity: Number(it.quantity),
+            branchId: it.branchId != null ? Number(it.branchId) : null,
           })),
-          Number(sale.branchId),
           userId,
           sale.folio,
         );
+        invalidatePosSearchCatalog();
 
         const cashAmount = roundMoney(
           sale.payments
@@ -899,6 +1137,7 @@ export const cancelPosSale = async (req: CustomRequestI, res: Response) => {
               reason: reason.slice(0, 2000),
               payload: {
                 previousStatus: sale.status,
+                cancelledByRole: posRole,
               } as Prisma.InputJsonValue,
             },
           },
@@ -1147,6 +1386,8 @@ export const getPosSaleTicket = async (req: Request, res: Response) => {
     const methodLabel: Record<string, string> = {
       efectivo_sucursal: "Efectivo",
       tarjeta_sucursal: "Tarjeta",
+      tarjeta_credito_sucursal: "Tarjeta de Crédito",
+      tarjeta_debito_sucursal: "Tarjeta de Débito",
       transferencia_bancaria: "Transferencia",
       openpay_link: "OpenPay (link)",
     };
@@ -1173,7 +1414,9 @@ export const getPosSaleTicket = async (req: Request, res: Response) => {
     const paymentsHtml = data.payments
       .map(
         (p: (typeof data.payments)[number]) =>
-          `<div class="pay-line"><span>${methodLabel[p.method] || p.method}</span><strong>${formatMoney(p.amount)}</strong></div>`,
+          `<div class="pay-line"><span>${methodLabel[p.method] || p.method}${
+            p.reference ? `<br/><small>${escapeHtml(p.reference)}</small>` : ""
+          }</span><strong>${formatMoney(p.amount)}</strong></div>`,
       )
       .join("");
 
@@ -1540,6 +1783,16 @@ export const updatePosProductSerialConfig = async (
     if (!Number.isSafeInteger(productId) || productId <= 0) {
       return res.status(400).json({ ok: false, message: "Producto inválido" });
     }
+
+    const hasCols = await productsHaveSerialColumns();
+    if (!hasCols) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          "Faltan columnas requiresSerial/warrantyMonths en products. Aplica la migración 20260908_pos_serial_columns.",
+      });
+    }
+
     const requiresSerial =
       req.body?.requiresSerial != null
         ? Boolean(req.body.requiresSerial)
@@ -1574,6 +1827,8 @@ export const updatePosProductSerialConfig = async (
         warrantyMonths: true,
       },
     });
+
+    invalidatePosSearchCatalog();
 
     return res.json({
       ok: true,

@@ -3,22 +3,27 @@ import { Prisma } from "@prisma/client";
 export type PosStockLine = {
   productId: number;
   quantity: number;
+  /** Bodega de origen; si falta, solo se mueve stock global (p.ej. PCinbox sin product_stock). */
+  branchId?: number | null;
 };
 
 /**
- * Decrementa stock global + por sucursal de forma atómica.
- * Falla si no hay existencia suficiente.
+ * Decrementa stock global + por sucursal (si hay branchId) de forma atómica.
  */
 export async function decrementPosStock(
   tx: Prisma.TransactionClient,
   lines: PosStockLine[],
-  branchId: number,
   userId: number,
   refId: string,
 ) {
   for (const line of lines) {
     const productId = Number(line.productId);
     const quantity = Number(line.quantity);
+    const branchId =
+      line.branchId != null && Number.isSafeInteger(Number(line.branchId))
+        ? Number(line.branchId)
+        : null;
+
     if (!Number.isSafeInteger(productId) || productId <= 0) {
       throw new Error("Producto inválido");
     }
@@ -36,28 +41,31 @@ export async function decrementPosStock(
       );
     }
 
-    const branchRow = await tx.product_stock.findFirst({
-      where: { productId, branchId },
-      select: { idProductStock: true, stock: true },
-    });
+    if (branchId != null) {
+      const branchUpdated = await tx.product_stock.updateMany({
+        where: {
+          productId,
+          branchId,
+          stock: { gte: quantity },
+        },
+        data: { stock: { decrement: quantity } },
+      });
 
-    if (!branchRow) {
-      throw new Error(
-        `No hay registro de stock en sucursal para producto ${productId}`,
-      );
+      if (branchUpdated.count === 0) {
+        const branchRow = await tx.product_stock.findFirst({
+          where: { productId, branchId },
+          select: { idProductStock: true, stock: true },
+        });
+        if (!branchRow) {
+          throw new Error(
+            `No hay registro de stock en bodega ${branchId} para producto ${productId}`,
+          );
+        }
+        throw new Error(
+          `Stock insuficiente en bodega para producto ${productId} (disponible ${Number(branchRow.stock ?? 0)}, pedido ${quantity})`,
+        );
+      }
     }
-
-    const branchStock = Number(branchRow.stock ?? 0);
-    if (branchStock < quantity) {
-      throw new Error(
-        `Stock insuficiente en sucursal para producto ${productId} (disponible ${branchStock}, pedido ${quantity})`,
-      );
-    }
-
-    await tx.product_stock.update({
-      where: { idProductStock: branchRow.idProductStock },
-      data: { stock: branchStock - quantity },
-    });
 
     await tx.inventory_movements.create({
       data: {
@@ -80,13 +88,16 @@ export async function decrementPosStock(
 export async function restorePosStock(
   tx: Prisma.TransactionClient,
   lines: PosStockLine[],
-  branchId: number,
   userId: number,
   refId: string,
 ) {
   for (const line of lines) {
     const productId = Number(line.productId);
     const quantity = Number(line.quantity);
+    const branchId =
+      line.branchId != null && Number.isSafeInteger(Number(line.branchId))
+        ? Number(line.branchId)
+        : null;
     if (quantity <= 0) continue;
 
     await tx.products.updateMany({
@@ -94,24 +105,26 @@ export async function restorePosStock(
       data: { stock: { increment: quantity } },
     });
 
-    const branchRow = await tx.product_stock.findFirst({
-      where: { productId, branchId },
-      select: { idProductStock: true, stock: true },
-    });
+    if (branchId != null) {
+      const branchRow = await tx.product_stock.findFirst({
+        where: { productId, branchId },
+        select: { idProductStock: true, stock: true },
+      });
 
-    if (branchRow) {
-      await tx.product_stock.update({
-        where: { idProductStock: branchRow.idProductStock },
-        data: { stock: Number(branchRow.stock ?? 0) + quantity },
-      });
-    } else {
-      await tx.product_stock.create({
-        data: {
-          productId,
-          branchId,
-          stock: quantity,
-        },
-      });
+      if (branchRow) {
+        await tx.product_stock.update({
+          where: { idProductStock: branchRow.idProductStock },
+          data: { stock: Number(branchRow.stock ?? 0) + quantity },
+        });
+      } else {
+        await tx.product_stock.create({
+          data: {
+            productId,
+            branchId,
+            stock: quantity,
+          },
+        });
+      }
     }
 
     await tx.inventory_movements.create({

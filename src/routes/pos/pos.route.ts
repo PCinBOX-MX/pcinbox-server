@@ -1,7 +1,7 @@
 import { Router } from "express";
 import {
-  MiddleAdminRoute,
   MiddleAuthRoute,
+  MiddlePosRoute,
 } from "../../middleware/index.middleware";
 import {
   addPosCashMovement,
@@ -34,7 +34,7 @@ const router = Router();
 // Sin auth de usuario: secreto compartido con la pasarela
 router.post("/internal/completeByOpenPayLink", completePosByOpenPayLink);
 
-router.use(MiddleAuthRoute, MiddleAdminRoute);
+router.use(MiddleAuthRoute, MiddlePosRoute);
 
 router.get("/branches", listPosBranches);
 router.get("/products/search", searchPosProductsHandler);

@@ -5,6 +5,7 @@ import { assignSerialsOnSale, assertSerialsAvailable } from "./posSerial.service
 
 type PendingSerialLine = {
   productId: number;
+  branchId?: number | null;
   serials: string[];
   warrantyMonths?: number | null;
 };
@@ -49,7 +50,6 @@ export async function completePendingPosSale(params: {
       throw new Error("La venta está cancelada");
     }
     if (sale.status === "completed") {
-      // Idempotente: ya completada (doble webhook)
       return { sale, alreadyCompleted: true as const };
     }
     if (sale.status !== "pending_payment") {
@@ -66,13 +66,12 @@ export async function completePendingPosSale(params: {
       sale.items.map((it) => ({
         productId: Number(it.productId),
         quantity: Number(it.quantity),
+        branchId: it.branchId != null ? Number(it.branchId) : null,
       })),
-      Number(sale.branchId),
       userId,
       sale.folio,
     );
 
-    // Series diferidas al crear venta OpenPay
     const pendingEvent = sale.events.find((e) => e.eventType === "serials_pending");
     const pendingPayload = pendingEvent?.payload as
       | { lines?: PendingSerialLine[] }
@@ -87,9 +86,15 @@ export async function completePendingPosSale(params: {
           (i) => Number(i.productId) === Number(line.productId),
         );
         if (!itemRow) continue;
+        const lineBranch =
+          line.branchId != null
+            ? Number(line.branchId)
+            : itemRow.branchId != null
+              ? Number(itemRow.branchId)
+              : Number(sale.branchId);
         await assignSerialsOnSale(tx, {
           productId: Number(line.productId),
-          branchId: Number(sale.branchId),
+          branchId: lineBranch,
           posSaleId: sale.idPosSale,
           posSaleItemId: itemRow.idPosSaleItem,
           serials: line.serials,
@@ -124,6 +129,7 @@ export async function completePendingPosSale(params: {
         customer: { select: { name: true, lastname: true, email: true } },
         items: {
           include: {
+            branches: { select: { name: true, city: true } },
             serials: {
               select: {
                 idProductSerial: true,

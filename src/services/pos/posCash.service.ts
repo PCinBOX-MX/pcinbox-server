@@ -299,6 +299,8 @@ async function summarizeSessionPayments(
   const byMethod: Record<string, number> = {
     efectivo_sucursal: 0,
     tarjeta_sucursal: 0,
+    tarjeta_credito_sucursal: 0,
+    tarjeta_debito_sucursal: 0,
     transferencia_bancaria: 0,
     openpay_link: 0,
   };
