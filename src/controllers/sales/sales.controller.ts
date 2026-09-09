@@ -45,6 +45,7 @@ async function markSaleLicenseDeliveredAndMaybeCloseShipment(params: {
     data: {
       licenseDeliveredAt: deliveredAt,
       shipStatus: "entregado",
+      statusChangedAt: deliveredAt,
     },
     select: {
       shipmentId: true,
@@ -86,7 +87,11 @@ async function markSaleLicenseDeliveredAndMaybeCloseShipment(params: {
 
   await prisma.shipments.update({
     where: { idShipment: BigInt(shipmentId) },
-    data: { status: "entregado" },
+    data: {
+      status: "entregado",
+      lastUpdated: deliveredAt,
+      statusChangedAt: deliveredAt,
+    },
   });
 
   await syncShipmentStatusOnPasarela({
@@ -548,6 +553,7 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
             quantity: sale.quantity,
             providerId: sale.products?.providerId,
             statusShip: sale.shipStatus ?? shipment?.status ?? null,
+            statusChangedAt: sale.statusChangedAt ?? null,
             shipping_method: shipment?.shipping_method,
             status: sale.status,
             image_url: sale?.products?.image_url,
@@ -717,11 +723,19 @@ export const cancelOrderByUser = async (req: CustomRequestI, res: Response) => {
         orderId: Number(order.idOrder),
         userId: Number(req.idUser),
       },
-      data: { status: "cancelled", shipStatus: "cancelado" },
+      data: {
+        status: "cancelled",
+        shipStatus: "cancelado",
+        statusChangedAt: new Date(),
+      },
     });
     await prisma.shipments.updateMany({
       where: { orderId: Number(order.idOrder) },
-      data: { status: "cancelado" },
+      data: {
+        status: "cancelado",
+        lastUpdated: new Date(),
+        statusChangedAt: new Date(),
+      },
     });
 
     return res.status(200).json({
