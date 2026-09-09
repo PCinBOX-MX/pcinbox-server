@@ -473,6 +473,7 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
   try {
     const {
       status = "allState",
+      paymentStatus = "allPayment",
       startDate = "",
       endDate = "",
       searchProduct = "",
@@ -483,6 +484,36 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
     const pageNumber = Math.max(1, Number(page) || 1);
     const pageSize = Math.min(50, Math.max(1, Number(limit) || 10));
 
+    const normalizedPaymentStatus = String(paymentStatus || "allPayment")
+      .trim()
+      .toLowerCase();
+
+    const orderStatusesForFilter = (() => {
+      if (
+        normalizedPaymentStatus === "paid" ||
+        normalizedPaymentStatus === "pagado"
+      ) {
+        return ["paid"] as const;
+      }
+      if (
+        normalizedPaymentStatus === "pending" ||
+        normalizedPaymentStatus === "payment_pending" ||
+        normalizedPaymentStatus === "pendiente"
+      ) {
+        return ["payment_pending", "pending"] as const;
+      }
+      if (
+        normalizedPaymentStatus === "cancelled" ||
+        normalizedPaymentStatus === "canceled" ||
+        normalizedPaymentStatus === "cancelado"
+      ) {
+        return ["cancelled", "refunded"] as const;
+      }
+      // Historial: pagadas, pendientes de pago (SPEI/OXXO) y canceladas.
+      // Excluye borradores (`pay_method: esperando`) y rechazos/contracargos.
+      return ["paid", "payment_pending", "cancelled", "refunded"] as const;
+    })();
+
     const orders = await prisma.order.findMany({
       where: {
         userId: Number(req.idUser),
@@ -490,7 +521,7 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
           not: "esperando",
         },
         status: {
-          in: ["paid", "cancelled", "refunded"],
+          in: [...orderStatusesForFilter],
         },
       },
       orderBy: {
@@ -537,6 +568,7 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
         createdAt: order?.createdAt,
         updatedAt: order?.updatedAt,
         payment_method: order.pay_method,
+        cardLast4: (order as { cardLast4?: string | null }).cardLast4 ?? null,
         orderStatus: order.status,
         cancelReason: order.cancelReason ?? null,
         idUser: Number(order.userId),
@@ -548,6 +580,7 @@ export const filterSales = async (req: CustomRequestI, res: Response) => {
             idShipment: shipment?.idShipment ?? sale.shipmentId,
             description: sale.products?.description,
             price: sale?.products?.price,
+            lineTotal: toMoneyNumber(sale.total),
             idProduct: sale.products.idProduct,
             name: sale.products.name,
             quantity: sale.quantity,

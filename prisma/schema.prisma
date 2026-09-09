@@ -297,6 +297,7 @@ model order {
   requiredFactura       Int?                   @db.TinyInt
   active                Int?                   @default(1) @db.TinyInt
   cancelReason          String?                @db.Text
+  cardLast4             String?                @db.VarChar(4)
   users                 users                  @relation(fields: [userId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "fk_userId_order")
   purchases             purchases[]
   refunds               refunds[]
