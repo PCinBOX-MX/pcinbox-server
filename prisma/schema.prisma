@@ -202,9 +202,11 @@ model billing {
   observations String?            @db.Text
   country      billing_country?   @default(M_xico)
   createdAt    DateTime?          @default(now()) @db.DateTime(0)
+  active       Int?               @default(1) @db.TinyInt
   users        users              @relation(fields: [userId], references: [idUser], onDelete: NoAction, onUpdate: NoAction, map: "billing_ibfk_1")
 
   @@index([userId], map: "userId")
+  @@index([userId, active], map: "billing_userId_active_idx")
 }
 
 model cotizaciones {
