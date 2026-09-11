@@ -6,6 +6,7 @@ import {
   assertDiscountAllowed,
   computeLineTotal,
   getProductSerialFlags,
+  hydratePosProductsByIds,
   invalidatePosSearchCatalog,
   nextPosFolio,
   roundMoney,
@@ -40,6 +41,15 @@ import {
 import { completePendingPosSale } from "../../services/pos/posComplete.service";
 import { createLinkPayOnline } from "../../services/pasarelaPagos.service";
 import { resolvePosCashBranchId } from "../../constants/pcinbox-pickup.constants";
+import {
+  formatPcinboxBranchDisplayName,
+  isPosSellableBranchName,
+} from "../../constants/pcinbox-branch-display";
+import {
+  ensurePosManualProduct,
+  POS_MANUAL_PRODUCT_SKU,
+} from "../../services/pos/posManualProduct.service";
+import { buildPosSaleTicketHtml } from "../../services/pos/posTicketHtml.service";
 
 const PAYMENT_METHODS = new Set([
   "efectivo_sucursal",
@@ -143,6 +153,8 @@ function serializeSale(sale: any) {
     branchId: Number(sale.branchId),
     branchName: sale.branches?.name || null,
     branchCity: sale.branches?.city || null,
+    branchDisplayName:
+      formatPcinboxBranchDisplayName(sale.branches?.name) || null,
     cashierUserId: Number(sale.cashierUserId),
     cashierName: sale.cashier
       ? `${sale.cashier.name || ""} ${sale.cashier.lastname || ""}`.trim()
@@ -167,6 +179,7 @@ function serializeSale(sale: any) {
     idLinkPago: sale.idLinkPago != null ? Number(sale.idLinkPago) : null,
     cashSessionId:
       sale.cashSessionId != null ? Number(sale.cashSessionId) : null,
+    quoteNumber: sale.quoteNumber || null,
     createdAt: sale.createdAt,
     updatedAt: sale.updatedAt,
     items: (sale.items || []).map((it: any) => ({
@@ -176,7 +189,8 @@ function serializeSale(sale: any) {
       branchName: it.branches?.name || null,
       branchCity: it.branches?.city || null,
       branchLabel: it.branches
-        ? [it.branches.name, it.branches.city].filter(Boolean).join(" — ") ||
+        ? formatPcinboxBranchDisplayName(it.branches.name) ||
+          [it.branches.name, it.branches.city].filter(Boolean).join(" — ") ||
           null
         : null,
       productName: it.productName,
@@ -251,10 +265,12 @@ export const listPosBranches = async (_req: Request, res: Response) => {
 
     const mapped = branches.map((b) => {
       const providerName = b.providers?.companyName?.trim() || null;
-      const place = [b.name, b.city].filter(Boolean).join(" — ");
+      const display =
+        formatPcinboxBranchDisplayName(b.name) ||
+        [b.name, b.city].filter(Boolean).join(" — ") ||
+        `Bodega ${b.idBranche}`;
       const label =
-        [place, providerName].filter(Boolean).join(" · ") ||
-        `Sucursal ${b.idBranche}`;
+        [display, providerName].filter(Boolean).join(" · ") || display;
       const id = Number(b.idBranche);
       const providerId = Number(b.providerId);
       return {
@@ -279,7 +295,7 @@ export const listPosBranches = async (_req: Request, res: Response) => {
             city: null,
             providerId: 1,
             providerName: "PCinBOX",
-            label: "Sucursal PCinBOX",
+            label: "Bodega PCinBOX",
             isCashPoint: true,
           }
         : null);
@@ -293,7 +309,7 @@ export const listPosBranches = async (_req: Request, res: Response) => {
   } catch (error: any) {
     return res.status(500).json({
       ok: false,
-      message: error?.message || "Error al listar sucursales",
+      message: error?.message || "Error al listar bodegas",
     });
   }
 };
@@ -307,6 +323,184 @@ export const searchPosProductsHandler = async (req: Request, res: Response) => {
     return res.status(500).json({
       ok: false,
       message: error?.message || "Error al buscar productos",
+    });
+  }
+};
+
+const POS_QUOTE_NUMBER_PATTERN = /^(?:\d{13}|COT-[A-Z0-9-]{8,55})$/;
+
+function parseStoredQuoteLines(raw: unknown): Array<{
+  productId: string;
+  quantity: number;
+  storeId: number | null;
+}> | null {
+  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 100) return null;
+  try {
+    return raw.map((rawLine) => {
+      if (!rawLine || typeof rawLine !== "object") {
+        throw new Error("invalid");
+      }
+      const line = rawLine as Record<string, unknown>;
+      const productId = String(line.productId ?? "").trim();
+      const quantity = Number(line.quantity);
+      const storeId =
+        line.storeId === null || line.storeId === undefined
+          ? null
+          : Number(line.storeId);
+      if (
+        !productId ||
+        !Number.isInteger(quantity) ||
+        quantity < 1 ||
+        quantity > 1_000 ||
+        (storeId !== null &&
+          (!Number.isSafeInteger(storeId) || storeId < 0))
+      ) {
+        throw new Error("invalid");
+      }
+      return { productId, quantity, storeId };
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** Carga una cotización web por número para rellenar el carrito POS. */
+export const getPosQuoteByNumber = async (req: Request, res: Response) => {
+  try {
+    const quoteNumber = String(req.params.quoteNumber || "")
+      .trim()
+      .replace(/^#/, "")
+      .toUpperCase();
+    if (!POS_QUOTE_NUMBER_PATTERN.test(quoteNumber)) {
+      return res.status(400).json({
+        ok: false,
+        code: "QUOTE_INVALID",
+        message: "Número de cotización inválido",
+      });
+    }
+
+    const quote = await prisma.cotizaciones.findFirst({
+      where: { quoteNumber },
+      select: {
+        quoteNumber: true,
+        totalAmount: true,
+        itemCount: true,
+        includeAssemblyService: true,
+        expiresAt: true,
+        createdAt: true,
+        linesJson: true,
+        active: true,
+        users: {
+          select: {
+            name: true,
+            lastname: true,
+            email: true,
+            phone: true,
+          },
+        },
+      },
+    });
+
+    if (!quote) {
+      return res.status(404).json({
+        ok: false,
+        code: "QUOTE_NOT_FOUND",
+        message:
+          "No se encontró esa cotización. Puede que el número sea incorrecto, o que el PDF y sus productos ya se eliminaran automáticamente (se borran a los 5 días desde su creación). Pide al cliente una cotización nueva desde la tienda.",
+      });
+    }
+
+    const expired = quote.expiresAt.getTime() < Date.now();
+    const archived = quote.active !== 1;
+    if (archived || expired) {
+      return res.status(410).json({
+        ok: false,
+        code: "QUOTE_EXPIRED",
+        message:
+          "Esta cotización ya venció o fue archivada. Los PDF se eliminan automáticamente a los 5 días desde su creación, por lo que no se pueden cargar sus productos al POS. Solicita al cliente que genere una cotización nueva en la tienda.",
+        data: {
+          quoteNumber: quote.quoteNumber,
+          createdAt: quote.createdAt,
+          expiresAt: quote.expiresAt,
+          archived,
+          expired,
+        },
+      });
+    }
+
+    const lines = parseStoredQuoteLines(quote.linesJson);
+    if (!lines) {
+      return res.status(400).json({
+        ok: false,
+        code: "QUOTE_NO_LINES",
+        message:
+          "Esta cotización no tiene productos guardados para el POS. Pide al cliente regenerarla desde la tienda (las cotizaciones nuevas sí incluyen las líneas).",
+      });
+    }
+
+    const productIds = lines.map((l) => Number(l.productId));
+    const hydrated = await hydratePosProductsByIds(productIds);
+    const byId = new Map(hydrated.map((p) => [p.idProduct, p]));
+
+    const items: Array<
+      (typeof hydrated)[number] & {
+        quantity: number;
+        quoteStoreId: number | null;
+      }
+    > = [];
+    const missingProductIds: string[] = [];
+
+    for (const line of lines) {
+      const pid = Number(line.productId);
+      const product = byId.get(pid);
+      if (!product || !Number.isSafeInteger(pid)) {
+        missingProductIds.push(line.productId);
+        continue;
+      }
+
+      let suggestedBranchId = product.suggestedBranchId ?? null;
+      if (
+        line.storeId != null &&
+        product.stocksByBranch.some((s) => s.branchId === line.storeId)
+      ) {
+        suggestedBranchId = line.storeId;
+      }
+
+      items.push({
+        ...product,
+        suggestedBranchId,
+        quantity: line.quantity,
+        quoteStoreId: line.storeId,
+      });
+    }
+
+    const customerName = quote.users
+      ? [quote.users.name, quote.users.lastname].filter(Boolean).join(" ").trim()
+      : "";
+
+    return res.json({
+      ok: true,
+      data: {
+        quoteNumber: quote.quoteNumber,
+        totalAmount: Number(quote.totalAmount),
+        itemCount: quote.itemCount,
+        includeAssemblyService: quote.includeAssemblyService,
+        expired: false,
+        expiresAt: quote.expiresAt,
+        createdAt: quote.createdAt,
+        customer: {
+          name: customerName || null,
+          email: quote.users?.email || null,
+          phone: quote.users?.phone || null,
+        },
+        items,
+        missingProductIds,
+      },
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      message: error?.message || "Error al consultar la cotización",
     });
   }
 };
@@ -373,10 +567,32 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       notes,
       items,
       payments,
+      quoteNumber: rawQuoteNumber,
     } = req.body || {};
+
+    const quoteNumberNormalized = String(rawQuoteNumber || "")
+      .trim()
+      .replace(/^#/, "")
+      .toUpperCase();
+    let quoteNumber: string | null = null;
+    if (quoteNumberNormalized) {
+      if (!POS_QUOTE_NUMBER_PATTERN.test(quoteNumberNormalized)) {
+        return res.status(400).json({
+          ok: false,
+          message: "Número de cotización inválido",
+        });
+      }
+      quoteNumber = quoteNumberNormalized;
+    }
 
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ ok: false, message: "Agrega al menos un producto" });
+    }
+    if (items.length > 100) {
+      return res.status(400).json({
+        ok: false,
+        message: "Máximo 100 líneas por venta",
+      });
     }
 
     if (!Array.isArray(payments) || payments.length === 0) {
@@ -399,32 +615,104 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       serials: string[];
       warrantyMonths: number | null;
       requiresSerial: boolean;
+      isManual: boolean;
     }> = [];
 
     let subtotal = 0;
     let discountTotal = 0;
     let hasOpenpayOnlyPending = false;
     const allSerials: string[] = [];
+    const priceOverrides: Array<{
+      productId: number;
+      catalogPrice: number;
+      unitPrice: number;
+    }> = [];
 
     for (const raw of items) {
-      const productId = Number(raw.productId);
       const quantity = Number(raw.quantity);
       const discountPct = Number(raw.discountPct ?? 0);
       const itemBranchId =
         raw.branchId != null && raw.branchId !== ""
           ? Number(raw.branchId)
           : null;
+      const isManual =
+        Boolean(raw.manual) ||
+        String(raw.productId || "").toLowerCase() === "manual";
 
-      if (!Number.isSafeInteger(productId) || productId <= 0) {
-        return res.status(400).json({ ok: false, message: "Producto inválido" });
-      }
       if (!Number.isSafeInteger(quantity) || quantity <= 0) {
         return res.status(400).json({ ok: false, message: "Cantidad inválida" });
+      }
+      if (quantity > 1000) {
+        return res.status(400).json({
+          ok: false,
+          message: "Cantidad máxima por línea: 1000",
+        });
       }
       try {
         assertDiscountAllowed(discountPct, isAdmin);
       } catch (e: any) {
         return res.status(403).json({ ok: false, message: e.message });
+      }
+
+      if (isManual) {
+        const manualName = String(raw.name || raw.productName || "").trim();
+        if (manualName.length < 2) {
+          return res.status(400).json({
+            ok: false,
+            message: "El producto manual necesita un nombre",
+          });
+        }
+        const unitPrice = money(raw.unitPrice);
+        if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+          return res.status(400).json({
+            ok: false,
+            message: `Precio inválido para «${manualName}»`,
+          });
+        }
+        const manualProduct = await ensurePosManualProduct();
+        const requireSerialManual = Boolean(raw.requiresSerial);
+        let serials: string[] = [];
+        try {
+          serials = normalizeItemSerials(
+            quantity,
+            requireSerialManual,
+            raw.serials,
+            manualName,
+          );
+        } catch (e: any) {
+          return res.status(400).json({ ok: false, message: e.message });
+        }
+        const warrantyMonths =
+          raw.warrantyMonths != null && Number(raw.warrantyMonths) > 0
+            ? Math.round(Number(raw.warrantyMonths))
+            : null;
+        const lineBase = roundMoney(unitPrice * quantity);
+        const lineTotal = computeLineTotal(unitPrice, quantity, discountPct);
+        subtotal = roundMoney(subtotal + lineBase);
+        discountTotal = roundMoney(discountTotal + (lineBase - lineTotal));
+        allSerials.push(...serials);
+        normalizedItems.push({
+          productId: Number(manualProduct.idProduct),
+          branchId: null,
+          quantity,
+          unitPrice,
+          discountPct: roundMoney(discountPct),
+          lineTotal,
+          productName: manualName.slice(0, 255),
+          productSku:
+            String(raw.sku || "").trim().slice(0, 255) || null,
+          productUpc: String(raw.upc || "").trim().slice(0, 255) || null,
+          serials,
+          warrantyMonths,
+          requiresSerial: requireSerialManual || serials.length > 0,
+          isManual: true,
+        });
+        continue;
+      }
+
+      const productId = Number(raw.productId);
+      if (!Number.isSafeInteger(productId) || productId <= 0) {
+        return res.status(400).json({ ok: false, message: "Producto inválido" });
       }
 
       const product = await prisma.products.findFirst({
@@ -447,22 +735,29 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       }
 
       const serialFlags = await getProductSerialFlags(productId);
+      const productProviderId = Number(product.providerId);
 
       const providerBranches = await prisma.branches.findMany({
         where: { providerId: product.providerId },
-        select: { idBranche: true },
+        select: { idBranche: true, name: true },
       });
+      const sellableBranches = providerBranches.filter((b) =>
+        isPosSellableBranchName(productProviderId, b.name),
+      );
       const providerBranchIds = new Set(
-        providerBranches.map((b) => Number(b.idBranche)),
+        sellableBranches.map((b) => Number(b.idBranche)),
       );
       const stockRows = await prisma.product_stock.findMany({
         where: { productId },
         select: { branchId: true, stock: true },
       });
-      const hasBranchStockRows = stockRows.length > 0;
+      const sellableStockRows = stockRows.filter((row) =>
+        providerBranchIds.has(Number(row.branchId)),
+      );
+      const requiresBranchPicker = providerBranchIds.size > 0;
 
       let resolvedBranchId: number | null = itemBranchId;
-      if (hasBranchStockRows || providerBranchIds.size > 0) {
+      if (requiresBranchPicker) {
         if (
           resolvedBranchId == null ||
           !Number.isSafeInteger(resolvedBranchId) ||
@@ -470,45 +765,69 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
         ) {
           return res.status(400).json({
             ok: false,
-            message: `Elige bodega/almacén para: ${product.name}`,
+            message: `Elige bodega para: ${product.name}`,
           });
         }
-        if (
-          providerBranchIds.size > 0 &&
-          !providerBranchIds.has(resolvedBranchId)
-        ) {
+        if (!providerBranchIds.has(resolvedBranchId)) {
           return res.status(400).json({
             ok: false,
-            message: `La bodega elegida no pertenece al proveedor de ${product.name}`,
+            message: `Bodega no válida para: ${product.name}`,
           });
         }
-        const row = stockRows.find(
+        const stockRow = sellableStockRows.find(
           (r) => Number(r.branchId) === resolvedBranchId,
         );
-        const available = Number(row?.stock ?? 0);
+        const available =
+          stockRow != null
+            ? Number(stockRow.stock)
+            : // sin fila product_stock: no hay existencia por bodega
+              0;
         if (available < quantity) {
           return res.status(400).json({
             ok: false,
-            message: `Stock insuficiente en bodega para ${product.name} (disponible ${available})`,
+            message: `Stock insuficiente en bodega para: ${product.name} (disp. ${available})`,
           });
         }
       } else {
-        // PCinbox u otros sin product_stock: solo stock global
+        // Provider 1 / sin bodegas vendibles: stock global, sin branchId.
         resolvedBranchId = null;
         if (Number(product.stock) < quantity) {
           return res.status(400).json({
             ok: false,
-            message: `Stock global insuficiente para ${product.name}`,
+            message: `Stock insuficiente para: ${product.name}`,
           });
         }
       }
 
-      const unitPrice =
+      const catalogPrice = money(product.price);
+      const requestedPrice =
         raw.unitPrice != null && Number.isFinite(Number(raw.unitPrice))
           ? money(raw.unitPrice)
-          : money(product.price);
+          : catalogPrice;
+      let unitPrice = catalogPrice;
+      let priceOverride = false;
+      if (
+        isAdmin &&
+        Boolean(raw.priceOverride) &&
+        Number.isFinite(requestedPrice) &&
+        requestedPrice >= 0
+      ) {
+        unitPrice = requestedPrice;
+        priceOverride = Math.abs(requestedPrice - catalogPrice) > 0.009;
+      } else if (Math.abs(requestedPrice - catalogPrice) > 0.009) {
+        // Ignora precios manipulados desde el cliente.
+        unitPrice = catalogPrice;
+      }
       if (!Number.isFinite(unitPrice) || unitPrice < 0) {
         return res.status(400).json({ ok: false, message: "Precio inválido" });
+      }
+
+      if (priceOverride) {
+        priceOverrides.push({
+          productId,
+          catalogPrice,
+          unitPrice,
+        });
       }
 
       let serials: string[] = [];
@@ -542,6 +861,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
         serials,
         warrantyMonths: serialFlags.warrantyMonths,
         requiresSerial: Boolean(serialFlags.requiresSerial),
+        isManual: false,
       });
     }
 
@@ -649,12 +969,8 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
 
     const cashAmount = settlement.cashDue;
 
-    // Encabezado / caja: siempre sucursal física PCinBOX (no se elige en UI)
+    // Encabezado / caja: siempre bodega física PCinBOX (ignorar branchId del body).
     let branch = await resolvePosCashBranchId();
-    if (branchId != null && branchId !== "") {
-      const explicit = Number(branchId);
-      if (Number.isSafeInteger(explicit) && explicit > 0) branch = explicit;
-    }
     if (!branch || !Number.isSafeInteger(branch) || branch <= 0) {
       const fromItems = normalizedItems.find((it) => it.branchId != null)?.branchId;
       branch = fromItems != null ? Number(fromItems) : NaN;
@@ -663,8 +979,57 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       return res.status(400).json({
         ok: false,
         message:
-          "No está configurada la sucursal de cobro PCinBOX (sin branch providerId=1 ni leon2). Revisa branches en BD.",
+          "No está configurada la bodega de cobro PCinBOX (sin branch providerId=1 ni leon2). Revisa branches en BD.",
       });
+    }
+
+    if (quoteNumber) {
+      const quote = await prisma.cotizaciones.findFirst({
+        where: { quoteNumber, active: 1 },
+        select: {
+          quoteNumber: true,
+          expiresAt: true,
+          linesJson: true,
+        },
+      });
+      if (!quote) {
+        return res.status(400).json({
+          ok: false,
+          code: "QUOTE_NOT_FOUND",
+          message:
+            "La cotización vinculada no existe o fue archivada. Quita el vínculo o carga una cotización vigente.",
+        });
+      }
+      if (quote.expiresAt.getTime() < Date.now()) {
+        return res.status(400).json({
+          ok: false,
+          code: "QUOTE_EXPIRED",
+          message:
+            "La cotización vinculada ya venció (retención 5 días). Quita el vínculo o pide una cotización nueva.",
+        });
+      }
+      const quoteLines = parseStoredQuoteLines(quote.linesJson);
+      if (!quoteLines) {
+        return res.status(400).json({
+          ok: false,
+          code: "QUOTE_NO_LINES",
+          message:
+            "La cotización vinculada no tiene líneas válidas. Regenera la cotización en la tienda.",
+        });
+      }
+      const quoteProductIds = new Set(
+        quoteLines.map((l) => Number(l.productId)).filter((id) => id > 0),
+      );
+      const catalogLines = normalizedItems.filter((it) => !it.isManual);
+      const outside = catalogLines.filter(
+        (it) => !quoteProductIds.has(it.productId),
+      );
+      if (outside.length > 0) {
+        return res.status(400).json({
+          ok: false,
+          message: `Hay productos en el carrito que no están en la cotización ${quoteNumber}. Quita el vínculo o alinea el carrito.`,
+        });
+      }
     }
 
     let guestEmail = String(customerEmail || "").trim();
@@ -736,6 +1101,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
           total,
           notes: notes ? String(notes).slice(0, 2000) : null,
           cashSessionId,
+          quoteNumber,
           items: {
             create: normalizedItems.map((it) => ({
               productId: it.productId,
@@ -768,6 +1134,9 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
                   itemCount: normalizedItems.length,
                   isAdmin,
                   posRole,
+                  quoteNumber: quoteNumber || undefined,
+                  priceOverrides:
+                    priceOverrides.length > 0 ? priceOverrides : undefined,
                   cashAmount: cashAmount > 0 ? cashAmount : undefined,
                   cashReceived:
                     settlement.cashReceived > 0
@@ -777,6 +1146,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
                     settlement.changeDue > 0.009
                       ? settlement.changeDue
                       : undefined,
+                  stockReservedOnCreate: true,
                 } as Prisma.InputJsonValue,
               },
               ...(status === "pending_payment" &&
@@ -819,12 +1189,20 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
         await assertSerialsAvailable(tx, allSerialsFlat);
         // Solo asignar series si la venta ya está cobrada. OpenPay pendiente las guarda en evento.
         if (status === "completed") {
+          const usedItemIds = new Set<number>();
           for (const norm of normalizedItems) {
             if (!norm.serials.length) continue;
-            const itemRow = created.items.find(
-              (i) => Number(i.productId) === norm.productId,
-            );
+            const itemRow = created.items.find((i) => {
+              const id = Number(i.idPosSaleItem);
+              if (usedItemIds.has(id)) return false;
+              return (
+                Number(i.productId) === norm.productId &&
+                String(i.productName || "") === norm.productName &&
+                Number(i.quantity) === norm.quantity
+              );
+            });
             if (!itemRow) continue;
+            usedItemIds.add(Number(itemRow.idPosSaleItem));
             await assignSerialsOnSale(tx, {
               productId: norm.productId,
               branchId: norm.branchId ?? branch,
@@ -839,18 +1217,19 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
         }
       }
 
-      if (status === "completed") {
-        await decrementPosStock(
-          tx,
-          normalizedItems.map((it) => ({
+      // Reserva stock también en pending_payment (OpenPay); al confirmar no se vuelve a descontar.
+      {
+        const stockItems = normalizedItems
+          .filter((it) => !it.isManual)
+          .map((it) => ({
             productId: it.productId,
             quantity: it.quantity,
             branchId: it.branchId,
-          })),
-          cashierUserId,
-          folio,
-        );
-        invalidatePosSearchCatalog();
+          }));
+        if (stockItems.length > 0) {
+          await decrementPosStock(tx, stockItems, cashierUserId, folio);
+          invalidatePosSearchCatalog();
+        }
       }
 
       return tx.pos_sales.findFirst({
@@ -995,6 +1374,9 @@ export const listPosSales = async (req: Request, res: Response) => {
     const folio = req.query.folio ? String(req.query.folio).trim() : "";
     const from = req.query.from ? new Date(String(req.query.from)) : null;
     const to = req.query.to ? new Date(String(req.query.to)) : null;
+    const hasSerials =
+      String(req.query.hasSerials || "") === "1" ||
+      String(req.query.hasSerials || "").toLowerCase() === "true";
 
     const where: Prisma.pos_salesWhereInput = {};
     if (branchId && Number.isSafeInteger(branchId)) where.branchId = branchId;
@@ -1006,6 +1388,9 @@ export const listPosSales = async (req: Request, res: Response) => {
       where.createdAt = {};
       if (from && !Number.isNaN(from.getTime())) where.createdAt.gte = from;
       if (to && !Number.isNaN(to.getTime())) where.createdAt.lte = to;
+    }
+    if (hasSerials) {
+      where.serials = { some: {} };
     }
 
     const [total, rows] = await Promise.all([
@@ -1092,65 +1477,83 @@ export const cancelPosSale = async (req: CustomRequestI, res: Response) => {
         createdAt: sale.createdAt,
       });
 
-      if (sale.status === "completed") {
-        await restorePosStock(
-          tx,
-          sale.items.map((it) => ({
-            productId: Number(it.productId),
-            quantity: Number(it.quantity),
-            branchId: it.branchId != null ? Number(it.branchId) : null,
-          })),
-          userId,
-          sale.folio,
-        );
-        invalidatePosSearchCatalog();
-
-        const cashAmount = roundMoney(
-          sale.payments
-            .filter((p) => p.method === "efectivo_sucursal")
-            .reduce((s, p) => s + Number(p.amount), 0),
-        );
-        if (cashAmount > 0) {
-          await recordSaleCashVoidInTx(tx, {
-            branchId: Number(sale.branchId),
-            userId,
-            posSaleId: sale.idPosSale,
-            cashSessionId: sale.cashSessionId,
-            cashAmount,
-          });
-        }
-      }
-
-      await releaseSerialsOnCancel(tx, sale.idPosSale);
-
-      const row = await tx.pos_sales.update({
-        where: { idPosSale: id },
+      const previousStatus = sale.status;
+      const claimed = await tx.pos_sales.updateMany({
+        where: {
+          idPosSale: id,
+          status: { in: ["completed", "pending_payment"] },
+        },
         data: {
           status: "cancelled",
           cancelReason: reason.slice(0, 2000),
           cancelledAt: new Date(),
           cancelledByUserId: userId,
-          events: {
-            create: {
-              userId,
-              eventType: "cancelled",
-              reason: reason.slice(0, 2000),
-              payload: {
-                previousStatus: sale.status,
-                cancelledByRole: posRole,
-              } as Prisma.InputJsonValue,
-            },
-          },
         },
+      });
+      if (claimed.count === 0) {
+        throw new Error("No se pudo cancelar (estado ya cambió). Reintenta.");
+      }
+
+      // Stock se reserva al crear (completed y pending OpenPay).
+      if (previousStatus === "completed" || previousStatus === "pending_payment") {
+        const manualProduct = await ensurePosManualProduct(tx);
+        const manualProductId = Number(manualProduct.idProduct);
+        const stockLines = sale.items
+          .filter((it) => Number(it.productId) !== manualProductId)
+          .map((it) => ({
+            productId: Number(it.productId),
+            quantity: Number(it.quantity),
+            branchId: it.branchId != null ? Number(it.branchId) : null,
+          }));
+        if (stockLines.length > 0) {
+          await restorePosStock(tx, stockLines, userId, sale.folio);
+          invalidatePosSearchCatalog();
+        }
+
+        if (previousStatus === "completed") {
+          const cashAmount = roundMoney(
+            sale.payments
+              .filter((p) => p.method === "efectivo_sucursal")
+              .reduce((s, p) => s + Number(p.amount), 0),
+          );
+          if (cashAmount > 0) {
+            await recordSaleCashVoidInTx(tx, {
+              branchId: Number(sale.branchId),
+              userId,
+              posSaleId: sale.idPosSale,
+              cashSessionId: sale.cashSessionId,
+              cashAmount,
+              folio: sale.folio,
+            });
+          }
+        }
+      }
+
+      await releaseSerialsOnCancel(tx, sale.idPosSale);
+
+      await tx.pos_sale_events.create({
+        data: {
+          posSaleId: sale.idPosSale,
+          userId,
+          eventType: "cancelled",
+          reason: reason.slice(0, 2000),
+          payload: {
+            previousStatus,
+            cancelledByRole: posRole,
+          } as Prisma.InputJsonValue,
+        },
+      });
+
+      return tx.pos_sales.findFirst({
+        where: { idPosSale: id },
         include: saleInclude,
       });
-      return row;
     });
 
     return res.json({
       ok: true,
       message: "Venta cancelada. El inventario fue restaurado si aplica.",
-      data: serializeSale(updated),
+      data: serializeSale(updated!),
     });
   } catch (error: any) {
     return res.status(400).json({
@@ -1160,7 +1563,7 @@ export const cancelPosSale = async (req: CustomRequestI, res: Response) => {
   }
 };
 
-/** Confirma pago de venta pending_payment (p.ej. OpenPay ya cobrado) y descuenta stock. */
+/** Confirma pago de venta pending_payment (p.ej. OpenPay ya cobrado). Stock ya reservado. */
 export const confirmPosPayment = async (req: CustomRequestI, res: Response) => {
   try {
     const userId = Number(req.idUser);
@@ -1169,10 +1572,27 @@ export const confirmPosPayment = async (req: CustomRequestI, res: Response) => {
       return res.status(400).json({ ok: false, message: "ID inválido" });
     }
 
+    const posRole = await resolvePosRole(req);
+    if (posRole !== "admin") {
+      return res.status(403).json({
+        ok: false,
+        message:
+          "Solo un administrador puede confirmar el pago manualmente. El cobro OpenPay debe llegar por webhook.",
+      });
+    }
+    const note = String(req.body?.note || "").trim();
+    if (note.length < 5) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          "Indica un motivo/nota de confirmación manual (mín. 5 caracteres).",
+      });
+    }
+
     const result = await completePendingPosSale({
       idPosSale: id,
       userId,
-      note: String(req.body?.note || "").trim() || null,
+      note,
       source: "manual",
     });
 
@@ -1180,7 +1600,7 @@ export const confirmPosPayment = async (req: CustomRequestI, res: Response) => {
       ok: true,
       message: result.alreadyCompleted
         ? "La venta ya estaba completada"
-        : "Pago confirmado. Inventario descontado.",
+        : "Pago confirmado. El inventario ya estaba reservado.",
       data: serializeSale(result.sale),
     });
   } catch (error: any) {
@@ -1199,7 +1619,7 @@ export const completePosByOpenPayLink = async (req: Request, res: Response) => {
   try {
     const expected = process.env.POS_INTERNAL_SECRET?.trim();
     const provided = String(
-      req.headers["x-pos-internal-secret"] || req.body?.secret || "",
+      req.headers["x-pos-internal-secret"] || "",
     ).trim();
     if (!expected || !provided || provided !== expected) {
       return res.status(401).json({ ok: false, message: "No autorizado" });
@@ -1381,112 +1801,189 @@ export const getPosSaleTicket = async (req: Request, res: Response) => {
     }
 
     const data = serializeSale(sale);
+    const html = buildPosSaleTicketHtml(data);
+
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store");
+    return res.send(html);
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      message: error?.message || "Error al generar ticket",
+    });
+  }
+};
+
+/** Hoja de garantía printable (estilo Dicotech). */
+export const getPosSaleWarrantySheet = async (req: Request, res: Response) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      return res.status(400).json({ ok: false, message: "ID inválido" });
+    }
+    const sale = await prisma.pos_sales.findFirst({
+      where: { idPosSale: id },
+      include: saleInclude,
+    });
+    if (!sale) {
+      return res.status(404).json({ ok: false, message: "Venta no encontrada" });
+    }
+    if (sale.status !== "completed") {
+      return res.status(400).json({
+        ok: false,
+        message:
+          "La hoja de garantía solo aplica a ventas completadas con series entregadas.",
+      });
+    }
+
+    const data = serializeSale(sale);
+    const hasSoldSerials = (data.items || []).some(
+      (it: any) => Array.isArray(it.serials) && it.serials.length > 0,
+    );
+    if (!hasSoldSerials) {
+      return res.status(400).json({
+        ok: false,
+        message: "Esta venta no tiene números de serie para garantía.",
+      });
+    }
     const formatMoney = (n: number) =>
       n.toLocaleString("es-MX", { style: "currency", currency: "MXN" });
-    const methodLabel: Record<string, string> = {
-      efectivo_sucursal: "Efectivo",
-      tarjeta_sucursal: "Tarjeta",
-      tarjeta_credito_sucursal: "Tarjeta de Crédito",
-      tarjeta_debito_sucursal: "Tarjeta de Débito",
-      transferencia_bancaria: "Transferencia",
-      openpay_link: "OpenPay (link)",
+    const branchLabel =
+      formatPcinboxBranchDisplayName(data.branchName) ||
+      formatPcinboxBranchDisplayName(
+        data.items.find((it: { branchName?: string | null }) => it.branchName)
+          ?.branchName,
+      ) ||
+      "PCinBOX-León";
+    const warrantyDate = new Date(data.createdAt).toISOString().slice(0, 10);
+    const ADDRESS =
+      "Blvd. Juan Alonso de Torres Pte. No. 1917 Local 1 Col. Unión Comunitaria de León C.P. 37239 León, Gto., México";
+
+    const meaningfulCode = (value?: string | null) => {
+      const v = String(value || "").trim();
+      if (!v) return null;
+      if (v === "__POS_MANUAL__") return null;
+      if (/^manual$/i.test(v)) return null;
+      return v;
     };
 
-    const itemsHtml = data.items
-      .map((it: (typeof data.items)[number]) => {
-        const serialLine =
-          it.serials && it.serials.length
-            ? `<br/><small>S/N: ${it.serials
-                .map((s: { serialNumber: string }) => escapeHtml(s.serialNumber))
-                .join(", ")}</small>`
-            : "";
-        return `
+    const rows: string[] = [];
+    for (const it of data.items) {
+      const serials =
+        it.serials && it.serials.length
+          ? it.serials
+          : [
+              {
+                serialNumber: "—",
+                warrantyMonths: null as number | null,
+                warrantyExpiresAt: null as string | null,
+              },
+            ];
+      for (const s of serials) {
+        const months =
+          s.warrantyMonths != null && Number(s.warrantyMonths) > 0
+            ? Number(s.warrantyMonths)
+            : null;
+          const tiempo =
+          months == null
+            ? "Según marca / centro de servicio"
+            : months >= 12 && months % 12 === 0
+              ? `${months / 12} Año${months / 12 === 1 ? "" : "s"}`
+              : `${months} mes${months === 1 ? "" : "es"}`;
+        const upc = meaningfulCode(it.productUpc) || "—";
+        const clave = meaningfulCode(it.productSku) || "—";
+        rows.push(`
       <tr>
-        <td>${escapeHtml(it.productName)}${it.productSku ? `<br/><small>SKU: ${escapeHtml(it.productSku)}</small>` : ""}${serialLine}</td>
-        <td style="text-align:center">${it.quantity}</td>
+        <td>${escapeHtml(upc)}</td>
+        <td>${escapeHtml(clave)}</td>
+        <td>${escapeHtml(it.productName)}</td>
         <td style="text-align:right">${formatMoney(it.unitPrice)}</td>
-        <td style="text-align:right">${it.discountPct ? `${it.discountPct}%` : "—"}</td>
-        <td style="text-align:right">${formatMoney(it.lineTotal)}</td>
-      </tr>`;
-      })
-      .join("");
-
-    const paymentsHtml = data.payments
-      .map(
-        (p: (typeof data.payments)[number]) =>
-          `<div class="pay-line"><span>${methodLabel[p.method] || p.method}${
-            p.reference ? `<br/><small>${escapeHtml(p.reference)}</small>` : ""
-          }</span><strong>${formatMoney(p.amount)}</strong></div>`,
-      )
-      .join("");
+        <td style="text-align:center">${escapeHtml(tiempo)}</td>
+        <td>${escapeHtml(s.serialNumber || "—")}</td>
+      </tr>`);
+      }
+    }
 
     const html = `<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Ticket ${escapeHtml(data.folio)}</title>
+  <title>Hoja de Garantía ${escapeHtml(data.folio)}</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: Arial, Helvetica, sans-serif; color: #111; background: #f3f4f6; padding: 24px; }
-    .ticket { max-width: 420px; margin: 0 auto; background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 24px 20px; }
-    h1 { font-size: 20px; text-align: center; color: #bb3d4b; margin-bottom: 4px; }
-    .muted { color: #6b7280; font-size: 12px; text-align: center; margin-bottom: 16px; }
-    .meta { font-size: 13px; margin-bottom: 14px; line-height: 1.5; }
-    table { width: 100%; border-collapse: collapse; font-size: 12px; margin: 12px 0; }
-    th { text-align: left; border-bottom: 1px solid #e5e7eb; padding: 6px 4px; color: #6b7280; font-weight: 600; }
-    td { padding: 8px 4px; border-bottom: 1px solid #f3f4f6; vertical-align: top; }
-    .totals { margin-top: 12px; font-size: 13px; }
-    .totals .row { display: flex; justify-content: space-between; margin: 4px 0; }
-    .totals .grand { font-size: 18px; font-weight: 700; margin-top: 8px; padding-top: 8px; border-top: 2px dashed #e5e7eb; }
-    .pay-line { display: flex; justify-content: space-between; font-size: 13px; margin: 4px 0; }
+    .sheet { max-width: 900px; margin: 0 auto; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 28px 24px; }
+    .head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 12px; }
+    .brand { font-size: 22px; font-weight: 800; color: #bb3d4b; letter-spacing: 0.02em; }
+    h1 { font-size: 20px; text-align: center; flex: 1; text-transform: uppercase; letter-spacing: 0.04em; }
+    .addr { font-size: 11px; color: #6b7280; line-height: 1.4; margin-bottom: 14px; text-align: center; }
+    .meta { font-size: 13px; line-height: 1.7; margin-bottom: 16px; }
+    .meta strong { display: inline-block; min-width: 140px; }
+    h2 { font-size: 14px; margin: 16px 0 8px; text-transform: uppercase; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { border: 1px solid #d1d5db; padding: 8px 6px; vertical-align: top; }
+    th { background: #f9fafb; text-align: left; }
+    .terms { margin-top: 18px; font-size: 11px; line-height: 1.45; color: #374151; }
+    .terms ol { padding-left: 18px; }
+    .terms li { margin: 6px 0; }
     .actions { margin-top: 18px; display: flex; gap: 8px; justify-content: center; }
-    button { border: 0; background: #bb3d4b; color: #fff; padding: 10px 16px; border-radius: 8px; font-weight: 700; cursor: pointer; }
-    .status { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; background: #ecfdf5; color: #166534; }
-    .status.cancelled { background: #fef2f2; color: #991b1b; }
-    .status.pending_payment { background: #fffbeb; color: #92400e; }
+    button { border: 0; background: #bb3d4b; color: #fff; padding: 10px 18px; border-radius: 8px; font-weight: 700; cursor: pointer; }
     @media print {
       body { background: #fff; padding: 0; }
       .actions { display: none; }
-      .ticket { border: 0; box-shadow: none; max-width: 100%; }
+      .sheet { border: 0; }
     }
   </style>
 </head>
 <body>
-  <div class="ticket">
-    <h1>PCinBOX</h1>
-    <p class="muted">Ticket de Punto de Venta</p>
-    <div class="meta">
-      <div><strong>Folio:</strong> ${escapeHtml(data.folio)}
-        <span class="status ${escapeHtml(data.status)}">${escapeHtml(data.status)}</span>
-      </div>
-      <div><strong>Fecha:</strong> ${new Date(data.createdAt).toLocaleString("es-MX")}</div>
-      <div><strong>Sucursal:</strong> ${escapeHtml([data.branchName, data.branchCity].filter(Boolean).join(" — ") || String(data.branchId))}</div>
-      <div><strong>Cliente:</strong> ${escapeHtml(data.customerName || "Público general")}</div>
-      <div><strong>Vendedor:</strong> ${escapeHtml(data.cashierName || "—")}</div>
+  <div class="sheet">
+    <div class="head">
+      <div class="brand">PCinBOX</div>
+      <h1>Hoja de Garantía</h1>
+      <div style="width:90px"></div>
     </div>
+    <p class="addr">${escapeHtml(ADDRESS)} · ${escapeHtml(branchLabel)}</p>
+    <div class="meta">
+      <div><strong>Número de garantía:</strong> ${escapeHtml(branchLabel)} ${escapeHtml(String(data.idPosSale))} ${escapeHtml(warrantyDate)}</div>
+      <div><strong>Folio venta:</strong> ${escapeHtml(data.folio)}</div>
+      <div><strong>Vendedor:</strong> PCinBOX</div>
+      <div><strong>Cliente:</strong> ${escapeHtml(data.customerName || "Público general")}</div>
+    </div>
+    <h2>Detalle de garantía</h2>
     <table>
       <thead>
         <tr>
-          <th>Producto</th>
-          <th style="text-align:center">Cant</th>
-          <th style="text-align:right">P.U.</th>
-          <th style="text-align:right">Desc.</th>
-          <th style="text-align:right">Importe</th>
+          <th>UPC</th>
+          <th>Clave</th>
+          <th>Descripción</th>
+          <th>Costo</th>
+          <th>Tiempo / cobertura</th>
+          <th>Serie</th>
         </tr>
       </thead>
-      <tbody>${itemsHtml}</tbody>
+      <tbody>${rows.join("")}</tbody>
     </table>
-    <div class="totals">
-      <div class="row"><span>Subtotal</span><span>${formatMoney(data.subtotal)}</span></div>
-      <div class="row"><span>Descuentos</span><span>-${formatMoney(data.discountTotal)}</span></div>
-      <div class="row grand"><span>TOTAL</span><span>${formatMoney(data.total)}</span></div>
+    <div class="terms">
+      <p style="margin-bottom:10px;font-size:11px;color:#6b7280">
+        Si la columna «Tiempo / cobertura» indica «Según marca / centro de servicio»,
+        el trámite se realiza con el fabricante o su red autorizada conforme a sus políticas.
+        No se captura un plazo fijo en mostrador salvo que el producto lo tenga definido en catálogo.
+      </p>
+      <ol>
+        <li>Para marcas con centro de servicio autorizado (Acer, Samsung, HP, Lenovo, Dell, etc.), la garantía se tramita directamente con el fabricante.</li>
+        <li>Si el producto se presenta a garantía y funciona correctamente, podrá aplicarse un cargo de revisión.</li>
+        <li>La compatibilidad del producto es responsabilidad del cliente; no procede devolución por incompatibilidad.</li>
+        <li>En dispositivos de almacenamiento la garantía cubre el equipo, no recuperación de datos ni instalación de software.</li>
+        <li>No procede garantía con daño físico (rayones, golpes, quemaduras, pines doblados, etc.).</li>
+        <li>El producto debe entregarse completo (accesorios, manuales y empaque cuando aplique).</li>
+        <li>El valor de reposición puede considerar depreciación y condiciones de mercado.</li>
+        <li>En monitores/pantallas, la garantía por pixeles muertos aplica conforme a política de marca (referencia: 5 o más).</li>
+        <li>El cambio inmediato por falla de fábrica aplica solo dentro de los primeros 2 meses, sujeto a revisión y políticas vigentes.</li>
+        <li>No hay cambios ni devoluciones por arrepentimiento de compra.</li>
+        <li>Las licencias e instalaciones de software no cuentan con garantía de este documento.</li>
+      </ol>
     </div>
-    <div style="margin-top:14px">
-      <strong style="font-size:13px">Formas de pago</strong>
-      ${paymentsHtml}
-    </div>
-    ${data.cancelReason ? `<p class="muted" style="margin-top:12px;text-align:left">Cancelación: ${escapeHtml(data.cancelReason)}</p>` : ""}
     <div class="actions">
       <button type="button" onclick="window.print()">Imprimir</button>
     </div>
@@ -1500,7 +1997,7 @@ export const getPosSaleTicket = async (req: Request, res: Response) => {
   } catch (error: any) {
     return res.status(500).json({
       ok: false,
-      message: error?.message || "Error al generar ticket",
+      message: error?.message || "Error al generar hoja de garantía",
     });
   }
 };
@@ -1587,15 +2084,23 @@ export const closePosCash = async (req: CustomRequestI, res: Response) => {
     const branchId = Number(req.body?.branchId);
     const closingCounted = Number(req.body?.closingCounted);
     const notes = req.body?.notes ? String(req.body.notes) : null;
+    const differenceReason = req.body?.differenceReason
+      ? String(req.body.differenceReason)
+      : null;
     const data = await closeCashSession({
       branchId,
       userId,
       closingCounted,
       notes,
+      differenceReason,
     });
+    const diff = Number(data.difference || 0);
+    const hasDiff = Math.abs(diff) > 0.009;
     return res.json({
       ok: true,
-      message: "Corte de caja cerrado",
+      message: hasDiff
+        ? `Corte cerrado con descuadre de ${diff.toFixed(2)}`
+        : "Corte de caja cerrado (cuadrado)",
       data,
     });
   } catch (error: any) {
@@ -1609,8 +2114,8 @@ export const closePosCash = async (req: CustomRequestI, res: Response) => {
 export const listPosCashSessions = async (req: Request, res: Response) => {
   try {
     const branchId = req.query.branchId ? Number(req.query.branchId) : null;
-    const page = Number(req.query.page) || 1;
-    const limit = Number(req.query.limit) || 15;
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 15));
     const result = await listCashSessions({ branchId, page, limit });
     return res.json({ ok: true, ...result });
   } catch (error: any) {

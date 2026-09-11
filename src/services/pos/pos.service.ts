@@ -1,6 +1,10 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prismaClient";
 import {
+  formatPcinboxBranchDisplayName,
+  isPosSellableBranchName,
+} from "../../constants/pcinbox-branch-display";
+import {
   normalizeMatchText,
   normalizeSearchTerm,
 } from "../../utils/searchNormalization";
@@ -76,6 +80,54 @@ export type PosBranchStock = {
   label: string;
 };
 
+type ProviderBranchRow = {
+  idBranche: bigint | number;
+  name: string | null;
+  city: string | null;
+  providerId: bigint | number;
+  providers: { companyName: string | null } | null;
+};
+
+/** Bodegas POS por proveedor (mismas reglas que pcinbox-client). */
+function buildPosStocksByBranch(params: {
+  providerId: number;
+  providerName: string | null;
+  providerBranchList: ProviderBranchRow[];
+  stockMap: Map<number, number>;
+}): PosBranchStock[] {
+  const { providerId, providerName, providerBranchList, stockMap } = params;
+
+  const stocksByBranch: PosBranchStock[] = providerBranchList
+    .filter((b) => isPosSellableBranchName(providerId, b.name))
+    .map((b) => {
+      const id = Number(b.idBranche);
+      const display =
+        formatPcinboxBranchDisplayName(b.name) ||
+        [b.name, b.city].filter(Boolean).join(" — ") ||
+        `Bodega ${id}`;
+      return {
+        branchId: id,
+        name: b.name,
+        city: b.city,
+        providerId: Number(b.providerId),
+        providerName,
+        stock: stockMap.get(id) ?? 0,
+        // Label limpio (como client): sin concatenar proveedor.
+        label: display,
+      };
+    });
+
+  // Provider 1 sin fila de bodega: stock global (sin selector de bodegas).
+  if (providerId === 1 && stocksByBranch.length === 0) {
+    return [];
+  }
+
+  stocksByBranch.sort(
+    (a, b) => b.stock - a.stock || a.label.localeCompare(b.label),
+  );
+  return stocksByBranch;
+}
+
 /** Variantes simples para LIKE sin acentos (a↔á, e↔é…). */
 function accentVariants(token: string): string[] {
   const map: Record<string, string> = {
@@ -129,8 +181,8 @@ function scorePosProduct(
     if (name.includes(token)) score += 30;
     if (marcaName.includes(token)) score += 20;
     if (categoryName.includes(token)) score += 18;
-    if (sku.includes(token) || upc.includes(token)) score += 35;
-    if (idExt.includes(token)) score += 10;
+    if (sku.includes(token) || upc.includes(token) || idExt.includes(token))
+      score += 35;
     if (description.includes(token)) score += 8;
   }
 
@@ -185,12 +237,19 @@ export async function searchPosProducts(q: string, limit = 25) {
 
   const or: Prisma.productsWhereInput[] = [];
 
+  // Siempre permitir buscar por idProductExt (clave externa / número de parte)
+  if (raw.length >= 2) {
+    or.push(
+      { idProductExt: { equals: raw } },
+      { idProductExt: { contains: raw } },
+    );
+  }
+
   // Código de barras / SKU corto: match directo primero
   if (/^\d{6,}$/.test(raw) || /^[A-Za-z0-9\-_.]{4,}$/.test(raw)) {
     or.push(
       { sku: { equals: raw } },
       { upc: { equals: raw } },
-      { idProductExt: { equals: raw } },
       { sku: { contains: raw } },
       { upc: { contains: raw } },
     );
@@ -344,39 +403,12 @@ export async function searchPosProducts(q: string, limit = 25) {
     const stockMap = stockByProduct.get(Number(p.idProduct)) || new Map();
 
     const providerBranchList = branchesByProvider.get(providerId) || [];
-    const stocksByBranch: PosBranchStock[] = providerBranchList.map((b) => {
-      const id = Number(b.idBranche);
-      const place = [b.name, b.city].filter(Boolean).join(" — ");
-      const pName = b.providers?.companyName?.trim() || providerName;
-      return {
-        branchId: id,
-        name: b.name,
-        city: b.city,
-        providerId: Number(b.providerId),
-        providerName: pName,
-        stock: stockMap.get(id) ?? 0,
-        label: [place, pName].filter(Boolean).join(" · ") || `Bodega ${id}`,
-      };
+    const stocksByBranch = buildPosStocksByBranch({
+      providerId,
+      providerName,
+      providerBranchList,
+      stockMap,
     });
-
-    // Si no hay branches del proveedor pero sí stock en otras, mostrar esas.
-    if (stocksByBranch.length === 0 && stockMap.size > 0) {
-      for (const [bid, qty] of stockMap) {
-        stocksByBranch.push({
-          branchId: bid,
-          name: null,
-          city: null,
-          providerId,
-          providerName,
-          stock: qty,
-          label: `Bodega ${bid}`,
-        });
-      }
-    }
-
-    stocksByBranch.sort(
-      (a, b) => b.stock - a.stock || a.label.localeCompare(b.label),
-    );
     const preferred =
       stocksByBranch.find((s) => s.stock > 0) || stocksByBranch[0] || null;
 
@@ -393,7 +425,9 @@ export async function searchPosProducts(q: string, limit = 25) {
       category: p.categories?.name || null,
       image_url: p.image_url,
       requiresSerial: Boolean((p as any).requiresSerial),
-      warrantyMonths: (p as any).warrantyMonths ?? 12,
+      warrantyMonths: (p as any).warrantyMonths != null && Number((p as any).warrantyMonths) > 0
+        ? Number((p as any).warrantyMonths)
+        : null,
       providerId,
       providerName,
       stocksByBranch,
@@ -406,6 +440,151 @@ export async function searchPosProducts(q: string, limit = 25) {
 
 export function invalidatePosSearchCatalog() {
   // no-op: ya no hay caché full-catalog
+}
+
+/** Hidrata productos por id con el mismo shape que search (stock por bodega). */
+export async function hydratePosProductsByIds(productIds: number[]) {
+  const ids = [
+    ...new Set(
+      productIds
+        .map((id) => Number(id))
+        .filter((id) => Number.isSafeInteger(id) && id > 0),
+    ),
+  ];
+  if (ids.length === 0) return [];
+
+  const hasSerialCols = await productsHaveSerialColumns();
+  const lightSelect = {
+    idProduct: true,
+    idProductExt: true,
+    name: true,
+    description: true,
+    price: true,
+    stock: true,
+    sku: true,
+    upc: true,
+    image_url: true,
+    providerId: true,
+    marca: { select: { name: true } },
+    categories: { select: { name: true } },
+    providers: { select: { companyName: true } },
+  } as const;
+
+  const products = hasSerialCols
+    ? await prisma.products.findMany({
+        where: { active: 1, idProduct: { in: ids } },
+        select: {
+          ...lightSelect,
+          requiresSerial: true,
+          warrantyMonths: true,
+        },
+      })
+    : await prisma.products.findMany({
+        where: { active: 1, idProduct: { in: ids } },
+        select: lightSelect,
+      });
+
+  if (products.length === 0) return [];
+
+  const foundIds = products.map((p) => Number(p.idProduct));
+  const providerIds = [
+    ...new Set(
+      products.map((p) => Number(p.providerId)).filter((id) => id > 0),
+    ),
+  ];
+
+  const [stockRows, providerBranches] = await Promise.all([
+    prisma.product_stock.findMany({
+      where: { productId: { in: foundIds } },
+      select: {
+        productId: true,
+        branchId: true,
+        stock: true,
+      },
+    }),
+    providerIds.length > 0
+      ? prisma.branches.findMany({
+          where: { providerId: { in: providerIds } },
+          select: {
+            idBranche: true,
+            name: true,
+            city: true,
+            providerId: true,
+            providers: { select: { companyName: true } },
+          },
+        })
+      : Promise.resolve(
+          [] as Array<{
+            idBranche: bigint | number;
+            name: string | null;
+            city: string | null;
+            providerId: bigint | number;
+            providers: { companyName: string | null } | null;
+          }>,
+        ),
+  ]);
+
+  const stockByProduct = new Map<number, Map<number, number>>();
+  for (const row of stockRows) {
+    const pid = Number(row.productId);
+    const bid = Number(row.branchId);
+    let m = stockByProduct.get(pid);
+    if (!m) {
+      m = new Map();
+      stockByProduct.set(pid, m);
+    }
+    m.set(bid, Number(row.stock ?? 0));
+  }
+
+  const branchesByProvider = new Map<number, typeof providerBranches>();
+  for (const b of providerBranches) {
+    const pid = Number(b.providerId);
+    const list = branchesByProvider.get(pid) || [];
+    list.push(b);
+    branchesByProvider.set(pid, list);
+  }
+
+  return products.map((p: any) => {
+    const providerId = Number(p.providerId);
+    const providerName = p.providers?.companyName?.trim() || null;
+    const stockMap = stockByProduct.get(Number(p.idProduct)) || new Map();
+
+    const providerBranchList = branchesByProvider.get(providerId) || [];
+    const stocksByBranch = buildPosStocksByBranch({
+      providerId,
+      providerName,
+      providerBranchList,
+      stockMap,
+    });
+    const preferred =
+      stocksByBranch.find((s) => s.stock > 0) || stocksByBranch[0] || null;
+
+    return {
+      idProduct: Number(p.idProduct),
+      idProductExt: p.idProductExt,
+      name: p.name,
+      price: Number(p.price),
+      stockGlobal: Number(p.stock),
+      stockBranch: preferred ? preferred.stock : Number(p.stock),
+      sku: p.sku,
+      upc: p.upc,
+      marca: p.marca?.name || null,
+      category: p.categories?.name || null,
+      image_url: p.image_url,
+      requiresSerial: Boolean((p as any).requiresSerial),
+      warrantyMonths:
+        (p as any).warrantyMonths != null &&
+        Number((p as any).warrantyMonths) > 0
+          ? Number((p as any).warrantyMonths)
+          : null,
+      providerId,
+      providerName,
+      stocksByBranch,
+      suggestedBranchId:
+        preferred && preferred.stock > 0 ? preferred.branchId : null,
+      score: 100,
+    };
+  });
 }
 
 export { SELLER_MAX_DISCOUNT_PCT, getProductSerialFlags };

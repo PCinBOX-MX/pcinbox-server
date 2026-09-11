@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prismaClient";
-import { decrementPosStock } from "./posStock.service";
 import { assignSerialsOnSale, assertSerialsAvailable } from "./posSerial.service";
+import { ensurePosManualProduct } from "./posManualProduct.service";
 
 type PendingSerialLine = {
   productId: number;
@@ -11,8 +11,8 @@ type PendingSerialLine = {
 };
 
 /**
- * Completa una venta POS en pending_payment (stock + estado + series diferidas).
- * Usado por confirmación manual y por webhook OpenPay (link ORD-…).
+ * Completa una venta POS en pending_payment.
+ * El stock ya se reservó al crear el pending (OpenPay); aquí solo se confirma estado + series.
  */
 export async function completePendingPosSale(params: {
   idPosSale?: number | null;
@@ -56,21 +56,45 @@ export async function completePendingPosSale(params: {
       throw new Error("Solo se pueden confirmar ventas pendientes de pago");
     }
 
+    // Transición atómica: evita doble confirm concurrente.
+    const claimed = await tx.pos_sales.updateMany({
+      where: { idPosSale: sale.idPosSale, status: "pending_payment" },
+      data: { status: "completed" },
+    });
+    if (claimed.count === 0) {
+      const fresh = await tx.pos_sales.findFirst({
+        where: { idPosSale: sale.idPosSale },
+        include: {
+          branches: { select: { name: true, city: true } },
+          cashier: { select: { name: true, lastname: true } },
+          customer: { select: { name: true, lastname: true, email: true } },
+          items: {
+            include: {
+              branches: { select: { name: true, city: true } },
+              serials: {
+                select: {
+                  idProductSerial: true,
+                  serialNumber: true,
+                  status: true,
+                  warrantyMonths: true,
+                  warrantyExpiresAt: true,
+                },
+              },
+            },
+          },
+          payments: true,
+          events: { orderBy: { createdAt: "asc" } },
+        },
+      });
+      return { sale: fresh!, alreadyCompleted: true as const };
+    }
+
     const userId =
       params.userId && Number.isSafeInteger(params.userId)
         ? params.userId
         : Number(sale.cashierUserId);
 
-    await decrementPosStock(
-      tx,
-      sale.items.map((it) => ({
-        productId: Number(it.productId),
-        quantity: Number(it.quantity),
-        branchId: it.branchId != null ? Number(it.branchId) : null,
-      })),
-      userId,
-      sale.folio,
-    );
+    // Stock ya reservado al crear pending_payment — no volver a descontar.
 
     const pendingEvent = sale.events.find((e) => e.eventType === "serials_pending");
     const pendingPayload = pendingEvent?.payload as
@@ -80,12 +104,24 @@ export async function completePendingPosSale(params: {
     if (lines.length > 0) {
       const flat = lines.flatMap((l) => l.serials);
       await assertSerialsAvailable(tx, flat);
+      const usedItemIds = new Set<number>();
       for (const line of lines) {
         if (!line.serials?.length) continue;
-        const itemRow = sale.items.find(
-          (i) => Number(i.productId) === Number(line.productId),
-        );
+        const itemRow = sale.items.find((i) => {
+          const id = Number(i.idPosSaleItem);
+          if (usedItemIds.has(id)) return false;
+          if (Number(i.productId) !== Number(line.productId)) return false;
+          if (
+            line.branchId != null &&
+            i.branchId != null &&
+            Number(i.branchId) !== Number(line.branchId)
+          ) {
+            return false;
+          }
+          return true;
+        });
         if (!itemRow) continue;
+        usedItemIds.add(Number(itemRow.idPosSaleItem));
         const lineBranch =
           line.branchId != null
             ? Number(line.branchId)
@@ -102,27 +138,27 @@ export async function completePendingPosSale(params: {
             ? Number(sale.customerUserId)
             : null,
           customerName: sale.customerName,
-          warrantyMonths: line.warrantyMonths ?? 12,
+          warrantyMonths: line.warrantyMonths ?? null,
         });
       }
     }
 
-    const row = await tx.pos_sales.update({
-      where: { idPosSale: sale.idPosSale },
+    await tx.pos_sale_events.create({
       data: {
-        status: "completed",
-        events: {
-          create: {
-            userId,
-            eventType: "payment_confirmed",
-            reason: note,
-            payload: {
-              previousStatus: sale.status,
-              source,
-            } as Prisma.InputJsonValue,
-          },
-        },
+        posSaleId: sale.idPosSale,
+        userId,
+        eventType: "payment_confirmed",
+        reason: note,
+        payload: {
+          previousStatus: "pending_payment",
+          source,
+          stockAlreadyReserved: true,
+        } as Prisma.InputJsonValue,
       },
+    });
+
+    const row = await tx.pos_sales.findFirst({
+      where: { idPosSale: sale.idPosSale },
       include: {
         branches: { select: { name: true, city: true } },
         cashier: { select: { name: true, lastname: true } },
@@ -146,7 +182,7 @@ export async function completePendingPosSale(params: {
       },
     });
 
-    return { sale: row, alreadyCompleted: false as const };
+    return { sale: row!, alreadyCompleted: false as const };
   });
 
   return updated;

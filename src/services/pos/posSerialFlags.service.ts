@@ -22,18 +22,23 @@ export async function productsHaveSerialColumns(): Promise<boolean> {
 
 export async function getProductSerialFlags(productId: number): Promise<{
   requiresSerial: boolean;
-  warrantyMonths: number;
+  /** null = sin plazo fijo (marca / centro de servicio). */
+  warrantyMonths: number | null;
 }> {
   const has = await productsHaveSerialColumns();
   if (!has) {
-    return { requiresSerial: false, warrantyMonths: 12 };
+    return { requiresSerial: false, warrantyMonths: null };
   }
   const row = await prisma.products.findFirst({
     where: { idProduct: productId },
     select: { requiresSerial: true, warrantyMonths: true },
   });
+  const months =
+    row?.warrantyMonths != null && Number(row.warrantyMonths) > 0
+      ? Number(row.warrantyMonths)
+      : null;
   return {
     requiresSerial: Boolean(row?.requiresSerial),
-    warrantyMonths: row?.warrantyMonths ?? 12,
+    warrantyMonths: months,
   };
 }

@@ -8,10 +8,22 @@ export type CashMovementType =
   | "sale_cash"
   | "sale_cash_void";
 
+const MAX_CASH_AMOUNT = 9_999_999.99;
+const DIFF_EPS = 0.009;
+
 function money(n: unknown): number {
   const v = Number(n);
   if (!Number.isFinite(v)) return NaN;
   return roundMoney(v);
+}
+
+function assertCashAmount(amount: number, label = "Monto") {
+  if (!Number.isFinite(amount) || amount <= 0) {
+    throw new Error(`${label} inválido`);
+  }
+  if (amount > MAX_CASH_AMOUNT) {
+    throw new Error(`${label} excede el máximo permitido`);
+  }
 }
 
 export function serializeCashSession(session: any, expectedCash?: number) {
@@ -44,6 +56,7 @@ export function serializeCashSession(session: any, expectedCash?: number) {
     expectedCash: expected,
     difference:
       session.difference != null ? Number(session.difference) : null,
+    differenceReason: session.differenceReason || null,
     notes: session.notes || null,
     openedAt: session.openedAt,
     closedAt: session.closedAt,
@@ -115,7 +128,7 @@ export async function requireOpenCashSession(
   const open = await getOpenCashSession(branchId, tx);
   if (!open) {
     throw new Error(
-      "No hay caja abierta en esta sucursal. Abre caja antes de cobrar en efectivo.",
+      "No hay caja abierta en esta bodega. Abre caja antes de cobrar en efectivo.",
     );
   }
   return open;
@@ -130,36 +143,61 @@ export async function openCashSession(params: {
   const { branchId, userId, notes } = params;
   const openingFloat = money(params.openingFloat);
   if (!Number.isSafeInteger(branchId) || branchId <= 0) {
-    throw new Error("Sucursal inválida");
+    throw new Error("Bodega inválida");
   }
   if (!Number.isFinite(openingFloat) || openingFloat < 0) {
     throw new Error("Fondo inicial inválido");
+  }
+  if (openingFloat > MAX_CASH_AMOUNT) {
+    throw new Error("Fondo inicial excede el máximo permitido");
   }
 
   const branch = await prisma.branches.findFirst({
     where: { idBranche: branchId },
     select: { idBranche: true },
   });
-  if (!branch) throw new Error("Sucursal no encontrada");
+  if (!branch) throw new Error("Bodega no encontrada");
 
-  const existing = await getOpenCashSession(branchId);
-  if (existing) {
-    throw new Error("Ya hay una caja abierta en esta sucursal");
+  try {
+    const created = await prisma.$transaction(
+      async (tx) => {
+        const existing = await tx.pos_cash_sessions.findFirst({
+          where: { branchId, status: "open" },
+          select: { idCashSession: true },
+        });
+        if (existing) {
+          throw new Error("Ya hay una caja abierta en esta bodega");
+        }
+
+        return tx.pos_cash_sessions.create({
+          data: {
+            branchId,
+            openedByUserId: userId,
+            status: "open",
+            openingFloat: new Prisma.Decimal(openingFloat),
+            notes: notes ? String(notes).slice(0, 2000) : null,
+          },
+          include: sessionInclude,
+        });
+      },
+      {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+        maxWait: 5_000,
+        timeout: 10_000,
+      },
+    );
+
+    const expected = await computeExpectedCash(prisma, created.idCashSession);
+    return serializeCashSession(created, expected);
+  } catch (error: any) {
+    if (
+      error instanceof Prisma.PrismaClientKnownRequestError &&
+      error.code === "P2002"
+    ) {
+      throw new Error("Ya hay una caja abierta en esta bodega");
+    }
+    throw error;
   }
-
-  const created = await prisma.pos_cash_sessions.create({
-    data: {
-      branchId,
-      openedByUserId: userId,
-      status: "open",
-      openingFloat: new Prisma.Decimal(openingFloat),
-      notes: notes ? String(notes).slice(0, 2000) : null,
-    },
-    include: sessionInclude,
-  });
-
-  const expected = await computeExpectedCash(prisma, created.idCashSession);
-  return serializeCashSession(created, expected);
 }
 
 export async function addManualCashMovement(params: {
@@ -174,40 +212,56 @@ export async function addManualCashMovement(params: {
   if (!["cash_in", "cash_out"].includes(type)) {
     throw new Error("Tipo de movimiento inválido");
   }
-  if (!Number.isFinite(amount) || amount <= 0) {
-    throw new Error("Monto inválido");
-  }
+  assertCashAmount(amount);
   const reason = params.reason ? String(params.reason).trim() : "";
-  if (reason.length < 3) {
-    throw new Error("Indica un motivo (mín. 3 caracteres)");
+  if (reason.length < 5) {
+    throw new Error("Indica un motivo claro (mín. 5 caracteres)");
   }
 
-  const session = await requireOpenCashSession(branchId);
-  const created = await prisma.pos_cash_movements.create({
-    data: {
-      cashSessionId: session.idCashSession,
-      userId,
-      type,
-      amount: new Prisma.Decimal(amount),
-      reason: reason.slice(0, 255),
-    },
-  });
+  return prisma.$transaction(
+    async (tx) => {
+      const session = await requireOpenCashSession(branchId, tx);
+      if (type === "cash_out") {
+        const expected = await computeExpectedCash(tx, session.idCashSession);
+        if (amount > expected + DIFF_EPS) {
+          throw new Error(
+            `La salida (${amount.toFixed(2)}) supera el efectivo esperado en caja (${expected.toFixed(2)}).`,
+          );
+        }
+      }
 
-  const full = await prisma.pos_cash_sessions.findFirst({
-    where: { idCashSession: session.idCashSession },
-    include: sessionInclude,
-  });
-  const expected = await computeExpectedCash(prisma, session.idCashSession);
-  return {
-    movement: {
-      idCashMovement: Number(created.idCashMovement),
-      type: created.type,
-      amount: Number(created.amount),
-      reason: created.reason,
-      createdAt: created.createdAt,
+      const created = await tx.pos_cash_movements.create({
+        data: {
+          cashSessionId: session.idCashSession,
+          userId,
+          type,
+          amount: new Prisma.Decimal(amount),
+          reason: reason.slice(0, 255),
+        },
+      });
+
+      const full = await tx.pos_cash_sessions.findFirst({
+        where: { idCashSession: session.idCashSession },
+        include: sessionInclude,
+      });
+      const expected = await computeExpectedCash(tx, session.idCashSession);
+      return {
+        movement: {
+          idCashMovement: Number(created.idCashMovement),
+          type: created.type,
+          amount: Number(created.amount),
+          reason: created.reason,
+          createdAt: created.createdAt,
+        },
+        session: serializeCashSession(full!, expected),
+      };
     },
-    session: serializeCashSession(full!, expected),
-  };
+    {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      maxWait: 5_000,
+      timeout: 10_000,
+    },
+  );
 }
 
 export async function closeCashSession(params: {
@@ -215,39 +269,63 @@ export async function closeCashSession(params: {
   userId: number;
   closingCounted: number;
   notes?: string | null;
+  differenceReason?: string | null;
 }) {
   const { branchId, userId, notes } = params;
   const closingCounted = money(params.closingCounted);
   if (!Number.isFinite(closingCounted) || closingCounted < 0) {
     throw new Error("Conteo de cierre inválido");
   }
+  if (closingCounted > MAX_CASH_AMOUNT) {
+    throw new Error("Conteo de cierre excede el máximo permitido");
+  }
 
-  const session = await requireOpenCashSession(branchId);
-  const expectedCash = await computeExpectedCash(prisma, session.idCashSession);
-  const difference = roundMoney(closingCounted - expectedCash);
+  return prisma.$transaction(
+    async (tx) => {
+      const session = await requireOpenCashSession(branchId, tx);
+      const expectedCash = await computeExpectedCash(tx, session.idCashSession);
+      const difference = roundMoney(closingCounted - expectedCash);
+      const hasDiff = Math.abs(difference) > DIFF_EPS;
+      const differenceReason = String(params.differenceReason || "")
+        .trim()
+        .slice(0, 500);
 
-  const closed = await prisma.pos_cash_sessions.update({
-    where: { idCashSession: session.idCashSession },
-    data: {
-      status: "closed",
-      closedByUserId: userId,
-      closedAt: new Date(),
-      closingCounted: new Prisma.Decimal(closingCounted),
-      expectedCash: new Prisma.Decimal(expectedCash),
-      difference: new Prisma.Decimal(difference),
-      notes: notes
-        ? [session.notes, notes].filter(Boolean).join("\n---\n").slice(0, 4000)
-        : session.notes,
+      if (hasDiff && differenceReason.length < 5) {
+        throw new Error(
+          `Hay descuadre de ${difference.toFixed(2)}. Debes indicar el motivo del descuadre (mín. 5 caracteres) antes de cerrar.`,
+        );
+      }
+
+      const closed = await tx.pos_cash_sessions.update({
+        where: { idCashSession: session.idCashSession },
+        data: {
+          status: "closed",
+          closedByUserId: userId,
+          closedAt: new Date(),
+          closingCounted: new Prisma.Decimal(closingCounted),
+          expectedCash: new Prisma.Decimal(expectedCash),
+          difference: new Prisma.Decimal(difference),
+          differenceReason: hasDiff ? differenceReason : null,
+          notes: notes
+            ? [session.notes, notes].filter(Boolean).join("\n---\n").slice(0, 4000)
+            : session.notes,
+        },
+        include: sessionInclude,
+      });
+
+      return serializeCashSession(closed, expectedCash);
     },
-    include: sessionInclude,
-  });
-
-  return serializeCashSession(closed, expectedCash);
+    {
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      maxWait: 5_000,
+      timeout: 10_000,
+    },
+  );
 }
 
 export async function getCashStatus(branchId: number) {
   if (!Number.isSafeInteger(branchId) || branchId <= 0) {
-    throw new Error("Sucursal inválida");
+    throw new Error("Bodega inválida");
   }
   const open = await prisma.pos_cash_sessions.findFirst({
     where: { branchId, status: "open" },
@@ -265,8 +343,6 @@ export async function getCashStatus(branchId: number) {
   const expectedCash = await computeExpectedCash(prisma, open.idCashSession);
   const paymentSummary = await summarizeSessionPayments(
     Number(open.idCashSession),
-    Number(open.branchId),
-    open.openedAt,
   );
   return {
     open: true,
@@ -276,22 +352,12 @@ export async function getCashStatus(branchId: number) {
   };
 }
 
-async function summarizeSessionPayments(
-  cashSessionId: number,
-  branchId: number,
-  openedAt: Date,
-) {
+/** Solo ventas ligadas a la sesión (sin huérfanas del intervalo). */
+async function summarizeSessionPayments(cashSessionId: number) {
   const sales = await prisma.pos_sales.findMany({
     where: {
-      branchId,
-      status: "completed",
-      OR: [
-        { cashSessionId },
-        {
-          cashSessionId: null,
-          createdAt: { gte: openedAt },
-        },
-      ],
+      cashSessionId,
+      status: { in: ["completed", "cancelled"] },
     },
     include: { payments: true },
   });
@@ -306,14 +372,13 @@ async function summarizeSessionPayments(
   };
   let salesCount = 0;
   let salesTotal = 0;
+  let cancelledCount = 0;
 
   for (const sale of sales) {
-    // Prefer sales linked to this session; for unlinked completed sales in window, include non-cash only once
-    const linked = sale.cashSessionId != null && Number(sale.cashSessionId) === cashSessionId;
-    const inWindow =
-      sale.cashSessionId == null && sale.createdAt >= openedAt;
-    if (!linked && !inWindow) continue;
-
+    if (sale.status === "cancelled") {
+      cancelledCount += 1;
+      continue;
+    }
     salesCount += 1;
     salesTotal = roundMoney(salesTotal + Number(sale.total));
     for (const p of sale.payments) {
@@ -322,7 +387,7 @@ async function summarizeSessionPayments(
     }
   }
 
-  return { salesCount, salesTotal, byMethod };
+  return { salesCount, salesTotal, cancelledCount, byMethod };
 }
 
 export async function listCashSessions(params: {
@@ -389,6 +454,17 @@ export async function recordSaleCashInTx(
   },
 ) {
   if (params.cashAmount <= 0) return null;
+  assertCashAmount(params.cashAmount, "Monto de efectivo");
+
+  const already = await tx.pos_cash_movements.findFirst({
+    where: {
+      posSaleId: params.posSaleId,
+      type: "sale_cash",
+    },
+    select: { idCashMovement: true, cashSessionId: true },
+  });
+  if (already) return already.cashSessionId;
+
   const session = await requireOpenCashSession(params.branchId, tx);
   await tx.pos_cash_movements.create({
     data: {
@@ -403,7 +479,12 @@ export async function recordSaleCashInTx(
   return session.idCashSession;
 }
 
-/** Revierte efectivo al cancelar una venta (si había sesión vinculada o abierta). */
+/**
+ * Revierte efectivo al cancelar.
+ * - Si la sesión original sigue abierta → sale_cash_void ahí.
+ * - Si ya cerró → ajusta en la caja abierta actual (obligatorio abrirla).
+ * - Idempotente si ya existe void para la venta.
+ */
 export async function recordSaleCashVoidInTx(
   tx: Prisma.TransactionClient,
   params: {
@@ -412,28 +493,54 @@ export async function recordSaleCashVoidInTx(
     posSaleId: bigint | number;
     cashSessionId: bigint | number | null;
     cashAmount: number;
+    folio?: string | null;
   },
 ) {
   if (params.cashAmount <= 0) return;
+
+  const alreadyVoid = await tx.pos_cash_movements.findFirst({
+    where: {
+      posSaleId: params.posSaleId,
+      type: "sale_cash_void",
+    },
+    select: { idCashMovement: true },
+  });
+  if (alreadyVoid) return;
+
   let sessionId = params.cashSessionId;
-  if (!sessionId) {
+  let reason = "Cancelación venta POS";
+
+  if (sessionId) {
+    const session = await tx.pos_cash_sessions.findFirst({
+      where: { idCashSession: sessionId },
+      select: { status: true, idCashSession: true },
+    });
+    if (session && session.status === "open") {
+      sessionId = session.idCashSession;
+    } else {
+      const open = await getOpenCashSession(params.branchId, tx);
+      if (!open) {
+        throw new Error(
+          "La caja de esta venta ya está cerrada y no hay caja abierta ahora. Abre caja e intenta cancelar de nuevo: el efectivo se ajustará en la sesión actual.",
+        );
+      }
+      const closedId = session ? Number(session.idCashSession) : null;
+      reason = `Ajuste por cancelación${
+        params.folio ? ` ${params.folio}` : ""
+      }${closedId ? ` (caja original #${closedId} ya cerrada)` : ""}`.slice(
+        0,
+        255,
+      );
+      sessionId = open.idCashSession;
+    }
+  } else {
     const open = await getOpenCashSession(params.branchId, tx);
     if (!open) {
       throw new Error(
-        "No se puede cancelar el efectivo: no hay caja abierta ni sesión vinculada. Abre caja o cancela solo si no hubo efectivo.",
+        "No se puede cancelar el efectivo: no hay caja abierta ni sesión vinculada. Abre caja e intenta de nuevo.",
       );
     }
     sessionId = open.idCashSession;
-  } else {
-    const session = await tx.pos_cash_sessions.findFirst({
-      where: { idCashSession: sessionId },
-      select: { status: true },
-    });
-    if (!session || session.status !== "open") {
-      throw new Error(
-        "La caja de esta venta ya está cerrada. No se puede cancelar el efectivo; reabre o ajusta con un movimiento manual.",
-      );
-    }
   }
 
   await tx.pos_cash_movements.create({
@@ -442,7 +549,7 @@ export async function recordSaleCashVoidInTx(
       userId: params.userId,
       type: "sale_cash_void",
       amount: new Prisma.Decimal(roundMoney(params.cashAmount)),
-      reason: "Cancelación venta POS",
+      reason,
       posSaleId: params.posSaleId,
     },
   });

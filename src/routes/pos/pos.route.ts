@@ -12,8 +12,10 @@ import {
   createPosSale,
   getPosCashSessionById,
   getPosCashStatus,
+  getPosQuoteByNumber,
   getPosSaleById,
   getPosSaleTicket,
+  getPosSaleWarrantySheet,
   getPosSerial,
   listInventoryMovements,
   listPosBranches,
@@ -38,12 +40,14 @@ router.use(MiddleAuthRoute, MiddlePosRoute);
 
 router.get("/branches", listPosBranches);
 router.get("/products/search", searchPosProductsHandler);
+router.get("/quotes/:quoteNumber", getPosQuoteByNumber);
 router.post("/products/:productId/serial-config", updatePosProductSerialConfig);
 router.get("/customers/search", searchPosCustomers);
 router.post("/sales", createPosSale);
 router.get("/sales", listPosSales);
 router.get("/sales/:id", getPosSaleById);
 router.get("/sales/:id/ticket", getPosSaleTicket);
+router.get("/sales/:id/warranty", getPosSaleWarrantySheet);
 router.post("/sales/:id/cancel", cancelPosSale);
 router.post("/sales/:id/confirmPayment", confirmPosPayment);
 router.post("/sales/:id/retryPaymentLink", retryPosPaymentLink);

@@ -231,6 +231,8 @@ model cotizaciones {
   totalAmount            Decimal  @db.Decimal(12, 2)
   itemCount              Int
   includeAssemblyService Boolean  @default(false)
+  /// Líneas del carrito al generar (productId, quantity, storeId) para rehidratación POS.
+  linesJson              Json?
   active                 Int      @default(1) @db.TinyInt
   createdAt              DateTime @default(now()) @db.DateTime(0)
   expiresAt              DateTime @db.DateTime(0)
@@ -460,6 +462,8 @@ model pos_sales {
   linkReferencia   String?             @db.VarChar(64)
   idLinkPago       Int?
   cashSessionId    BigInt?
+  /// Folio de cotización web (quoteNumber) si la venta nació de una cotización.
+  quoteNumber      String?             @db.VarChar(64)
   createdAt        DateTime            @default(now()) @db.DateTime(0)
   updatedAt        DateTime            @default(now()) @updatedAt @db.DateTime(0)
   branches         branches            @relation(fields: [branchId], references: [idBranche], onDelete: NoAction, onUpdate: NoAction, map: "fk_pos_sales_branchId")
@@ -477,6 +481,7 @@ model pos_sales {
   @@index([status, createdAt], map: "idx_pos_sales_status_createdAt")
   @@index([createdAt], map: "idx_pos_sales_createdAt")
   @@index([cashSessionId], map: "idx_pos_sales_cashSessionId")
+  @@index([quoteNumber], map: "idx_pos_sales_quoteNumber")
 }
 
 model pos_sale_items {
@@ -611,6 +616,8 @@ model pos_cash_sessions {
   closingCounted  Decimal?                  @db.Decimal(12, 2)
   expectedCash    Decimal?                  @db.Decimal(12, 2)
   difference      Decimal?                  @db.Decimal(12, 2)
+  /// Motivo obligatorio cuando hay descuadre (difference ≠ 0) al cerrar.
+  differenceReason String?                  @db.VarChar(500)
   notes           String?                   @db.Text
   openedAt        DateTime                  @default(now()) @db.DateTime(0)
   closedAt        DateTime?                 @db.DateTime(0)

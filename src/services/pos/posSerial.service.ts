@@ -110,24 +110,25 @@ export async function assignSerialsOnSale(
   const months =
     params.warrantyMonths != null && params.warrantyMonths > 0
       ? params.warrantyMonths
-      : 12;
-  const warrantyExpiresAt = addMonths(soldAt, months);
+      : null;
+  const warrantyExpiresAt =
+    months != null ? addMonths(soldAt, months) : null;
 
   for (const serialNumber of params.serials) {
     const existing = await tx.product_serials.findFirst({
       where: { serialNumber },
     });
     if (existing) {
-      if (existing.status !== "available" && existing.status !== "returned") {
-        throw new Error(`La serie ${serialNumber} no está disponible`);
-      }
       if (Number(existing.productId) !== params.productId) {
         throw new Error(
           `La serie ${serialNumber} pertenece a otro producto`,
         );
       }
-      await tx.product_serials.update({
-        where: { idProductSerial: existing.idProductSerial },
+      const claimed = await tx.product_serials.updateMany({
+        where: {
+          idProductSerial: existing.idProductSerial,
+          status: { in: ["available", "returned"] },
+        },
         data: {
           status: "sold",
           branchId: params.branchId,
@@ -140,6 +141,9 @@ export async function assignSerialsOnSale(
           warrantyExpiresAt,
         },
       });
+      if (claimed.count === 0) {
+        throw new Error(`La serie ${serialNumber} no está disponible`);
+      }
     } else {
       await tx.product_serials.create({
         data: {

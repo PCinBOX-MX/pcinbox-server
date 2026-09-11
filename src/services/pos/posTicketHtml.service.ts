@@ -1,0 +1,249 @@
+/** HTML del ticket de venta POS (layout tipo proveedor, branding PCinBOX). */
+
+import {
+  resolveTicketBranchLabel,
+} from "../../constants/pcinbox-branch-display";
+
+const SELLER = "PCinBOX";
+const LOGO =
+  "https://ik.imagekit.io/pcinboxkit/logos/logo.png?updatedAt=1759534318587";
+const WEB = "www.pcinbox.com.mx";
+const ADDRESS =
+  "Blvd. Juan Alonso de Torres Pte. No. 1917 Local 1 Col. Unión Comunitaria de León C.P. 37239 León, Gto., México";
+
+function isMeaningfulCode(value?: string | null): boolean {
+  const v = String(value || "").trim();
+  if (!v) return false;
+  if (v === "__POS_MANUAL__") return false;
+  if (/^manual$/i.test(v)) return false;
+  return true;
+}
+
+type TicketSale = {
+  folio: string;
+  status: string;
+  createdAt: string;
+  branchName?: string | null;
+  customerName?: string | null;
+  cancelReason?: string | null;
+  quoteNumber?: string | null;
+  subtotal: number;
+  discountTotal: number;
+  total: number;
+  items: Array<{
+    productId: number;
+    productName: string;
+    productSku: string | null;
+    productUpc: string | null;
+    branchName?: string | null;
+    quantity: number;
+    unitPrice: number;
+    discountPct: number;
+    lineTotal: number;
+    serials?: Array<{ serialNumber: string }>;
+  }>;
+  payments: Array<{
+    method: string;
+    amount: number;
+    reference: string | null;
+  }>;
+};
+
+function formatMoney(n: number) {
+  return Number(n || 0).toLocaleString("es-MX", {
+    style: "currency",
+    currency: "MXN",
+  });
+}
+
+function escapeHtml(s: string) {
+  return String(s || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+const METHOD_LABEL: Record<string, string> = {
+  efectivo_sucursal: "Efectivo",
+  tarjeta_sucursal: "Tarjeta",
+  tarjeta_credito_sucursal: "Tarjeta de Crédito",
+  tarjeta_debito_sucursal: "Tarjeta de Débito",
+  transferencia_bancaria: "Transferencia",
+  openpay_link: "OpenPay",
+};
+
+function parsePagoCambio(sale: TicketSale) {
+  let nonCash = 0;
+  let cashReceived = 0;
+  let hasCashReceived = false;
+  let cambio = 0;
+  for (const p of sale.payments) {
+    if (p.method === "efectivo_sucursal") {
+      const ref = String(p.reference || "");
+      const rec = ref.match(/Recibido\s+([\d.]+)/i);
+      const cam = ref.match(/Cambio\s+([\d.]+)/i);
+      if (cam) cambio = Math.max(cambio, Number(cam[1]) || 0);
+      if (rec) {
+        cashReceived += Number(rec[1]) || 0;
+        hasCashReceived = true;
+      } else {
+        cashReceived += Number(p.amount) || 0;
+      }
+    } else {
+      nonCash += Number(p.amount) || 0;
+    }
+  }
+  const sum = nonCash + cashReceived;
+  const pago =
+    hasCashReceived || sum > 0 ? sum : Number(sale.total) || 0;
+  return { pago, cambio };
+}
+
+function truncateTicketName(name: string, max = 220): string {
+  const s = String(name || "").trim();
+  if (s.length <= max) return s;
+  return `${s.slice(0, Math.max(1, max - 1))}…`;
+}
+
+export function buildPosSaleTicketHtml(data: TicketSale): string {
+  const { pago, cambio } = parsePagoCambio(data);
+  const productCount = data.items.reduce(
+    (s, it) => s + Number(it.quantity || 0),
+    0,
+  );
+  const headerBranch = resolveTicketBranchLabel({
+    itemBranchName: data.items.find((it) => it.branchName)?.branchName,
+    saleBranchName: data.branchName,
+  });
+
+  const itemsHtml = data.items
+    .map((it) => {
+      const itemBranch = resolveTicketBranchLabel({
+        itemBranchName: it.branchName,
+        saleBranchName: data.branchName,
+      });
+      const serialLine =
+        it.serials && it.serials.length
+          ? `<div class="muted">S/N: ${it.serials
+              .map((s) => escapeHtml(s.serialNumber))
+              .join(", ")}</div>`
+          : "";
+      return `
+      <div class="item">
+        <div class="item-name">${escapeHtml(truncateTicketName(it.productName))}</div>
+        ${isMeaningfulCode(it.productSku) ? `<div>Clave: ${escapeHtml(String(it.productSku))}</div>` : ""}
+        ${isMeaningfulCode(it.productUpc) ? `<div>UPC: ${escapeHtml(String(it.productUpc))}</div>` : ""}
+        <div>Bodega: ${escapeHtml(itemBranch)}</div>
+        <div>Cantidad: ${it.quantity}</div>
+        <div class="item-prices">
+          <span>${formatMoney(it.unitPrice)}</span>
+          <span>${formatMoney(it.lineTotal)}</span>
+        </div>
+        ${serialLine}
+      </div>`;
+    })
+    .join("");
+
+  const paymentsHtml = data.payments
+    .map(
+      (p) =>
+        `<div class="pay-line"><span>${METHOD_LABEL[p.method] || p.method}${
+          p.reference ? `<br/><small>${escapeHtml(p.reference)}</small>` : ""
+        }</span><strong>${formatMoney(p.amount)}</strong></div>`,
+    )
+    .join("");
+
+  return `<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ticket ${escapeHtml(data.folio)}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #111; background: #f3f4f6; padding: 24px; }
+    .ticket { max-width: 360px; margin: 0 auto; background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 20px 16px; }
+    .brand { text-align: center; margin-bottom: 10px; }
+    .brand img { width: 72px; height: 72px; object-fit: contain; display: block; margin: 0 auto 6px; }
+    .brand h1 { font-size: 22px; letter-spacing: -0.02em; color: #bb3d4b; }
+    .brand .title { font-size: 13px; font-weight: 700; margin-top: 4px; }
+    .brand .branch { font-size: 12px; margin-top: 2px; }
+    .muted { color: #6b7280; font-size: 11px; }
+    .meta { font-size: 12px; margin: 12px 0; line-height: 1.55; }
+    .sep { text-align: center; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; margin: 12px 0 8px; color: #374151; }
+    .item { font-size: 12px; line-height: 1.45; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px dashed #e5e7eb; }
+    .item-name { font-weight: 700; margin-bottom: 2px; word-break: break-word; overflow-wrap: anywhere; }
+    .item-prices { display: flex; justify-content: space-between; margin-top: 4px; font-weight: 600; gap: 8px; }
+    .totals { margin-top: 8px; font-size: 13px; }
+    .totals .row { display: flex; justify-content: space-between; margin: 4px 0; }
+    .count { text-align: center; font-size: 16px; font-weight: 800; margin: 14px 0 8px; }
+    .policy { text-align: center; font-size: 10px; color: #6b7280; line-height: 1.4; margin-top: 8px; }
+    .pay-line { display: flex; justify-content: space-between; font-size: 12px; margin: 4px 0; gap: 8px; }
+    .actions { margin-top: 18px; display: flex; gap: 8px; justify-content: center; }
+    button { border: 0; background: #bb3d4b; color: #fff; padding: 10px 16px; border-radius: 8px; font-weight: 700; cursor: pointer; font-family: inherit; }
+    @media print {
+      body { background: #fff; padding: 0; }
+      .actions { display: none; }
+      .ticket { border: 0; box-shadow: none; max-width: 100%; border-radius: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="ticket">
+    <div class="brand">
+      <img src="${LOGO}" alt="PCinBOX" />
+      <h1>PCinBOX</h1>
+      <div class="title">TICKET DE VENTA</div>
+      <div class="branch">${escapeHtml(headerBranch)}</div>
+      <div class="muted" style="margin-top:6px;line-height:1.35">${escapeHtml(ADDRESS)}</div>
+      <div class="muted">${escapeHtml(WEB)}</div>
+    </div>
+    <div class="meta">
+      <div>Número Venta: ${escapeHtml(data.folio)}</div>
+      ${
+        data.status && data.status !== "completed"
+          ? `<div style="color:#b45309;font-weight:700">Estado: ${escapeHtml(
+              data.status === "cancelled"
+                ? "CANCELADA"
+                : data.status === "pending_payment"
+                  ? "PENDIENTE DE PAGO"
+                  : String(data.status).toUpperCase(),
+            )}</div>`
+          : ""
+      }
+      ${
+        data.quoteNumber
+          ? `<div>No. Cotización: ${escapeHtml(String(data.quoteNumber))}</div>`
+          : ""
+      }
+      <div>Fecha: ${new Date(data.createdAt).toLocaleString("es-MX")}</div>
+      <div>Vendedor: ${escapeHtml(SELLER)}</div>
+      <div>Cliente: ${escapeHtml(data.customerName || "Público general")}</div>
+    </div>
+    <div class="sep">*** PRODUCTOS ***</div>
+    ${itemsHtml}
+    <div class="totals">
+      <div class="row"><span>Total:</span><span>${formatMoney(data.total)}</span></div>
+      <div class="row"><span>Pago:</span><span>${formatMoney(pago)}</span></div>
+      <div class="row"><span>Cambio:</span><span>${formatMoney(cambio)}</span></div>
+    </div>
+    <div class="count">Productos: ${productCount}</div>
+    <p class="policy">Para cambios y devoluciones consulta nuestras políticas en ${escapeHtml(WEB)}.</p>
+    ${
+      data.payments.length
+        ? `<div style="margin-top:14px"><strong style="font-size:12px">Detalle de pago</strong>${paymentsHtml}</div>`
+        : ""
+    }
+    ${
+      data.cancelReason
+        ? `<p class="muted" style="margin-top:12px;text-align:left">Cancelación: ${escapeHtml(data.cancelReason)}</p>`
+        : ""
+    }
+    <div class="actions">
+      <button type="button" onclick="window.print()">Imprimir</button>
+    </div>
+  </div>
+</body>
+</html>`;
+}

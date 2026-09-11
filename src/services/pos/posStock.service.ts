@@ -8,7 +8,7 @@ export type PosStockLine = {
 };
 
 /**
- * Decrementa stock global + por sucursal (si hay branchId) de forma atómica.
+ * Decrementa stock global + por bodega (si hay branchId) de forma atómica.
  */
 export async function decrementPosStock(
   tx: Prisma.TransactionClient,
@@ -83,7 +83,7 @@ export async function decrementPosStock(
 }
 
 /**
- * Restaura stock global + sucursal al cancelar una venta POS.
+ * Restaura stock global + bodega al cancelar una venta POS.
  */
 export async function restorePosStock(
   tx: Prisma.TransactionClient,
