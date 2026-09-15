@@ -1,7 +1,6 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prismaClient";
 import { assignSerialsOnSale, assertSerialsAvailable } from "./posSerial.service";
-import { ensurePosManualProduct } from "./posManualProduct.service";
 
 type PendingSerialLine = {
   productId: number;

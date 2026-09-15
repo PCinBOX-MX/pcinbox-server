@@ -180,13 +180,19 @@ export async function releaseSerialsOnCancel(
 export async function searchSerials(q: string, limit = 20) {
   const term = String(q || "").trim();
   if (term.length < 2) return [];
+
+  const or: Prisma.product_serialsWhereInput[] = [];
+  // Serial completo → índice unique; parcial → prefijo (mejor que LIKE %x%).
+  if (term.length >= 8 && !/\s/.test(term)) {
+    or.push({ serialNumber: { equals: term } });
+  }
+  or.push({ serialNumber: { startsWith: term } });
+  if (term.length >= 3) {
+    or.push({ customerName: { startsWith: term } });
+  }
+
   const rows = await prisma.product_serials.findMany({
-    where: {
-      OR: [
-        { serialNumber: { contains: term } },
-        { customerName: { contains: term } },
-      ],
-    },
+    where: { OR: or },
     include: serialInclude,
     take: Math.min(Math.max(limit, 1), 50),
     orderBy: { updatedAt: "desc" },

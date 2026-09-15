@@ -1,25 +1,36 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "../../db/prismaClient";
 
-/** SKU fijo del producto comodín para líneas capturadas a mano en POS. */
+/** SKU comodín: producto capturado a mano en POS. */
 export const POS_MANUAL_PRODUCT_SKU = "__POS_MANUAL__";
+/** SKU comodín: servicio adicional capturado en POS. */
+export const POS_MANUAL_SERVICE_SKU = "__POS_SERVICE__";
+
+export type PosManualKind = "product" | "service";
 
 type DbClient = typeof prisma | Prisma.TransactionClient;
 
-export async function ensurePosManualProduct(tx: DbClient = prisma) {
+const SELECT = {
+  idProduct: true,
+  name: true,
+  price: true,
+  sku: true,
+  upc: true,
+  stock: true,
+  providerId: true,
+  warrantyMonths: true,
+  requiresSerial: true,
+} as const;
+
+async function ensurePlaceholder(
+  tx: DbClient,
+  kind: PosManualKind,
+) {
+  const sku =
+    kind === "service" ? POS_MANUAL_SERVICE_SKU : POS_MANUAL_PRODUCT_SKU;
   const existing = await tx.products.findFirst({
-    where: { sku: POS_MANUAL_PRODUCT_SKU },
-    select: {
-      idProduct: true,
-      name: true,
-      price: true,
-      sku: true,
-      upc: true,
-      stock: true,
-      providerId: true,
-      warrantyMonths: true,
-      requiresSerial: true,
-    },
+    where: { sku },
+    select: SELECT,
   });
   if (existing) return existing;
 
@@ -29,32 +40,53 @@ export async function ensurePosManualProduct(tx: DbClient = prisma) {
   });
   if (!provider) {
     throw new Error(
-      "No hay proveedores en catálogo para crear el producto manual POS",
+      "No hay proveedores en catálogo para crear el producto/servicio manual POS",
     );
   }
 
   return tx.products.create({
     data: {
-      name: "Producto manual POS",
-      description: "Línea capturada manualmente en Punto de Venta",
+      name:
+        kind === "service"
+          ? "Servicio adicional POS"
+          : "Producto manual POS",
+      description:
+        kind === "service"
+          ? "Servicio adicional capturado en Punto de Venta (sin stock)"
+          : "Línea capturada manualmente en Punto de Venta",
       price: 0,
       stock: 999999,
-      sku: POS_MANUAL_PRODUCT_SKU,
+      sku,
       providerId: provider.idProvider,
       active: 1,
       requiresSerial: false,
-      warrantyMonths: 12,
+      warrantyMonths: kind === "service" ? 0 : 12,
     },
-    select: {
-      idProduct: true,
-      name: true,
-      price: true,
-      sku: true,
-      upc: true,
-      stock: true,
-      providerId: true,
-      warrantyMonths: true,
-      requiresSerial: true,
-    },
+    select: SELECT,
   });
+}
+
+/** @deprecated Prefer ensurePosManualLineProduct(kind) */
+export async function ensurePosManualProduct(tx: DbClient = prisma) {
+  return ensurePlaceholder(tx, "product");
+}
+
+export async function ensurePosManualLineProduct(
+  kind: PosManualKind = "product",
+  tx: DbClient = prisma,
+) {
+  return ensurePlaceholder(tx, kind === "service" ? "service" : "product");
+}
+
+/** IDs de comodines que no deben tocar inventario. */
+export async function getPosManualPlaceholderIds(
+  tx: DbClient = prisma,
+): Promise<number[]> {
+  const rows = await tx.products.findMany({
+    where: {
+      sku: { in: [POS_MANUAL_PRODUCT_SKU, POS_MANUAL_SERVICE_SKU] },
+    },
+    select: { idProduct: true },
+  });
+  return rows.map((r) => Number(r.idProduct));
 }

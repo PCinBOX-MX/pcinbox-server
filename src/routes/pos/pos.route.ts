@@ -19,6 +19,7 @@ import {
   getPosSerial,
   listInventoryMovements,
   listPosBranches,
+  listPosCashSessionMovements,
   listPosCashSessions,
   listPosSales,
   markPosSerialRma,
@@ -57,6 +58,7 @@ router.post("/cash/open", openPosCash);
 router.post("/cash/movements", addPosCashMovement);
 router.post("/cash/close", closePosCash);
 router.get("/cash/sessions", listPosCashSessions);
+router.get("/cash/sessions/:id/movements", listPosCashSessionMovements);
 router.get("/cash/sessions/:id", getPosCashSessionById);
 
 router.get("/inventory/movements", listInventoryMovements);

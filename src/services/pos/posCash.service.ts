@@ -26,13 +26,41 @@ function assertCashAmount(amount: number, label = "Monto") {
   }
 }
 
-export function serializeCashSession(session: any, expectedCash?: number) {
+export function serializeCashMovement(m: any) {
+  return {
+    idCashMovement: Number(m.idCashMovement),
+    type: m.type,
+    amount: Number(m.amount),
+    reason: m.reason,
+    posSaleId: m.posSaleId != null ? Number(m.posSaleId) : null,
+    userId: Number(m.userId),
+    userName: m.users
+      ? `${m.users.name || ""} ${m.users.lastname || ""}`.trim()
+      : null,
+    createdAt: m.createdAt,
+  };
+}
+
+export function serializeCashSession(
+  session: any,
+  expectedCash?: number,
+  opts?: { movementsTotal?: number },
+) {
   const expected =
     expectedCash != null
       ? expectedCash
       : session.expectedCash != null
         ? Number(session.expectedCash)
         : null;
+
+  const movementsTotal =
+    opts?.movementsTotal != null
+      ? opts.movementsTotal
+      : session._count?.movements != null
+        ? Number(session._count.movements)
+        : Array.isArray(session.movements)
+          ? session.movements.length
+          : 0;
 
   return {
     idCashSession: Number(session.idCashSession),
@@ -60,29 +88,32 @@ export function serializeCashSession(session: any, expectedCash?: number) {
     notes: session.notes || null,
     openedAt: session.openedAt,
     closedAt: session.closedAt,
-    movements: (session.movements || []).map((m: any) => ({
-      idCashMovement: Number(m.idCashMovement),
-      type: m.type,
-      amount: Number(m.amount),
-      reason: m.reason,
-      posSaleId: m.posSaleId != null ? Number(m.posSaleId) : null,
-      userId: Number(m.userId),
-      userName: m.users
-        ? `${m.users.name || ""} ${m.users.lastname || ""}`.trim()
-        : null,
-      createdAt: m.createdAt,
-    })),
+    movementsTotal,
+    movements: (session.movements || []).map(serializeCashMovement),
   };
 }
 
-const sessionInclude = {
+const sessionMetaInclude = {
   branches: { select: { name: true, city: true } },
   openedBy: { select: { name: true, lastname: true } },
   closedBy: { select: { name: true, lastname: true } },
+};
+
+const movementUserInclude = {
+  users: { select: { name: true, lastname: true } },
+};
+
+/** Preview en modal: últimos N (más recientes primero). */
+export const CASH_SESSION_MOVEMENTS_PREVIEW = 8;
+
+const sessionInclude = {
+  ...sessionMetaInclude,
   movements: {
-    orderBy: { createdAt: "asc" as const },
-    include: { users: { select: { name: true, lastname: true } } },
+    orderBy: { createdAt: "desc" as const },
+    take: CASH_SESSION_MOVEMENTS_PREVIEW,
+    include: movementUserInclude,
   },
+  _count: { select: { movements: true } },
 };
 
 /** Suma esperada en caja: fondo + entradas + ventas efectivo − salidas − voids. */
@@ -96,16 +127,17 @@ export async function computeExpectedCash(
   });
   if (!session) throw new Error("Sesión de caja no encontrada");
 
-  const movements = await tx.pos_cash_movements.findMany({
+  const grouped = await tx.pos_cash_movements.groupBy({
+    by: ["type"],
     where: { cashSessionId },
-    select: { type: true, amount: true },
+    _sum: { amount: true },
   });
 
   let expected = Number(session.openingFloat);
-  for (const m of movements) {
-    const amt = Number(m.amount);
-    if (m.type === "cash_in" || m.type === "sale_cash") expected += amt;
-    else if (m.type === "cash_out" || m.type === "sale_cash_void")
+  for (const row of grouped) {
+    const amt = Number(row._sum.amount || 0);
+    if (row.type === "cash_in" || row.type === "sale_cash") expected += amt;
+    else if (row.type === "cash_out" || row.type === "sale_cash_void")
       expected -= amt;
   }
   return roundMoney(expected);
@@ -166,10 +198,17 @@ export async function openCashSession(params: {
           select: { idCashSession: true },
         });
         if (existing) {
-          throw new Error("Ya hay una caja abierta en esta bodega");
+          const full = await tx.pos_cash_sessions.findFirst({
+            where: { idCashSession: existing.idCashSession },
+            include: sessionInclude,
+          });
+          if (!full) {
+            throw new Error("Ya hay una caja abierta en esta bodega");
+          }
+          return { session: full, alreadyOpen: true as const };
         }
 
-        return tx.pos_cash_sessions.create({
+        const session = await tx.pos_cash_sessions.create({
           data: {
             branchId,
             openedByUserId: userId,
@@ -179,6 +218,7 @@ export async function openCashSession(params: {
           },
           include: sessionInclude,
         });
+        return { session, alreadyOpen: false as const };
       },
       {
         isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
@@ -187,13 +227,34 @@ export async function openCashSession(params: {
       },
     );
 
-    const expected = await computeExpectedCash(prisma, created.idCashSession);
-    return serializeCashSession(created, expected);
+    const expected = await computeExpectedCash(
+      prisma,
+      created.session.idCashSession,
+    );
+    return {
+      ...serializeCashSession(created.session, expected),
+      alreadyOpen: created.alreadyOpen,
+    };
   } catch (error: any) {
     if (
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === "P2002"
     ) {
+      const existing = await prisma.pos_cash_sessions.findFirst({
+        where: { branchId, status: "open" },
+        include: sessionInclude,
+        orderBy: { openedAt: "desc" },
+      });
+      if (existing) {
+        const expected = await computeExpectedCash(
+          prisma,
+          existing.idCashSession,
+        );
+        return {
+          ...serializeCashSession(existing, expected),
+          alreadyOpen: true,
+        };
+      }
       throw new Error("Ya hay una caja abierta en esta bodega");
     }
     throw error;
@@ -296,8 +357,11 @@ export async function closeCashSession(params: {
         );
       }
 
-      const closed = await tx.pos_cash_sessions.update({
-        where: { idCashSession: session.idCashSession },
+      const claimed = await tx.pos_cash_sessions.updateMany({
+        where: {
+          idCashSession: session.idCashSession,
+          status: "open",
+        },
         data: {
           status: "closed",
           closedByUserId: userId,
@@ -310,8 +374,20 @@ export async function closeCashSession(params: {
             ? [session.notes, notes].filter(Boolean).join("\n---\n").slice(0, 4000)
             : session.notes,
         },
+      });
+      if (claimed.count !== 1) {
+        throw new Error(
+          "La caja ya fue cerrada por otra sesión. Recarga el estado de caja.",
+        );
+      }
+
+      const closed = await tx.pos_cash_sessions.findFirst({
+        where: { idCashSession: session.idCashSession },
         include: sessionInclude,
       });
+      if (!closed) {
+        throw new Error("No se pudo recuperar la sesión de caja cerrada");
+      }
 
       return serializeCashSession(closed, expectedCash);
     },
@@ -327,12 +403,14 @@ export async function getCashStatus(branchId: number) {
   if (!Number.isSafeInteger(branchId) || branchId <= 0) {
     throw new Error("Bodega inválida");
   }
-  const open = await prisma.pos_cash_sessions.findFirst({
+
+  // Primero solo existencia (consulta mínima, no debe fallar por includes).
+  const openId = await prisma.pos_cash_sessions.findFirst({
     where: { branchId, status: "open" },
-    include: sessionInclude,
+    select: { idCashSession: true },
     orderBy: { openedAt: "desc" },
   });
-  if (!open) {
+  if (!openId) {
     return {
       open: false,
       session: null,
@@ -340,13 +418,74 @@ export async function getCashStatus(branchId: number) {
       paymentSummary: null,
     };
   }
-  const expectedCash = await computeExpectedCash(prisma, open.idCashSession);
-  const paymentSummary = await summarizeSessionPayments(
-    Number(open.idCashSession),
-  );
+
+  let open: Awaited<
+    ReturnType<typeof prisma.pos_cash_sessions.findFirst>
+  > = null;
+  try {
+    open = await prisma.pos_cash_sessions.findFirst({
+      where: { idCashSession: openId.idCashSession },
+      include: sessionInclude,
+    });
+  } catch (error) {
+    console.error("[getCashStatus] session include failed:", error);
+    try {
+      open = await prisma.pos_cash_sessions.findFirst({
+        where: { idCashSession: openId.idCashSession },
+        include: sessionMetaInclude,
+      });
+    } catch (metaError) {
+      console.error("[getCashStatus] session meta failed:", metaError);
+      const bare = await prisma.pos_cash_sessions.findFirst({
+        where: { idCashSession: openId.idCashSession },
+      });
+      if (!bare) {
+        return {
+          open: false,
+          session: null,
+          expectedCash: null,
+          paymentSummary: null,
+        };
+      }
+      // Sesión abierta confirmada aunque fallen joins/resúmenes.
+      return {
+        open: true,
+        session: serializeCashSession(bare),
+        expectedCash: null,
+        paymentSummary: null,
+      };
+    }
+  }
+
+  if (!open) {
+    // Carrera rara: se cerró entre queries.
+    return {
+      open: false,
+      session: null,
+      expectedCash: null,
+      paymentSummary: null,
+    };
+  }
+
+  let expectedCash: number | null = null;
+  try {
+    expectedCash = await computeExpectedCash(prisma, open.idCashSession);
+  } catch (error) {
+    console.error("[getCashStatus] expectedCash failed:", error);
+  }
+
+  let paymentSummary = null;
+  try {
+    paymentSummary = await summarizeSessionPayments(
+      Number(open.idCashSession),
+    );
+  } catch (error) {
+    console.error("[getCashStatus] paymentSummary failed:", error);
+  }
+
   return {
     open: true,
-    session: serializeCashSession(open, expectedCash),
+    session: serializeCashSession(open, expectedCash ?? undefined),
     expectedCash,
     paymentSummary,
   };
@@ -354,14 +493,6 @@ export async function getCashStatus(branchId: number) {
 
 /** Solo ventas ligadas a la sesión (sin huérfanas del intervalo). */
 async function summarizeSessionPayments(cashSessionId: number) {
-  const sales = await prisma.pos_sales.findMany({
-    where: {
-      cashSessionId,
-      status: { in: ["completed", "cancelled"] },
-    },
-    include: { payments: true },
-  });
-
   const byMethod: Record<string, number> = {
     efectivo_sucursal: 0,
     tarjeta_sucursal: 0,
@@ -370,24 +501,36 @@ async function summarizeSessionPayments(cashSessionId: number) {
     transferencia_bancaria: 0,
     openpay_link: 0,
   };
-  let salesCount = 0;
-  let salesTotal = 0;
-  let cancelledCount = 0;
 
-  for (const sale of sales) {
-    if (sale.status === "cancelled") {
-      cancelledCount += 1;
-      continue;
-    }
-    salesCount += 1;
-    salesTotal = roundMoney(salesTotal + Number(sale.total));
-    for (const p of sale.payments) {
-      const m = String(p.method);
-      byMethod[m] = roundMoney((byMethod[m] || 0) + Number(p.amount));
-    }
+  const [completedAgg, cancelledCount, paymentAgg] = await Promise.all([
+    prisma.pos_sales.aggregate({
+      where: { cashSessionId, status: "completed" },
+      _count: { _all: true },
+      _sum: { total: true },
+    }),
+    prisma.pos_sales.count({
+      where: { cashSessionId, status: "cancelled" },
+    }),
+    prisma.pos_payments.groupBy({
+      by: ["method"],
+      where: {
+        pos_sales: { cashSessionId, status: "completed" },
+      },
+      _sum: { amount: true },
+    }),
+  ]);
+
+  for (const row of paymentAgg) {
+    const m = String(row.method);
+    byMethod[m] = roundMoney(Number(row._sum.amount || 0));
   }
 
-  return { salesCount, salesTotal, cancelledCount, byMethod };
+  return {
+    salesCount: Number(completedAgg._count._all || 0),
+    salesTotal: roundMoney(Number(completedAgg._sum.total || 0)),
+    cancelledCount,
+    byMethod,
+  };
 }
 
 export async function listCashSessions(params: {
@@ -441,6 +584,60 @@ export async function getCashSessionById(id: number) {
         ? Number(session.expectedCash)
         : await computeExpectedCash(prisma, session.idCashSession);
   return serializeCashSession(session, expected);
+}
+
+export async function listCashSessionMovements(params: {
+  sessionId: number;
+  page?: number;
+  limit?: number;
+}) {
+  const sessionId = params.sessionId;
+  if (!Number.isSafeInteger(sessionId) || sessionId <= 0) {
+    throw new Error("ID de sesión inválido");
+  }
+
+  const page = Math.max(1, params.page || 1);
+  const limit = Math.min(100, Math.max(1, params.limit || 30));
+
+  const session = await prisma.pos_cash_sessions.findFirst({
+    where: { idCashSession: sessionId },
+    include: sessionMetaInclude,
+  });
+  if (!session) return null;
+
+  const where = { cashSessionId: session.idCashSession };
+  const [total, rows] = await Promise.all([
+    prisma.pos_cash_movements.count({ where }),
+    prisma.pos_cash_movements.findMany({
+      where,
+      include: movementUserInclude,
+      orderBy: { createdAt: "desc" },
+      skip: (page - 1) * limit,
+      take: limit,
+    }),
+  ]);
+
+  const expected =
+    session.status === "open"
+      ? await computeExpectedCash(prisma, session.idCashSession)
+      : session.expectedCash != null
+        ? Number(session.expectedCash)
+        : await computeExpectedCash(prisma, session.idCashSession);
+
+  return {
+    session: serializeCashSession(
+      { ...session, movements: [] },
+      expected,
+      { movementsTotal: total },
+    ),
+    data: rows.map(serializeCashMovement),
+    pagination: {
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit) || 0,
+    },
+  };
 }
 
 /** Registra efectivo de una venta completada dentro de una transacción. */

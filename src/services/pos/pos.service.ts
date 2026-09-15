@@ -233,7 +233,7 @@ export async function searchPosProducts(q: string, limit = 25) {
         (t) => t.length >= 2 || /^\d+$/.test(t),
       ),
     ),
-  ].slice(0, 10);
+  ].slice(0, 6);
 
   const or: Prisma.productsWhereInput[] = [];
 
@@ -241,26 +241,27 @@ export async function searchPosProducts(q: string, limit = 25) {
   if (raw.length >= 2) {
     or.push(
       { idProductExt: { equals: raw } },
-      { idProductExt: { contains: raw } },
+      { idProductExt: { startsWith: raw } },
     );
   }
 
-  // Código de barras / SKU corto: match directo primero
+  // Código de barras / SKU: exacto + prefijo (aprovecha índices B-tree)
   if (/^\d{6,}$/.test(raw) || /^[A-Za-z0-9\-_.]{4,}$/.test(raw)) {
     or.push(
       { sku: { equals: raw } },
       { upc: { equals: raw } },
-      { sku: { contains: raw } },
-      { upc: { contains: raw } },
+      { sku: { startsWith: raw } },
+      { upc: { startsWith: raw } },
     );
   }
 
   for (const term of termBag) {
+    // Nombre sigue con contains (texto libre); códigos con prefijo.
     or.push(
       { name: { contains: term } },
-      { sku: { contains: term } },
-      { upc: { contains: term } },
-      { idProductExt: { contains: term } },
+      { sku: { startsWith: term } },
+      { upc: { startsWith: term } },
+      { idProductExt: { startsWith: term } },
     );
   }
 
@@ -411,6 +412,10 @@ export async function searchPosProducts(q: string, limit = 25) {
     });
     const preferred =
       stocksByBranch.find((s) => s.stock > 0) || stocksByBranch[0] || null;
+    const inStock =
+      stocksByBranch.length > 0
+        ? stocksByBranch.some((s) => s.stock > 0)
+        : Number(p.stock) > 0;
 
     return {
       idProduct: Number(p.idProduct),
@@ -433,6 +438,7 @@ export async function searchPosProducts(q: string, limit = 25) {
       stocksByBranch,
       suggestedBranchId:
         preferred && preferred.stock > 0 ? preferred.branchId : null,
+      inStock,
       score,
     };
   });
@@ -558,6 +564,10 @@ export async function hydratePosProductsByIds(productIds: number[]) {
     });
     const preferred =
       stocksByBranch.find((s) => s.stock > 0) || stocksByBranch[0] || null;
+    const inStock =
+      stocksByBranch.length > 0
+        ? stocksByBranch.some((s) => s.stock > 0)
+        : Number(p.stock) > 0;
 
     return {
       idProduct: Number(p.idProduct),
@@ -582,6 +592,7 @@ export async function hydratePosProductsByIds(productIds: number[]) {
       stocksByBranch,
       suggestedBranchId:
         preferred && preferred.stock > 0 ? preferred.branchId : null,
+      inStock,
       score: 100,
     };
   });

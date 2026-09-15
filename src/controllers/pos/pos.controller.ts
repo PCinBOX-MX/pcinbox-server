@@ -22,6 +22,7 @@ import {
   closeCashSession,
   getCashSessionById,
   getCashStatus,
+  listCashSessionMovements,
   listCashSessions,
   openCashSession,
   recordSaleCashInTx,
@@ -46,8 +47,10 @@ import {
   isPosSellableBranchName,
 } from "../../constants/pcinbox-branch-display";
 import {
-  ensurePosManualProduct,
+  ensurePosManualLineProduct,
+  getPosManualPlaceholderIds,
   POS_MANUAL_PRODUCT_SKU,
+  POS_MANUAL_SERVICE_SKU,
 } from "../../services/pos/posManualProduct.service";
 import { buildPosSaleTicketHtml } from "../../services/pos/posTicketHtml.service";
 
@@ -146,6 +149,36 @@ function assertPosCancelAllowed(
   throw new Error("No se puede cancelar esta venta con tu rol");
 }
 
+function firstProductImage(imageUrl: unknown): string | null {
+  if (!imageUrl) return null;
+  if (typeof imageUrl === "string") {
+    const t = imageUrl.trim();
+    if (!t) return null;
+    if (t.startsWith("[") || t.startsWith("{")) {
+      try {
+        return firstProductImage(JSON.parse(t));
+      } catch {
+        return t;
+      }
+    }
+    return t;
+  }
+  if (Array.isArray(imageUrl)) {
+    const first = imageUrl.find(
+      (x) => typeof x === "string" && String(x).trim(),
+    );
+    return first ? String(first) : null;
+  }
+  if (typeof imageUrl === "object") {
+    const values = Object.values(imageUrl as Record<string, unknown>);
+    const first = values.find(
+      (x) => typeof x === "string" && String(x).trim(),
+    );
+    return first ? String(first) : null;
+  }
+  return null;
+}
+
 function serializeSale(sale: any) {
   return {
     idPosSale: Number(sale.idPosSale),
@@ -156,9 +189,8 @@ function serializeSale(sale: any) {
     branchDisplayName:
       formatPcinboxBranchDisplayName(sale.branches?.name) || null,
     cashierUserId: Number(sale.cashierUserId),
-    cashierName: sale.cashier
-      ? `${sale.cashier.name || ""} ${sale.cashier.lastname || ""}`.trim()
-      : null,
+    // Marca comercial fija en UI/tickets; el id real queda en cashierUserId.
+    cashierName: "PCinBOX",
     customerUserId: sale.customerUserId ? Number(sale.customerUserId) : null,
     customerName: sale.customerName ||
       (sale.customer
@@ -169,6 +201,7 @@ function serializeSale(sale: any) {
     discountTotal: Number(sale.discountTotal),
     total: Number(sale.total),
     notes: sale.notes,
+    requiredFactura: Number(sale.requiredFactura) === 1 ? 1 : 0,
     cancelReason: sale.cancelReason,
     cancelledAt: sale.cancelledAt,
     customerEmail: sale.customerEmail || null,
@@ -196,6 +229,7 @@ function serializeSale(sale: any) {
       productName: it.productName,
       productSku: it.productSku,
       productUpc: it.productUpc,
+      productImage: firstProductImage(it.products?.image_url),
       quantity: Number(it.quantity),
       unitPrice: Number(it.unitPrice),
       discountPct: Number(it.discountPct),
@@ -232,6 +266,7 @@ const saleInclude = {
   customer: { select: { name: true, lastname: true, email: true } },
   items: {
     include: {
+      products: { select: { image_url: true } },
       branches: { select: { name: true, city: true } },
       serials: {
         select: {
@@ -245,7 +280,36 @@ const saleInclude = {
     },
   },
   payments: true,
-  events: { orderBy: { createdAt: "asc" as const } },
+  events: { orderBy: { createdAt: "asc" as const }, take: 50 },
+};
+
+/** Listado historial: sin imágenes, seriales ni eventos (evita saturar con volumen). */
+const saleListInclude = {
+  branches: { select: { name: true, city: true } },
+  cashier: { select: { name: true, lastname: true } },
+  items: {
+    select: {
+      idPosSaleItem: true,
+      productId: true,
+      quantity: true,
+      productName: true,
+      unitPrice: true,
+      lineTotal: true,
+      discountPct: true,
+      productSku: true,
+      productUpc: true,
+      branchId: true,
+    },
+  },
+  payments: {
+    select: {
+      idPosPayment: true,
+      method: true,
+      amount: true,
+      reference: true,
+      createdAt: true,
+    },
+  },
 };
 
 export const listPosBranches = async (_req: Request, res: Response) => {
@@ -511,19 +575,29 @@ export const searchPosCustomers = async (req: Request, res: Response) => {
     if (q.length < 2) {
       return res.json({ ok: true, data: [] });
     }
+
+    const or: Prisma.usersWhereInput[] = [];
+    if (q.includes("@")) {
+      or.push({ email: { startsWith: q } });
+    } else if (/^\+?\d[\d\s-]{5,}$/.test(q)) {
+      const digits = q.replace(/\D/g, "");
+      or.push({ phone: { contains: digits.slice(-10) } });
+      if (digits.length >= 6) or.push({ phone: { startsWith: digits } });
+    } else {
+      or.push({ name: { startsWith: q } }, { lastname: { startsWith: q } });
+      if (q.length >= 3) {
+        or.push({ email: { startsWith: q } });
+      }
+    }
+
     const users = await prisma.users.findMany({
       where: {
         active: 1,
         role: "customer",
-        OR: [
-          { name: { contains: q } },
-          { lastname: { contains: q } },
-          { email: { contains: q } },
-          { phone: { contains: q } },
-        ],
+        OR: or,
       },
       take: 20,
-      orderBy: { name: "asc" },
+      orderBy: [{ name: "asc" }, { lastname: "asc" }],
       select: {
         idUser: true,
         name: true,
@@ -558,6 +632,48 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       return res.status(401).json({ ok: false, message: "Sesión inválida" });
     }
 
+    const rawIdempotency =
+      req.body?.idempotencyKey ??
+      req.headers["idempotency-key"] ??
+      req.headers["Idempotency-Key"];
+    const idempotencyKey = String(
+      Array.isArray(rawIdempotency) ? rawIdempotency[0] : rawIdempotency || "",
+    ).trim();
+    if (
+      idempotencyKey &&
+      !/^[A-Za-z0-9_-]{8,64}$/.test(idempotencyKey)
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message: "Clave de idempotencia inválida",
+      });
+    }
+    if (idempotencyKey) {
+      const existing = await prisma.pos_sales.findFirst({
+        where: { idempotencyKey },
+        include: saleInclude,
+      });
+      if (existing) {
+        if (Number(existing.cashierUserId) !== cashierUserId) {
+          return res.status(409).json({
+            ok: false,
+            message: "Esa clave de cobro ya fue usada por otra sesión",
+          });
+        }
+        return res.status(200).json({
+          ok: true,
+          message: "Venta ya registrada (reintento seguro)",
+          alreadyProcessed: true,
+          data: {
+            ...serializeSale(existing),
+            paymentLink: existing.paymentLinkUrl || null,
+            checkoutLink: existing.checkoutLinkUrl || null,
+            linkReferencia: existing.linkReferencia || null,
+          },
+        });
+      }
+    }
+
     const {
       branchId,
       customerUserId,
@@ -565,10 +681,18 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       customerEmail,
       customerPhone,
       notes,
+      requiredFactura: rawRequiredFactura,
       items,
       payments,
       quoteNumber: rawQuoteNumber,
     } = req.body || {};
+
+    const requiredFactura =
+      rawRequiredFactura === true ||
+      rawRequiredFactura === 1 ||
+      rawRequiredFactura === "1"
+        ? 1
+        : 0;
 
     const quoteNumberNormalized = String(rawQuoteNumber || "")
       .trim()
@@ -655,11 +779,21 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       }
 
       if (isManual) {
+        const manualKindRaw = String(raw.manualKind || raw.lineKind || "")
+          .trim()
+          .toLowerCase();
+        const manualKind =
+          manualKindRaw === "service" || manualKindRaw === "servicio"
+            ? "service"
+            : "product";
         const manualName = String(raw.name || raw.productName || "").trim();
         if (manualName.length < 2) {
           return res.status(400).json({
             ok: false,
-            message: "El producto manual necesita un nombre",
+            message:
+              manualKind === "service"
+                ? "El servicio necesita un nombre (mín. 2 caracteres)"
+                : "El producto manual necesita un nombre",
           });
         }
         const unitPrice = money(raw.unitPrice);
@@ -669,8 +803,9 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
             message: `Precio inválido para «${manualName}»`,
           });
         }
-        const manualProduct = await ensurePosManualProduct();
-        const requireSerialManual = Boolean(raw.requiresSerial);
+        const manualProduct = await ensurePosManualLineProduct(manualKind);
+        const requireSerialManual =
+          manualKind === "service" ? false : Boolean(raw.requiresSerial);
         let serials: string[] = [];
         try {
           serials = normalizeItemSerials(
@@ -683,14 +818,17 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
           return res.status(400).json({ ok: false, message: e.message });
         }
         const warrantyMonths =
-          raw.warrantyMonths != null && Number(raw.warrantyMonths) > 0
-            ? Math.round(Number(raw.warrantyMonths))
-            : null;
+          manualKind === "service"
+            ? null
+            : raw.warrantyMonths != null && Number(raw.warrantyMonths) > 0
+              ? Math.round(Number(raw.warrantyMonths))
+              : null;
         const lineBase = roundMoney(unitPrice * quantity);
         const lineTotal = computeLineTotal(unitPrice, quantity, discountPct);
         subtotal = roundMoney(subtotal + lineBase);
         discountTotal = roundMoney(discountTotal + (lineBase - lineTotal));
         allSerials.push(...serials);
+        const skuFromClient = String(raw.sku || "").trim().slice(0, 255);
         normalizedItems.push({
           productId: Number(manualProduct.idProduct),
           branchId: null,
@@ -700,8 +838,14 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
           lineTotal,
           productName: manualName.slice(0, 255),
           productSku:
-            String(raw.sku || "").trim().slice(0, 255) || null,
-          productUpc: String(raw.upc || "").trim().slice(0, 255) || null,
+            skuFromClient ||
+            (manualKind === "service"
+              ? POS_MANUAL_SERVICE_SKU
+              : POS_MANUAL_PRODUCT_SKU),
+          productUpc:
+            manualKind === "service"
+              ? null
+              : String(raw.upc || "").trim().slice(0, 255) || null,
           serials,
           warrantyMonths,
           requiresSerial: requireSerialManual || serials.length > 0,
@@ -1072,6 +1216,20 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
         });
       }
       if (!guestName) guestName = "Cliente POS";
+    } else {
+      if (!guestName || guestName.trim().length < 2) {
+        return res.status(400).json({
+          ok: false,
+          message: "Nombre del cliente requerido (mín. 2 caracteres)",
+        });
+      }
+      const phoneDigits = String(guestPhone || "").replace(/\D/g, "");
+      if (phoneDigits.length < 10) {
+        return res.status(400).json({
+          ok: false,
+          message: "Teléfono del cliente requerido (10 dígitos)",
+        });
+      }
     }
 
     const sale = await prisma.$transaction(async (tx) => {
@@ -1100,8 +1258,10 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
           discountTotal,
           total,
           notes: notes ? String(notes).slice(0, 2000) : null,
+          requiredFactura,
           cashSessionId,
           quoteNumber,
+          idempotencyKey: idempotencyKey || null,
           items: {
             create: normalizedItems.map((it) => ({
               productId: it.productId,
@@ -1348,7 +1508,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       ok: true,
       message:
         status === "pending_payment"
-          ? "Venta pendiente: comparte el link OpenPay. El stock se descuenta al confirmar el pago."
+          ? "Venta pendiente: comparte el link OpenPay. El stock ya quedó reservado; se libera solo si cancelas la venta."
           : "Venta POS completada",
       data: {
         ...serializeSale(fresh!),
@@ -1358,6 +1518,41 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       },
     });
   } catch (error: any) {
+    const rawIdem =
+      req.body?.idempotencyKey ??
+      req.headers["idempotency-key"] ??
+      req.headers["Idempotency-Key"];
+    const idemKey = String(
+      Array.isArray(rawIdem) ? rawIdem[0] : rawIdem || "",
+    ).trim();
+    if (
+      error?.code === "P2002" &&
+      idemKey &&
+      Number.isSafeInteger(Number(req.idUser)) &&
+      Number(req.idUser) > 0
+    ) {
+      try {
+        const raced = await prisma.pos_sales.findFirst({
+          where: { idempotencyKey: idemKey },
+          include: saleInclude,
+        });
+        if (raced && Number(raced.cashierUserId) === Number(req.idUser)) {
+          return res.status(200).json({
+            ok: true,
+            message: "Venta ya registrada (reintento seguro)",
+            alreadyProcessed: true,
+            data: {
+              ...serializeSale(raced),
+              paymentLink: raced.paymentLinkUrl || null,
+              checkoutLink: raced.checkoutLinkUrl || null,
+              linkReferencia: raced.linkReferencia || null,
+            },
+          });
+        }
+      } catch {
+        // caer al error genérico
+      }
+    }
     return res.status(400).json({
       ok: false,
       message: error?.message || "No se pudo completar la venta",
@@ -1368,10 +1563,16 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
 export const listPosSales = async (req: Request, res: Response) => {
   try {
     const page = Math.max(1, Number(req.query.page) || 1);
-    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 20));
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 20));
     const branchId = req.query.branchId ? Number(req.query.branchId) : null;
     const status = req.query.status ? String(req.query.status) : null;
     const folio = req.query.folio ? String(req.query.folio).trim() : "";
+    const customerName = req.query.customerName
+      ? String(req.query.customerName).trim()
+      : "";
+    const saleIdRaw = String(
+      req.query.saleId || req.query.idPosSale || "",
+    ).trim();
     const from = req.query.from ? new Date(String(req.query.from)) : null;
     const to = req.query.to ? new Date(String(req.query.to)) : null;
     const hasSerials =
@@ -1383,7 +1584,23 @@ export const listPosSales = async (req: Request, res: Response) => {
     if (status && ["completed", "cancelled", "pending_payment"].includes(status)) {
       where.status = status as any;
     }
-    if (folio) where.folio = { contains: folio };
+    const saleId = Number(saleIdRaw.replace(/^#/, ""));
+    if (saleIdRaw && Number.isSafeInteger(saleId) && saleId > 0) {
+      where.idPosSale = saleId;
+    }
+    if (folio) {
+      // Búsqueda parcial (sin exigir folio exacto).
+      const term = folio.replace(/^#/, "").trim();
+      if (term) {
+        where.folio = { contains: term };
+      }
+    }
+    if (customerName) {
+      // Prefijo aprovecha índice mejor que LIKE '%x%'.
+      if (customerName.length >= 2) {
+        where.customerName = { startsWith: customerName };
+      }
+    }
     if (from || to) {
       where.createdAt = {};
       if (from && !Number.isNaN(from.getTime())) where.createdAt.gte = from;
@@ -1397,7 +1614,7 @@ export const listPosSales = async (req: Request, res: Response) => {
       prisma.pos_sales.count({ where }),
       prisma.pos_sales.findMany({
         where,
-        include: saleInclude,
+        include: saleListInclude,
         orderBy: { createdAt: "desc" },
         skip: (page - 1) * limit,
         take: limit,
@@ -1496,10 +1713,9 @@ export const cancelPosSale = async (req: CustomRequestI, res: Response) => {
 
       // Stock se reserva al crear (completed y pending OpenPay).
       if (previousStatus === "completed" || previousStatus === "pending_payment") {
-        const manualProduct = await ensurePosManualProduct(tx);
-        const manualProductId = Number(manualProduct.idProduct);
+        const manualIds = await getPosManualPlaceholderIds(tx);
         const stockLines = sale.items
-          .filter((it) => Number(it.productId) !== manualProductId)
+          .filter((it) => !manualIds.includes(Number(it.productId)))
           .map((it) => ({
             productId: Number(it.productId),
             quantity: Number(it.quantity),
@@ -1855,15 +2071,28 @@ export const getPosSaleWarrantySheet = async (req: Request, res: Response) => {
           ?.branchName,
       ) ||
       "PCinBOX-León";
-    const warrantyDate = new Date(data.createdAt).toISOString().slice(0, 10);
+    const warrantyDate = new Date(data.createdAt).toLocaleString("es-MX", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    });
+    // Misma Clave que la tabla de Garantías del POS: #{idPosSale}
+    const warrantyNumber = `#${data.idPosSale}`;
+    const LOGO =
+      "https://ik.imagekit.io/pcinboxkit/logos/logo.png?updatedAt=1759534318587";
     const ADDRESS =
       "Blvd. Juan Alonso de Torres Pte. No. 1917 Local 1 Col. Unión Comunitaria de León C.P. 37239 León, Gto., México";
 
     const meaningfulCode = (value?: string | null) => {
       const v = String(value || "").trim();
       if (!v) return null;
-      if (v === "__POS_MANUAL__") return null;
-      if (/^manual$/i.test(v)) return null;
+  if (v === "__POS_MANUAL__") return null;
+  if (v === "__POS_SERVICE__") return null;
+  if (/^manual$/i.test(v)) return null;
       return v;
     };
 
@@ -1914,8 +2143,9 @@ export const getPosSaleWarrantySheet = async (req: Request, res: Response) => {
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: Arial, Helvetica, sans-serif; color: #111; background: #f3f4f6; padding: 24px; }
     .sheet { max-width: 900px; margin: 0 auto; background: #fff; border: 1px solid #e5e7eb; border-radius: 8px; padding: 28px 24px; }
-    .head { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 12px; }
-    .brand { font-size: 22px; font-weight: 800; color: #bb3d4b; letter-spacing: 0.02em; }
+    .head { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 12px; }
+    .brand { flex: 0 0 auto; }
+    .brand img { display: block; height: 56px; width: auto; max-width: 180px; object-fit: contain; }
     h1 { font-size: 20px; text-align: center; flex: 1; text-transform: uppercase; letter-spacing: 0.04em; }
     .addr { font-size: 11px; color: #6b7280; line-height: 1.4; margin-bottom: 14px; text-align: center; }
     .meta { font-size: 13px; line-height: 1.7; margin-bottom: 16px; }
@@ -1939,14 +2169,17 @@ export const getPosSaleWarrantySheet = async (req: Request, res: Response) => {
 <body>
   <div class="sheet">
     <div class="head">
-      <div class="brand">PCinBOX</div>
+      <div class="brand">
+        <img src="${LOGO}" alt="PCinBOX" />
+      </div>
       <h1>Hoja de Garantía</h1>
-      <div style="width:90px"></div>
+      <div style="width:180px"></div>
     </div>
     <p class="addr">${escapeHtml(ADDRESS)} · ${escapeHtml(branchLabel)}</p>
     <div class="meta">
-      <div><strong>Número de garantía:</strong> ${escapeHtml(branchLabel)} ${escapeHtml(String(data.idPosSale))} ${escapeHtml(warrantyDate)}</div>
+      <div><strong>Número de garantía:</strong> ${escapeHtml(warrantyNumber)}</div>
       <div><strong>Folio venta:</strong> ${escapeHtml(data.folio)}</div>
+      <div><strong>Fecha de compra:</strong> ${escapeHtml(warrantyDate)}</div>
       <div><strong>Vendedor:</strong> PCinBOX</div>
       <div><strong>Cliente:</strong> ${escapeHtml(data.customerName || "Público general")}</div>
     </div>
@@ -2038,9 +2271,12 @@ export const openPosCash = async (req: CustomRequestI, res: Response) => {
       openingFloat,
       notes,
     });
-    return res.status(201).json({
+    const alreadyOpen = Boolean((data as { alreadyOpen?: boolean }).alreadyOpen);
+    return res.status(alreadyOpen ? 200 : 201).json({
       ok: true,
-      message: "Caja abierta",
+      message: alreadyOpen
+        ? "La caja ya estaba abierta en esta bodega"
+        : "Caja abierta",
       data,
     });
   } catch (error: any) {
@@ -2145,19 +2381,60 @@ export const getPosCashSessionById = async (req: Request, res: Response) => {
   }
 };
 
+export const listPosCashSessionMovements = async (
+  req: Request,
+  res: Response,
+) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0) {
+      return res.status(400).json({ ok: false, message: "ID inválido" });
+    }
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 30));
+    const result = await listCashSessionMovements({
+      sessionId: id,
+      page,
+      limit,
+    });
+    if (!result) {
+      return res.status(404).json({ ok: false, message: "Sesión no encontrada" });
+    }
+    return res.json({ ok: true, ...result });
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      message: error?.message || "Error al listar movimientos de caja",
+    });
+  }
+};
+
 /** Ledger unificado web + POS (Fase 4). */
 export const listInventoryMovements = async (req: Request, res: Response) => {
   try {
     const page = Math.max(1, Number(req.query.page) || 1);
-    const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 30));
+    const limit = Math.min(50, Math.max(1, Number(req.query.limit) || 30));
     const productId = req.query.productId ? Number(req.query.productId) : null;
     const branchId = req.query.branchId ? Number(req.query.branchId) : null;
     const reason = req.query.reason ? String(req.query.reason) : null;
+    const from = req.query.from ? new Date(String(req.query.from)) : null;
+    const to = req.query.to ? new Date(String(req.query.to)) : null;
 
     const where: Prisma.inventory_movementsWhereInput = {};
     if (productId && Number.isSafeInteger(productId)) where.productId = productId;
     if (branchId && Number.isSafeInteger(branchId)) where.branchId = branchId;
     if (reason) where.reason = reason;
+
+    // Sin filtros de producto/bodega: acotar a últimos 30 días para no escanear el ledger entero.
+    if (from || to) {
+      where.createdAt = {};
+      if (from && !Number.isNaN(from.getTime())) where.createdAt.gte = from;
+      if (to && !Number.isNaN(to.getTime())) where.createdAt.lte = to;
+    } else if (!productId && !branchId) {
+      const since = new Date();
+      since.setDate(since.getDate() - 30);
+      where.createdAt = { gte: since };
+    }
 
     const [total, rows] = await Promise.all([
       prisma.inventory_movements.count({ where }),
@@ -2284,6 +2561,14 @@ export const updatePosProductSerialConfig = async (
   res: Response,
 ) => {
   try {
+    const posRole = await resolvePosRole(req);
+    if (posRole !== "admin") {
+      return res.status(403).json({
+        ok: false,
+        message: "Solo un administrador puede cambiar si el producto exige serie",
+      });
+    }
+
     const productId = Number(req.params.productId);
     if (!Number.isSafeInteger(productId) || productId <= 0) {
       return res.status(400).json({ ok: false, message: "Producto inválido" });

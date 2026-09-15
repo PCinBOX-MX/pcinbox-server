@@ -10,11 +10,17 @@ const LOGO =
 const WEB = "www.pcinbox.com.mx";
 const ADDRESS =
   "Blvd. Juan Alonso de Torres Pte. No. 1917 Local 1 Col. Unión Comunitaria de León C.P. 37239 León, Gto., México";
+const DISCLAIMER_PARAGRAPHS = [
+  "PCinBOX no se hace responsable si usted eligió mal el producto o por incompatibilidad con su equipo.",
+  "Es responsabilidad del cliente revisar lo que se entrega y hacer reclamo u observación en su momento.",
+  "No hay devolución ni cambios de productos. Cualquier devolución justificada genera el 20% de comisión.",
+] as const;
 
 function isMeaningfulCode(value?: string | null): boolean {
   const v = String(value || "").trim();
   if (!v) return false;
   if (v === "__POS_MANUAL__") return false;
+  if (v === "__POS_SERVICE__") return false;
   if (/^manual$/i.test(v)) return false;
   return true;
 }
@@ -25,6 +31,8 @@ type TicketSale = {
   createdAt: string;
   branchName?: string | null;
   customerName?: string | null;
+  customerPhone?: string | null;
+  notes?: string | null;
   cancelReason?: string | null;
   quoteNumber?: string | null;
   subtotal: number;
@@ -50,7 +58,7 @@ type TicketSale = {
 };
 
 function formatMoney(n: number) {
-  return Number(n || 0).toLocaleString("es-MX", {
+  return Number(n || 0).toLocaleString("en-US", {
     style: "currency",
     currency: "MXN",
   });
@@ -178,7 +186,14 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
     .totals { margin-top: 8px; font-size: 13px; }
     .totals .row { display: flex; justify-content: space-between; margin: 4px 0; }
     .count { text-align: center; font-size: 16px; font-weight: 800; margin: 14px 0 8px; }
-    .policy { text-align: center; font-size: 10px; color: #6b7280; line-height: 1.4; margin-top: 8px; }
+    .notes { margin-top: 14px; padding-top: 10px; border-top: 1px dashed #e5e7eb; font-size: 12px; line-height: 1.45; }
+    .notes h4 { font-size: 11px; letter-spacing: 0.04em; text-transform: uppercase; margin-bottom: 4px; color: #374151; }
+    .notes p { white-space: pre-wrap; word-break: break-word; }
+    .disclaimer { margin-top: 14px; padding-top: 12px; border-top: 1px solid #d1d5db; }
+    .disclaimer h4 { text-align: center; font-size: 11px; letter-spacing: 0.06em; margin-bottom: 8px; color: #111; }
+    .disclaimer p { font-size: 10px; color: #4b5563; line-height: 1.45; text-align: justify; margin-bottom: 8px; }
+    .disclaimer p:last-of-type { margin-bottom: 0; }
+    .disclaimer .web { text-align: center; font-size: 11px; margin-top: 10px; color: #6b7280; }
     .pay-line { display: flex; justify-content: space-between; font-size: 12px; margin: 4px 0; gap: 8px; }
     .actions { margin-top: 18px; display: flex; gap: 8px; justify-content: center; }
     button { border: 0; background: #bb3d4b; color: #fff; padding: 10px 16px; border-radius: 8px; font-weight: 700; cursor: pointer; font-family: inherit; }
@@ -220,6 +235,11 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
       <div>Fecha: ${new Date(data.createdAt).toLocaleString("es-MX")}</div>
       <div>Vendedor: ${escapeHtml(SELLER)}</div>
       <div>Cliente: ${escapeHtml(data.customerName || "Público general")}</div>
+      ${
+        String(data.customerPhone || "").trim()
+          ? `<div>Teléfono: ${escapeHtml(String(data.customerPhone).trim())}</div>`
+          : ""
+      }
     </div>
     <div class="sep">*** PRODUCTOS ***</div>
     ${itemsHtml}
@@ -228,13 +248,24 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
       <div class="row"><span>Pago:</span><span>${formatMoney(pago)}</span></div>
       <div class="row"><span>Cambio:</span><span>${formatMoney(cambio)}</span></div>
     </div>
-    <div class="count">Productos: ${productCount}</div>
-    <p class="policy">Para cambios y devoluciones consulta nuestras políticas en ${escapeHtml(WEB)}.</p>
+    <div class="count">Productos: ${Number(productCount || 0).toLocaleString("en-US")}</div>
     ${
       data.payments.length
         ? `<div style="margin-top:14px"><strong style="font-size:12px">Detalle de pago</strong>${paymentsHtml}</div>`
         : ""
     }
+    ${
+      String(data.notes || "").trim()
+        ? `<div class="notes"><h4>Nota</h4><p>${escapeHtml(String(data.notes).trim())}</p></div>`
+        : ""
+    }
+    <div class="disclaimer">
+      <h4>Aviso</h4>
+      ${DISCLAIMER_PARAGRAPHS.map(
+        (p) => `<p>${escapeHtml(p)}</p>`,
+      ).join("")}
+      <div class="web">${escapeHtml(WEB)}</div>
+    </div>
     ${
       data.cancelReason
         ? `<p class="muted" style="margin-top:12px;text-align:left">Cancelación: ${escapeHtml(data.cancelReason)}</p>`
