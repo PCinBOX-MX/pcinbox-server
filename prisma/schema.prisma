@@ -38,6 +38,8 @@ model products {
   licenseType     String?         @db.VarChar(20)
   requiresSerial  Boolean         @default(false)
   warrantyMonths  Int?
+  /// months | none | service_center (años se guardan como meses)
+  warrantyMode    String?         @db.VarChar(32)
   createdAt       DateTime?       @default(now()) @db.DateTime(0)
   active          Int?            @default(1) @db.TinyInt
   cartItems            cartItems[]
@@ -535,6 +537,8 @@ model product_serials {
   customerName      String?                @db.VarChar(255)
   soldAt            DateTime?              @db.DateTime(0)
   warrantyMonths    Int?
+  /// months | none | service_center (snapshot al vender)
+  warrantyMode      String?                @db.VarChar(32)
   warrantyExpiresAt DateTime?              @db.DateTime(0)
   notes             String?                @db.VarChar(500)
   createdAt         DateTime               @default(now()) @db.DateTime(0)

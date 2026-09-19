@@ -1,4 +1,5 @@
-/** HTML del ticket de venta POS (layout tipo proveedor, branding PCinBOX). */
+import { formatPcinboxBranchDisplayName } from "../../constants/pcinbox-branch-display";
+
 
 const SELLER = "pcinbox";
 const LOGO =
@@ -42,6 +43,9 @@ type TicketSale = {
     productSku: string | null;
     productUpc: string | null;
     branchName?: string | null;
+    branchLabel?: string | null;
+    branchCity?: string | null;
+    providerId?: number | null;
     quantity: number;
     unitPrice: number;
     discountPct: number;
@@ -135,6 +139,25 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
         qty > 1
           ? `<div>Cant: ${qty} x ${formatMoney(unit)}</div>`
           : `<div>Cantidad: ${qty || 1}</div>`;
+      const bodega =
+        Number(it.providerId) === 1
+          ? formatPcinboxBranchDisplayName(it.branchName) ||
+            formatPcinboxBranchDisplayName(
+              String(it.branchLabel || "")
+                .split(/[·—-]/)[0]
+                ?.trim(),
+            ) ||
+            "PCinBOX-León"
+          : formatPcinboxBranchDisplayName(it.branchName) ||
+            formatPcinboxBranchDisplayName(
+              String(it.branchLabel || "")
+                .split(/[·—-]/)[0]
+                ?.trim(),
+            ) ||
+            formatPcinboxBranchDisplayName(data.branchName);
+      const bodegaLine = bodega
+        ? `<div>Bodega: ${escapeHtml(bodega)}</div>`
+        : "";
       const serialLine =
         it.serials && it.serials.length
           ? `<div class="muted">S/N: ${it.serials
@@ -146,6 +169,7 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
         <div class="item-name">${escapeHtml(truncateTicketName(it.productName))}</div>
         ${isMeaningfulCode(it.productSku) ? `<div>Clave: ${escapeHtml(String(it.productSku))}</div>` : ""}
         ${isMeaningfulCode(it.productUpc) ? `<div>UPC: ${escapeHtml(String(it.productUpc))}</div>` : ""}
+        ${bodegaLine}
         ${qtyLine}
         <div class="item-prices">
           <span>Importe:</span>

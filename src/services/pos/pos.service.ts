@@ -290,6 +290,7 @@ export async function searchPosProducts(q: string, limit = 25) {
     upc: true,
     image_url: true,
     providerId: true,
+    isPC: true,
     marca: { select: { name: true } },
     categories: { select: { name: true } },
     providers: { select: { companyName: true } },
@@ -303,6 +304,7 @@ export async function searchPosProducts(q: string, limit = 25) {
           ...lightSelect,
           requiresSerial: true,
           warrantyMonths: true,
+          warrantyMode: true,
         },
       })
     : await prisma.products.findMany({
@@ -437,6 +439,10 @@ export async function searchPosProducts(q: string, limit = 25) {
       warrantyMonths: (p as any).warrantyMonths != null && Number((p as any).warrantyMonths) > 0
         ? Number((p as any).warrantyMonths)
         : null,
+      warrantyMode: (p as any).warrantyMode
+        ? String((p as any).warrantyMode)
+        : null,
+      isPC: Number((p as any).isPC) === 1,
       providerId,
       providerName,
       stocksByBranch,
@@ -477,6 +483,7 @@ export async function hydratePosProductsByIds(productIds: number[]) {
     upc: true,
     image_url: true,
     providerId: true,
+    isPC: true,
     marca: { select: { name: true } },
     categories: { select: { name: true } },
     providers: { select: { companyName: true } },
@@ -489,6 +496,7 @@ export async function hydratePosProductsByIds(productIds: number[]) {
           ...lightSelect,
           requiresSerial: true,
           warrantyMonths: true,
+          warrantyMode: true,
         },
       })
     : await prisma.products.findMany({
@@ -595,6 +603,10 @@ export async function hydratePosProductsByIds(productIds: number[]) {
         Number((p as any).warrantyMonths) > 0
           ? Number((p as any).warrantyMonths)
           : null,
+      warrantyMode: (p as any).warrantyMode
+        ? String((p as any).warrantyMode)
+        : null,
+      isPC: Number((p as any).isPC) === 1,
       providerId,
       providerName,
       stocksByBranch,

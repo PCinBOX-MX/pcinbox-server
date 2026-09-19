@@ -25,6 +25,7 @@ export function serializeSerial(row: any) {
     customerName: row.customerName || null,
     soldAt: row.soldAt,
     warrantyMonths: row.warrantyMonths,
+    warrantyMode: row.warrantyMode ?? null,
     warrantyExpiresAt: row.warrantyExpiresAt,
     notes: row.notes,
     createdAt: row.createdAt,
@@ -102,6 +103,7 @@ export async function assignSerialsOnSale(
     customerUserId: number | null;
     customerName: string | null;
     warrantyMonths: number | null;
+    warrantyMode?: string | null;
     soldAt?: Date;
   },
 ) {
@@ -111,6 +113,14 @@ export async function assignSerialsOnSale(
     params.warrantyMonths != null && params.warrantyMonths > 0
       ? params.warrantyMonths
       : null;
+  const warrantyMode =
+    params.warrantyMode === "none" ||
+    params.warrantyMode === "service_center" ||
+    params.warrantyMode === "months"
+      ? params.warrantyMode
+      : months != null
+        ? "months"
+        : null;
   const warrantyExpiresAt =
     months != null ? addMonths(soldAt, months) : null;
 
@@ -138,6 +148,7 @@ export async function assignSerialsOnSale(
           customerName: params.customerName,
           soldAt,
           warrantyMonths: months,
+          warrantyMode,
           warrantyExpiresAt,
         },
       });
@@ -157,6 +168,7 @@ export async function assignSerialsOnSale(
           customerName: params.customerName,
           soldAt,
           warrantyMonths: months,
+          warrantyMode,
           warrantyExpiresAt,
         },
       });

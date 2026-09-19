@@ -7,6 +7,7 @@ type PendingSerialLine = {
   branchId?: number | null;
   serials: string[];
   warrantyMonths?: number | null;
+  warrantyMode?: string | null;
 };
 
 /**
@@ -76,6 +77,7 @@ export async function completePendingPosSale(params: {
                   serialNumber: true,
                   status: true,
                   warrantyMonths: true,
+                  warrantyMode: true,
                   warrantyExpiresAt: true,
                 },
               },
@@ -138,6 +140,7 @@ export async function completePendingPosSale(params: {
             : null,
           customerName: sale.customerName,
           warrantyMonths: line.warrantyMonths ?? null,
+          warrantyMode: line.warrantyMode ?? null,
         });
       }
     }

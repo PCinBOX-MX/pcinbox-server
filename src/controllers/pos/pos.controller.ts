@@ -40,6 +40,10 @@ import {
   releaseSerialsOnCancel,
   searchSerials,
 } from "../../services/pos/posSerial.service";
+import {
+  resolvePosLineWarranty,
+  warrantyCoverageLabel,
+} from "../../services/pos/posWarranty.service";
 import { resolvePosCashBranchId } from "../../constants/pcinbox-pickup.constants";
 import {
   formatPcinboxBranchDisplayName,
@@ -230,7 +234,13 @@ function serializeSale(sale: any) {
         ? formatPcinboxBranchDisplayName(it.branches.name) ||
           [it.branches.name, it.branches.city].filter(Boolean).join(" — ") ||
           null
-        : null,
+        : Number(it.products?.providerId) === 1
+          ? "PCinBOX-León"
+          : null,
+      providerId:
+        it.products?.providerId != null
+          ? Number(it.products.providerId)
+          : null,
       productName: it.productName,
       productSku: it.productSku,
       productUpc: it.productUpc,
@@ -244,6 +254,7 @@ function serializeSale(sale: any) {
         serialNumber: s.serialNumber,
         status: s.status,
         warrantyMonths: s.warrantyMonths,
+        warrantyMode: s.warrantyMode ?? null,
         warrantyExpiresAt: s.warrantyExpiresAt,
       })),
     })),
@@ -271,7 +282,7 @@ const saleInclude = {
   customer: { select: { name: true, lastname: true, email: true } },
   items: {
     include: {
-      products: { select: { image_url: true } },
+      products: { select: { image_url: true, providerId: true } },
       branches: { select: { name: true, city: true } },
       serials: {
         select: {
@@ -279,6 +290,7 @@ const saleInclude = {
           serialNumber: true,
           status: true,
           warrantyMonths: true,
+          warrantyMode: true,
           warrantyExpiresAt: true,
         },
       },
@@ -738,6 +750,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       productUpc: string | null;
       serials: string[];
       warrantyMonths: number | null;
+      warrantyMode: string | null;
       requiresSerial: boolean;
       isManual: boolean;
       providerId: number | null;
@@ -823,6 +836,14 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
             : raw.warrantyMonths != null && Number(raw.warrantyMonths) > 0
               ? Math.round(Number(raw.warrantyMonths))
               : null;
+        const warrantyMode =
+          manualKind === "service"
+            ? null
+            : warrantyMonths != null
+              ? "months"
+              : raw.warrantyMode
+                ? String(raw.warrantyMode)
+                : null;
         const lineBase = roundMoney(unitPrice * quantity);
         const lineTotal = computeLineTotal(unitPrice, quantity, discountPct);
         subtotal = roundMoney(subtotal + lineBase);
@@ -848,6 +869,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
               : String(raw.upc || "").trim().slice(0, 255) || null,
           serials,
           warrantyMonths,
+          warrantyMode,
           requiresSerial: requireSerialManual || serials.length > 0,
           isManual: true,
           providerId: null,
@@ -881,6 +903,28 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
 
       const serialFlags = await getProductSerialFlags(productId);
       const productProviderId = Number(product.providerId);
+
+      let resolvedWarranty: {
+        warrantyMode: string | null;
+        warrantyMonths: number | null;
+      };
+      try {
+        resolvedWarranty = resolvePosLineWarranty({
+          providerId: productProviderId,
+          isPC: serialFlags.isPC,
+          catalogMode: serialFlags.warrantyMode,
+          catalogMonths: serialFlags.warrantyMonths,
+          clientMode: raw.warrantyMode,
+          clientMonths: raw.warrantyMonths,
+          clientUnit: raw.warrantyUnit,
+          requireCashierChoice: true,
+        });
+      } catch (e: any) {
+        return res.status(400).json({
+          ok: false,
+          message: `${product.name}: ${e.message || "Garantía inválida"}`,
+        });
+      }
 
       const providerBranches = await prisma.branches.findMany({
         where: { providerId: product.providerId },
@@ -1007,7 +1051,8 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
         productSku: product.sku,
         productUpc: product.upc,
         serials,
-        warrantyMonths: serialFlags.warrantyMonths,
+        warrantyMonths: resolvedWarranty.warrantyMonths,
+        warrantyMode: resolvedWarranty.warrantyMode,
         requiresSerial: Boolean(serialFlags.requiresSerial),
         isManual: false,
         providerId: productProviderId,
@@ -1393,6 +1438,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
               customerUserId: customerUser,
               customerName: displayName,
               warrantyMonths: norm.warrantyMonths,
+              warrantyMode: norm.warrantyMode,
             });
           }
         }
@@ -1832,20 +1878,15 @@ export const getPosSaleWarrantySheet = async (req: Request, res: Response) => {
               {
                 serialNumber: "—",
                 warrantyMonths: null as number | null,
+                warrantyMode: null as string | null,
                 warrantyExpiresAt: null as string | null,
               },
             ];
       for (const s of serials) {
-        const months =
-          s.warrantyMonths != null && Number(s.warrantyMonths) > 0
-            ? Number(s.warrantyMonths)
-            : null;
-          const tiempo =
-          months == null
-            ? "Según marca / centro de servicio"
-            : months >= 12 && months % 12 === 0
-              ? `${months / 12} Año${months / 12 === 1 ? "" : "s"}`
-              : `${months} mes${months === 1 ? "" : "es"}`;
+        const tiempo = warrantyCoverageLabel(
+          (s as any).warrantyMode,
+          s.warrantyMonths,
+        );
         const upc = meaningfulCode(it.productUpc) || "—";
         const clave = meaningfulCode(it.productSku) || "—";
         rows.push(`
