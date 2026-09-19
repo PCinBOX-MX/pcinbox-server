@@ -1,20 +1,18 @@
 /** HTML del ticket de venta POS (layout tipo proveedor, branding PCinBOX). */
 
-import {
-  resolveTicketBranchLabel,
-} from "../../constants/pcinbox-branch-display";
-
-const SELLER = "PCinBOX";
+const SELLER = "pcinbox";
 const LOGO =
   "https://ik.imagekit.io/pcinboxkit/logos/logo.png?updatedAt=1759534318587";
 const WEB = "www.pcinbox.com.mx";
 const ADDRESS =
   "Blvd. Juan Alonso de Torres Pte. No. 1917 Local 1 Col. Unión Comunitaria de León C.P. 37239 León, Gto., México";
 const DISCLAIMER_PARAGRAPHS = [
-  "PCinBOX no se hace responsable si usted eligió mal el producto o por incompatibilidad con su equipo.",
+  "pcinbox no se hace responsable si usted eligió mal el producto o por incompatibilidad con su equipo.",
   "Es responsabilidad del cliente revisar lo que se entrega y hacer reclamo u observación en su momento.",
   "No hay devolución ni cambios de productos. Cualquier devolución justificada genera el 20% de comisión.",
 ] as const;
+const TERMS_LINE =
+  "Acepto términos y condiciones de pcinbox en mantenimiento preventivo y correctivo";
 
 function isMeaningfulCode(value?: string | null): boolean {
   const v = String(value || "").trim();
@@ -79,6 +77,7 @@ const METHOD_LABEL: Record<string, string> = {
   tarjeta_debito_sucursal: "Tarjeta de Débito",
   transferencia_bancaria: "Transferencia",
   openpay_link: "OpenPay",
+  otro: "Otro",
 };
 
 function parsePagoCambio(sale: TicketSale) {
@@ -87,7 +86,7 @@ function parsePagoCambio(sale: TicketSale) {
   let hasCashReceived = false;
   let cambio = 0;
   for (const p of sale.payments) {
-    if (p.method === "efectivo_sucursal") {
+    if (p.method === "efectivo_sucursal" || p.method === "otro") {
       const ref = String(p.reference || "");
       const rec = ref.match(/Recibido\s+([\d.]+)/i);
       const cam = ref.match(/Cambio\s+([\d.]+)/i);
@@ -114,23 +113,28 @@ function truncateTicketName(name: string, max = 220): string {
   return `${s.slice(0, Math.max(1, max - 1))}…`;
 }
 
+function formatTicketFolio(folio: string | null | undefined): string {
+  return String(folio || "")
+    .trim()
+    .replace(/^PV-/i, "");
+}
+
 export function buildPosSaleTicketHtml(data: TicketSale): string {
   const { pago, cambio } = parsePagoCambio(data);
   const productCount = data.items.reduce(
     (s, it) => s + Number(it.quantity || 0),
     0,
   );
-  const headerBranch = resolveTicketBranchLabel({
-    itemBranchName: data.items.find((it) => it.branchName)?.branchName,
-    saleBranchName: data.branchName,
-  });
 
   const itemsHtml = data.items
     .map((it) => {
-      const itemBranch = resolveTicketBranchLabel({
-        itemBranchName: it.branchName,
-        saleBranchName: data.branchName,
-      });
+      const qty = Number(it.quantity) || 0;
+      const unit = Number(it.unitPrice) || 0;
+      const lineTotal = Number(it.lineTotal) || 0;
+      const qtyLine =
+        qty > 1
+          ? `<div>Cant: ${qty} x ${formatMoney(unit)}</div>`
+          : `<div>Cantidad: ${qty || 1}</div>`;
       const serialLine =
         it.serials && it.serials.length
           ? `<div class="muted">S/N: ${it.serials
@@ -142,11 +146,10 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
         <div class="item-name">${escapeHtml(truncateTicketName(it.productName))}</div>
         ${isMeaningfulCode(it.productSku) ? `<div>Clave: ${escapeHtml(String(it.productSku))}</div>` : ""}
         ${isMeaningfulCode(it.productUpc) ? `<div>UPC: ${escapeHtml(String(it.productUpc))}</div>` : ""}
-        <div>Bodega: ${escapeHtml(itemBranch)}</div>
-        <div>Cantidad: ${it.quantity}</div>
+        ${qtyLine}
         <div class="item-prices">
-          <span>${formatMoney(it.unitPrice)}</span>
-          <span>${formatMoney(it.lineTotal)}</span>
+          <span>Importe:</span>
+          <span>${formatMoney(lineTotal)}</span>
         </div>
         ${serialLine}
       </div>`;
@@ -154,12 +157,31 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
     .join("");
 
   const paymentsHtml = data.payments
-    .map(
-      (p) =>
-        `<div class="pay-line"><span>${METHOD_LABEL[p.method] || p.method}${
-          p.reference ? `<br/><small>${escapeHtml(p.reference)}</small>` : ""
-        }</span><strong>${formatMoney(p.amount)}</strong></div>`,
-    )
+    .map((p) => {
+      const ref = String(p.reference || "").trim();
+      const rec = ref.match(/Recibido\s+([\d.]+)/i);
+      const cam = ref.match(/Cambio\s+([\d.]+)/i);
+      let label: string;
+      if (p.method === "otro") {
+        const detail = ref
+          .replace(/\s*·\s*Recibido\s+[\d.]+/gi, "")
+          .replace(/\s*·\s*Cambio\s+[\d.]+/gi, "")
+          .replace(/\s*Recibido\s+[\d.]+/gi, "")
+          .replace(/\s*Cambio\s+[\d.]+/gi, "")
+          .replace(/^\s*·\s*|\s*·\s*$/g, "")
+          .trim();
+        label = detail ? `Otro: ${escapeHtml(detail)}` : "Otro";
+      } else {
+        label = METHOD_LABEL[p.method] || p.method;
+      }
+      const amount = rec ? Number(rec[1]) || 0 : Number(p.amount) || 0;
+      const sub = cam
+        ? `<br/><small>Cambio ${formatMoney(Number(cam[1]) || 0)}</small>`
+        : !rec && ref && !/Recibido|Cambio/i.test(ref)
+          ? `<br/><small>${escapeHtml(ref)}</small>`
+          : "";
+      return `<div class="pay-line"><span>${label}${sub}</span><strong>${formatMoney(amount)}</strong></div>`;
+    })
     .join("");
 
   return `<!DOCTYPE html>
@@ -167,7 +189,7 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Ticket ${escapeHtml(data.folio)}</title>
+  <title>Ticket ${escapeHtml(formatTicketFolio(data.folio))}</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #111; background: #f3f4f6; padding: 24px; }
@@ -207,15 +229,19 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
 <body>
   <div class="ticket">
     <div class="brand">
-      <img src="${LOGO}" alt="PCinBOX" />
-      <h1>PCinBOX</h1>
+      <img
+        src="${LOGO}"
+        alt=""
+        onerror="this.style.display='none';var ok=document.getElementById('brand-ok');var fb=document.getElementById('brand-fb');if(ok)ok.style.display='none';if(fb)fb.style.display='block'"
+      />
+      <h1 id="brand-ok">pcinbox</h1>
+      <h1 id="brand-fb" style="display:none">pcinbox</h1>
       <div class="title">TICKET DE VENTA</div>
-      <div class="branch">${escapeHtml(headerBranch)}</div>
       <div class="muted" style="margin-top:6px;line-height:1.35">${escapeHtml(ADDRESS)}</div>
       <div class="muted">${escapeHtml(WEB)}</div>
     </div>
     <div class="meta">
-      <div>Número Venta: ${escapeHtml(data.folio)}</div>
+      <div>Folio: ${escapeHtml(formatTicketFolio(data.folio))}</div>
       ${
         data.status && data.status !== "completed"
           ? `<div style="color:#b45309;font-weight:700">Estado: ${escapeHtml(
@@ -264,6 +290,7 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
       ${DISCLAIMER_PARAGRAPHS.map(
         (p) => `<p>${escapeHtml(p)}</p>`,
       ).join("")}
+      <p>${escapeHtml(TERMS_LINE)}</p>
       <div class="web">${escapeHtml(WEB)}</div>
     </div>
     ${

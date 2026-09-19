@@ -15,6 +15,7 @@ import {
 import { productsHaveSerialColumns } from "../../services/pos/posSerialFlags.service";
 import {
   decrementPosStock,
+  POS_STOCK_PROVIDER_ID,
   restorePosStock,
 } from "../../services/pos/posStock.service";
 import {
@@ -39,8 +40,6 @@ import {
   releaseSerialsOnCancel,
   searchSerials,
 } from "../../services/pos/posSerial.service";
-import { completePendingPosSale } from "../../services/pos/posComplete.service";
-import { createLinkPayOnline } from "../../services/pasarelaPagos.service";
 import { resolvePosCashBranchId } from "../../constants/pcinbox-pickup.constants";
 import {
   formatPcinboxBranchDisplayName,
@@ -53,6 +52,7 @@ import {
   POS_MANUAL_SERVICE_SKU,
 } from "../../services/pos/posManualProduct.service";
 import { buildPosSaleTicketHtml } from "../../services/pos/posTicketHtml.service";
+import { verifyPassword } from "../../services/index.service";
 
 const PAYMENT_METHODS = new Set([
   "efectivo_sucursal",
@@ -60,7 +60,7 @@ const PAYMENT_METHODS = new Set([
   "tarjeta_credito_sucursal",
   "tarjeta_debito_sucursal",
   "transferencia_bancaria",
-  "openpay_link",
+  "otro",
 ]);
 
 function money(n: unknown): number {
@@ -69,7 +69,12 @@ function money(n: unknown): number {
   return roundMoney(v);
 }
 
-/** Efectivo puede exceder (cambio); otros métodos no. */
+/** Efectivo y «Otro» pueden exceder (cambio); tarjeta/transferencia no. */
+function paymentAllowsChange(method: string): boolean {
+  return method === "efectivo_sucursal" || method === "otro";
+}
+
+/** Efectivo/Otro pueden exceder (cambio); tarjeta/transferencia no. */
 function settlePosPayments(
   total: number,
   payments: Array<{ method: string; amount: number }>,
@@ -77,7 +82,7 @@ function settlePosPayments(
   let nonCashSum = 0;
   let cashReceived = 0;
   for (const p of payments) {
-    if (p.method === "efectivo_sucursal") {
+    if (paymentAllowsChange(p.method)) {
       cashReceived = roundMoney(cashReceived + p.amount);
     } else {
       nonCashSum = roundMoney(nonCashSum + p.amount);
@@ -664,12 +669,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
           ok: true,
           message: "Venta ya registrada (reintento seguro)",
           alreadyProcessed: true,
-          data: {
-            ...serializeSale(existing),
-            paymentLink: existing.paymentLinkUrl || null,
-            checkoutLink: existing.checkoutLinkUrl || null,
-            linkReferencia: existing.linkReferencia || null,
-          },
+          data: serializeSale(existing),
         });
       }
     }
@@ -740,11 +740,11 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       warrantyMonths: number | null;
       requiresSerial: boolean;
       isManual: boolean;
+      providerId: number | null;
     }> = [];
 
     let subtotal = 0;
     let discountTotal = 0;
-    let hasOpenpayOnlyPending = false;
     const allSerials: string[] = [];
     const priceOverrides: Array<{
       productId: number;
@@ -850,6 +850,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
           warrantyMonths,
           requiresSerial: requireSerialManual || serials.length > 0,
           isManual: true,
+          providerId: null,
         });
         continue;
       }
@@ -901,6 +902,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       const requiresBranchPicker = providerBranchIds.size > 0;
 
       let resolvedBranchId: number | null = itemBranchId;
+      const tracksStock = productProviderId === POS_STOCK_PROVIDER_ID;
       if (requiresBranchPicker) {
         if (
           resolvedBranchId == null ||
@@ -918,24 +920,26 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
             message: `Bodega no válida para: ${product.name}`,
           });
         }
-        const stockRow = sellableStockRows.find(
-          (r) => Number(r.branchId) === resolvedBranchId,
-        );
-        const available =
-          stockRow != null
-            ? Number(stockRow.stock)
-            : // sin fila product_stock: no hay existencia por bodega
-              0;
-        if (available < quantity) {
-          return res.status(400).json({
-            ok: false,
-            message: `Stock insuficiente en bodega para: ${product.name} (disp. ${available})`,
-          });
+        if (tracksStock) {
+          const stockRow = sellableStockRows.find(
+            (r) => Number(r.branchId) === resolvedBranchId,
+          );
+          const available =
+            stockRow != null
+              ? Number(stockRow.stock)
+              : // sin fila product_stock: no hay existencia por bodega
+                0;
+          if (available < quantity) {
+            return res.status(400).json({
+              ok: false,
+              message: `Stock insuficiente en bodega para: ${product.name} (disp. ${available})`,
+            });
+          }
         }
       } else {
         // Provider 1 / sin bodegas vendibles: stock global, sin branchId.
         resolvedBranchId = null;
-        if (Number(product.stock) < quantity) {
+        if (tracksStock && Number(product.stock) < quantity) {
           return res.status(400).json({
             ok: false,
             message: `Stock insuficiente para: ${product.name}`,
@@ -1006,6 +1010,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
         warrantyMonths: serialFlags.warrantyMonths,
         requiresSerial: Boolean(serialFlags.requiresSerial),
         isManual: false,
+        providerId: productProviderId,
       });
     }
 
@@ -1039,11 +1044,20 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
           message: "Monto de pago inválido",
         });
       }
-      if (method === "openpay_link") hasOpenpayOnlyPending = true;
+      const referenceRaw = raw.reference
+        ? String(raw.reference).trim().slice(0, 255)
+        : "";
+      if (method === "otro" && referenceRaw.length < 2) {
+        return res.status(400).json({
+          ok: false,
+          message:
+            "En forma de pago «Otro» indica el método (mín. 2 caracteres)",
+        });
+      }
       normalizedPayments.push({
         method,
         amount,
-        reference: raw.reference ? String(raw.reference).slice(0, 255) : null,
+        reference: referenceRaw || null,
       });
     }
 
@@ -1052,66 +1066,105 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       return res.status(400).json({
         ok: false,
         message:
-          "Tarjeta/transferencia no pueden superar el total. El excedente solo aplica en efectivo (cambio).",
+          "Tarjeta/transferencia no pueden superar el total. El excedente solo aplica en efectivo u «Otro» (cambio).",
       });
     }
     if (!settlement.balanced) {
       return res.status(400).json({
         ok: false,
-        message: `Falta por cubrir ${settlement.remaining}. Recibido en efectivo: ${settlement.cashReceived}; adeudo efectivo: ${settlement.cashDue}.`,
+        message: `Falta por cubrir ${settlement.remaining}. Recibido (efectivo/Otro): ${settlement.cashReceived}; adeudo: ${settlement.cashDue}.`,
       });
     }
 
     // Persistir monto aplicado a la venta (no el billete); recibido/cambio en reference.
-    const nonCashPayments = normalizedPayments.filter(
-      (p) => p.method !== "efectivo_sucursal",
+    const exactPayments = normalizedPayments.filter(
+      (p) => !paymentAllowsChange(p.method),
     );
-    const cashUserRefs = normalizedPayments
+    const changePayments = normalizedPayments.filter((p) =>
+      paymentAllowsChange(p.method),
+    );
+    const efectivoReceived = roundMoney(
+      changePayments
+        .filter((p) => p.method === "efectivo_sucursal")
+        .reduce((s, p) => s + p.amount, 0),
+    );
+    const otroReceived = roundMoney(
+      changePayments
+        .filter((p) => p.method === "otro")
+        .reduce((s, p) => s + p.amount, 0),
+    );
+    const efectivoUserRefs = changePayments
       .filter((p) => p.method === "efectivo_sucursal")
       .map((p) => p.reference)
       .filter(Boolean)
       .join(" | ");
-    const cashRefParts = [
-      settlement.cashReceived > settlement.cashDue + 0.009
-        ? `Recibido ${settlement.cashReceived.toFixed(2)}`
-        : null,
-      settlement.changeDue > 0.009
-        ? `Cambio ${settlement.changeDue.toFixed(2)}`
-        : null,
-      cashUserRefs || null,
-    ].filter(Boolean);
+    const otroUserRefs = changePayments
+      .filter((p) => p.method === "otro")
+      .map((p) => p.reference)
+      .filter(Boolean)
+      .join(" | ");
+
+    // Primero efectivo (afecta caja), luego Otro.
+    let dueLeft = settlement.cashDue;
+    const appliedEfectivo = roundMoney(Math.min(efectivoReceived, dueLeft));
+    dueLeft = roundMoney(Math.max(0, dueLeft - appliedEfectivo));
+    const appliedOtro = roundMoney(Math.min(otroReceived, dueLeft));
+
     const finalPayments: Array<{
       method: any;
       amount: number;
       reference: string | null;
-    }> = [...nonCashPayments];
-    if (settlement.cashDue > 0.009) {
+    }> = [...exactPayments];
+
+    if (appliedEfectivo > 0.009) {
+      const cashRefParts = [
+        efectivoReceived > appliedEfectivo + 0.009
+          ? `Recibido ${efectivoReceived.toFixed(2)}`
+          : null,
+        settlement.changeDue > 0.009 && !(otroReceived > 0.009)
+          ? `Cambio ${settlement.changeDue.toFixed(2)}`
+          : efectivoReceived > appliedEfectivo + 0.009
+            ? `Cambio ${roundMoney(efectivoReceived - appliedEfectivo).toFixed(2)}`
+            : null,
+        efectivoUserRefs || null,
+      ].filter(Boolean);
       finalPayments.push({
         method: "efectivo_sucursal",
-        amount: settlement.cashDue,
+        amount: appliedEfectivo,
         reference: cashRefParts.length
           ? cashRefParts.join(" · ").slice(0, 255)
           : null,
       });
     }
 
-    // OpenPay link alone → pending (no stock yet). Mixed with immediate methods not allowed with openpay in MVP.
-    const onlyOpenpay =
-      finalPayments.length === 1 &&
-      finalPayments[0]?.method === "openpay_link";
-    const hasOpenpay = finalPayments.some((p) => p.method === "openpay_link");
-    if (hasOpenpay && !onlyOpenpay) {
-      return res.status(400).json({
-        ok: false,
-        message:
-          "OpenPay link no se puede combinar con otros métodos en esta versión. Cobra en efectivo/tarjeta/transferencia o solo con link.",
+    if (appliedOtro > 0.009) {
+      const otroRefParts = [
+        otroUserRefs || null,
+        otroReceived > appliedOtro + 0.009
+          ? `Recibido ${otroReceived.toFixed(2)}`
+          : null,
+        settlement.changeDue > 0.009 &&
+        (otroReceived > appliedOtro + 0.009 || appliedEfectivo <= 0.009)
+          ? `Cambio ${
+              otroReceived > appliedOtro + 0.009
+                ? roundMoney(otroReceived - appliedOtro).toFixed(2)
+                : settlement.changeDue.toFixed(2)
+            }`
+          : null,
+      ].filter(Boolean);
+      finalPayments.push({
+        method: "otro",
+        amount: appliedOtro,
+        reference: otroRefParts.length
+          ? otroRefParts.join(" · ").slice(0, 255)
+          : null,
       });
     }
 
-    const status = onlyOpenpay ? "pending_payment" : "completed";
-    void hasOpenpayOnlyPending;
+    const status = "completed" as const;
 
-    const cashAmount = settlement.cashDue;
+    // Solo efectivo en caja física (Otro no mueve gaveta/sesión).
+    const cashAmount = appliedEfectivo;
 
     // Encabezado / caja: siempre bodega física PCinBOX (ignorar branchId del body).
     let branch = await resolvePosCashBranchId();
@@ -1207,29 +1260,18 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       guestPhone = guestPhone || exists.phone || "";
     }
 
-    if (onlyOpenpay) {
-      if (!guestEmail || !guestPhone) {
-        return res.status(400).json({
-          ok: false,
-          message:
-            "Para OpenPay link necesitas email y teléfono del cliente (o seleccionar un cliente registrado con esos datos).",
-        });
-      }
-      if (!guestName) guestName = "Cliente POS";
-    } else {
-      if (!guestName || guestName.trim().length < 2) {
-        return res.status(400).json({
-          ok: false,
-          message: "Nombre del cliente requerido (mín. 2 caracteres)",
-        });
-      }
-      const phoneDigits = String(guestPhone || "").replace(/\D/g, "");
-      if (phoneDigits.length < 10) {
-        return res.status(400).json({
-          ok: false,
-          message: "Teléfono del cliente requerido (10 dígitos)",
-        });
-      }
+    if (!guestName || guestName.trim().length < 2) {
+      return res.status(400).json({
+        ok: false,
+        message: "Nombre del cliente requerido (mín. 2 caracteres)",
+      });
+    }
+    const phoneDigits = String(guestPhone || "").replace(/\D/g, "");
+    if (phoneDigits.length < 10) {
+      return res.status(400).json({
+        ok: false,
+        message: "Teléfono del cliente requerido (10 dígitos)",
+      });
     }
 
     const sale = await prisma.$transaction(async (tx) => {
@@ -1251,8 +1293,8 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
           cashierUserId,
           customerUserId: customerUser,
           customerName: displayName,
-          customerEmail: onlyOpenpay ? guestEmail : guestEmail || null,
-          customerPhone: onlyOpenpay ? guestPhone : guestPhone || null,
+          customerEmail: guestEmail || null,
+          customerPhone: guestPhone || null,
           status,
           subtotal,
           discountTotal,
@@ -1309,26 +1351,6 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
                   stockReservedOnCreate: true,
                 } as Prisma.InputJsonValue,
               },
-              ...(status === "pending_payment" &&
-              normalizedItems.some((it) => it.serials.length > 0)
-                ? [
-                    {
-                      userId: cashierUserId,
-                      eventType: "serials_pending",
-                      reason: null,
-                      payload: {
-                        lines: normalizedItems
-                          .filter((it) => it.serials.length > 0)
-                          .map((it) => ({
-                            productId: it.productId,
-                            branchId: it.branchId,
-                            serials: it.serials,
-                            warrantyMonths: it.warrantyMonths,
-                          })),
-                      } as Prisma.InputJsonValue,
-                    },
-                  ]
-                : []),
             ],
           },
         },
@@ -1347,7 +1369,6 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       const allSerialsFlat = normalizedItems.flatMap((it) => it.serials);
       if (allSerialsFlat.length > 0) {
         await assertSerialsAvailable(tx, allSerialsFlat);
-        // Solo asignar series si la venta ya está cobrada. OpenPay pendiente las guarda en evento.
         if (status === "completed") {
           const usedItemIds = new Set<number>();
           for (const norm of normalizedItems) {
@@ -1380,7 +1401,10 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       // Reserva stock también en pending_payment (OpenPay); al confirmar no se vuelve a descontar.
       {
         const stockItems = normalizedItems
-          .filter((it) => !it.isManual)
+          .filter(
+            (it) =>
+              !it.isManual && it.providerId === POS_STOCK_PROVIDER_ID,
+          )
           .map((it) => ({
             productId: it.productId,
             quantity: it.quantity,
@@ -1405,100 +1429,6 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       });
     }
 
-    let paymentLink: string | null = null;
-    let checkoutLink: string | null = null;
-    let linkReferencia: string | null = null;
-
-    if (onlyOpenpay) {
-      try {
-        const linkRes = await createLinkPayOnline({
-          name: guestName,
-          lastname: guestLastname || null,
-          email: guestEmail,
-          phone: guestPhone,
-          monto: total,
-          products: normalizedItems.map((it) => ({
-            idProduct: it.productId,
-            name: it.productName,
-            price: it.lineTotal / it.quantity,
-            quantity: it.quantity,
-          })),
-        });
-
-        paymentLink = linkRes.link || null;
-        checkoutLink = linkRes.checkoutLink || null;
-        linkReferencia = linkRes.referencia || null;
-
-        const openPayPayment = sale.payments.find(
-          (p) => p.method === "openpay_link",
-        );
-        if (openPayPayment) {
-          await prisma.pos_payments.update({
-            where: { idPosPayment: openPayPayment.idPosPayment },
-            data: {
-              reference: [
-                linkReferencia,
-                paymentLink,
-                checkoutLink,
-              ]
-                .filter(Boolean)
-                .join(" | ")
-                .slice(0, 255),
-            },
-          });
-        }
-
-        await prisma.pos_sales.update({
-          where: { idPosSale: sale.idPosSale },
-          data: {
-            paymentLinkUrl: paymentLink,
-            checkoutLinkUrl: checkoutLink,
-            linkReferencia,
-            idLinkPago: linkRes.idLinkPago ?? null,
-          },
-        });
-
-        await prisma.pos_sale_events.create({
-          data: {
-            posSaleId: sale.idPosSale,
-            userId: cashierUserId,
-            eventType: "openpay_link_created",
-            payload: {
-              referencia: linkReferencia,
-              idLinkPago: linkRes.idLinkPago,
-              link: paymentLink,
-              checkoutLink,
-            } as Prisma.InputJsonValue,
-          },
-        });
-      } catch (linkError: any) {
-        await prisma.pos_sale_events.create({
-          data: {
-            posSaleId: sale.idPosSale,
-            userId: cashierUserId,
-            eventType: "openpay_link_failed",
-            reason: linkError?.message || "Error generando link",
-          },
-        });
-        return res.status(201).json({
-          ok: true,
-          message:
-            "Venta pendiente creada, pero falló la generación del link OpenPay. Revisa API_URL_PAGOS / pasarela.",
-          data: {
-            ...serializeSale(
-              (await prisma.pos_sales.findFirst({
-                where: { idPosSale: sale.idPosSale },
-                include: saleInclude,
-              }))!,
-            ),
-            paymentLink: null,
-            checkoutLink: null,
-            linkError: linkError?.message || "Error generando link",
-          },
-        });
-      }
-    }
-
     const fresh = await prisma.pos_sales.findFirst({
       where: { idPosSale: sale.idPosSale },
       include: saleInclude,
@@ -1506,16 +1436,8 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
 
     return res.status(201).json({
       ok: true,
-      message:
-        status === "pending_payment"
-          ? "Venta pendiente: comparte el link OpenPay. El stock ya quedó reservado; se libera solo si cancelas la venta."
-          : "Venta POS completada",
-      data: {
-        ...serializeSale(fresh!),
-        paymentLink,
-        checkoutLink,
-        linkReferencia,
-      },
+      message: "Venta POS completada",
+      data: serializeSale(fresh!),
     });
   } catch (error: any) {
     const rawIdem =
@@ -1541,12 +1463,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
             ok: true,
             message: "Venta ya registrada (reintento seguro)",
             alreadyProcessed: true,
-            data: {
-              ...serializeSale(raced),
-              paymentLink: raced.paymentLinkUrl || null,
-              checkoutLink: raced.checkoutLinkUrl || null,
-              linkReferencia: raced.linkReferencia || null,
-            },
+            data: serializeSale(raced),
           });
         }
       } catch {
@@ -1666,6 +1583,7 @@ export const cancelPosSale = async (req: CustomRequestI, res: Response) => {
     const userId = Number(req.idUser);
     const id = Number(req.params.id);
     const reason = String(req.body?.reason || "").trim();
+    const password = String(req.body?.password || "");
 
     if (!Number.isSafeInteger(id) || id <= 0) {
       return res.status(400).json({ ok: false, message: "ID inválido" });
@@ -1674,6 +1592,38 @@ export const cancelPosSale = async (req: CustomRequestI, res: Response) => {
       return res.status(400).json({
         ok: false,
         message: "Indica un motivo de cancelación (mín. 3 caracteres)",
+      });
+    }
+    if (!password) {
+      return res.status(400).json({
+        ok: false,
+        message: "Confirma la cancelación con tu contraseña de administrador",
+      });
+    }
+
+    const adminUser = await prisma.users.findFirst({
+      where: { idUser: userId, active: 1 },
+      select: { idUser: true, role: true, password: true },
+    });
+    if (!adminUser?.password) {
+      return res.status(401).json({
+        ok: false,
+        message: "No se pudo validar tu sesión. Vuelve a iniciar sesión.",
+      });
+    }
+    if (adminUser.role !== "admin") {
+      return res.status(403).json({
+        ok: false,
+        message: "Solo un administrador puede cancelar ventas del POS",
+      });
+    }
+    const passwordOk = await verifyPassword(password, adminUser.password);
+    if (!passwordOk) {
+      // 403 (no 401): la sesión JWT sigue válida; solo falló la re-auth de cancelación.
+      // Un 401 en el admin dispara "sesión expirada" y cierra este modal.
+      return res.status(403).json({
+        ok: false,
+        message: "Contraseña incorrecta",
       });
     }
 
@@ -1775,229 +1725,6 @@ export const cancelPosSale = async (req: CustomRequestI, res: Response) => {
     return res.status(400).json({
       ok: false,
       message: error?.message || "No se pudo cancelar la venta",
-    });
-  }
-};
-
-/** Confirma pago de venta pending_payment (p.ej. OpenPay ya cobrado). Stock ya reservado. */
-export const confirmPosPayment = async (req: CustomRequestI, res: Response) => {
-  try {
-    const userId = Number(req.idUser);
-    const id = Number(req.params.id);
-    if (!Number.isSafeInteger(id) || id <= 0) {
-      return res.status(400).json({ ok: false, message: "ID inválido" });
-    }
-
-    const posRole = await resolvePosRole(req);
-    if (posRole !== "admin") {
-      return res.status(403).json({
-        ok: false,
-        message:
-          "Solo un administrador puede confirmar el pago manualmente. El cobro OpenPay debe llegar por webhook.",
-      });
-    }
-    const note = String(req.body?.note || "").trim();
-    if (note.length < 5) {
-      return res.status(400).json({
-        ok: false,
-        message:
-          "Indica un motivo/nota de confirmación manual (mín. 5 caracteres).",
-      });
-    }
-
-    const result = await completePendingPosSale({
-      idPosSale: id,
-      userId,
-      note,
-      source: "manual",
-    });
-
-    return res.json({
-      ok: true,
-      message: result.alreadyCompleted
-        ? "La venta ya estaba completada"
-        : "Pago confirmado. El inventario ya estaba reservado.",
-      data: serializeSale(result.sale),
-    });
-  } catch (error: any) {
-    return res.status(400).json({
-      ok: false,
-      message: error?.message || "No se pudo confirmar el pago",
-    });
-  }
-};
-
-/**
- * Callback interno desde la pasarela cuando un link OpenPay (ORD-…) se paga.
- * Auth: header X-POS-Internal-Secret === POS_INTERNAL_SECRET
- */
-export const completePosByOpenPayLink = async (req: Request, res: Response) => {
-  try {
-    const expected = process.env.POS_INTERNAL_SECRET?.trim();
-    const provided = String(
-      req.headers["x-pos-internal-secret"] || "",
-    ).trim();
-    if (!expected || !provided || provided !== expected) {
-      return res.status(401).json({ ok: false, message: "No autorizado" });
-    }
-
-    const idLinkPago =
-      req.body?.idLinkPago != null ? Number(req.body.idLinkPago) : null;
-    const linkReferencia = req.body?.linkReferencia
-      ? String(req.body.linkReferencia)
-      : null;
-
-    const result = await completePendingPosSale({
-      idLinkPago,
-      linkReferencia,
-      userId: null,
-      note: "Confirmación automática OpenPay webhook",
-      source: "openpay_webhook",
-    });
-
-    return res.json({
-      ok: true,
-      alreadyCompleted: result.alreadyCompleted,
-      message: result.alreadyCompleted
-        ? "Venta POS ya estaba completada"
-        : "Venta POS completada por webhook OpenPay",
-      data: {
-        idPosSale: Number(result.sale.idPosSale),
-        folio: result.sale.folio,
-        status: result.sale.status,
-      },
-    });
-  } catch (error: any) {
-    // 404 si no hay venta POS ligada (link de admin genérico, no POS)
-    const msg = error?.message || "No se pudo completar venta POS";
-    const notFound = /no encontrada/i.test(msg);
-    return res.status(notFound ? 404 : 400).json({
-      ok: false,
-      message: msg,
-    });
-  }
-};
-
-/** Regenera link OpenPay para una venta pending_payment. */
-export const retryPosPaymentLink = async (
-  req: CustomRequestI,
-  res: Response,
-) => {
-  try {
-    const userId = Number(req.idUser);
-    const id = Number(req.params.id);
-    if (!Number.isSafeInteger(id) || id <= 0) {
-      return res.status(400).json({ ok: false, message: "ID inválido" });
-    }
-
-    const sale = await prisma.pos_sales.findFirst({
-      where: { idPosSale: id },
-      include: { items: true, payments: true, customer: true },
-    });
-    if (!sale) {
-      return res.status(404).json({ ok: false, message: "Venta no encontrada" });
-    }
-    if (sale.status !== "pending_payment") {
-      return res.status(400).json({
-        ok: false,
-        message: "Solo se puede regenerar link en ventas pendientes de pago",
-      });
-    }
-
-    const hasOpenpay = sale.payments.some((p) => p.method === "openpay_link");
-    if (!hasOpenpay) {
-      return res.status(400).json({
-        ok: false,
-        message: "Esta venta no usa OpenPay link",
-      });
-    }
-
-    const email =
-      String(req.body?.email || sale.customerEmail || sale.customer?.email || "").trim();
-    const phone =
-      String(req.body?.phone || sale.customerPhone || sale.customer?.phone || "").trim();
-    const name =
-      String(sale.customerName || sale.customer?.name || "Cliente POS").trim();
-    const lastname = sale.customer?.lastname || "";
-
-    if (!email || !phone) {
-      return res.status(400).json({
-        ok: false,
-        message: "Email y teléfono son requeridos para regenerar el link",
-      });
-    }
-
-    const linkRes = await createLinkPayOnline({
-      name,
-      lastname,
-      email,
-      phone,
-      monto: Number(sale.total),
-      products: sale.items.map((it) => ({
-        idProduct: Number(it.productId),
-        name: it.productName,
-        price: Number(it.lineTotal) / Math.max(1, Number(it.quantity)),
-        quantity: Number(it.quantity),
-      })),
-    });
-
-    const updated = await prisma.pos_sales.update({
-      where: { idPosSale: id },
-      data: {
-        customerEmail: email,
-        customerPhone: phone,
-        paymentLinkUrl: linkRes.link || null,
-        checkoutLinkUrl: linkRes.checkoutLink || null,
-        linkReferencia: linkRes.referencia || null,
-        idLinkPago: linkRes.idLinkPago ?? null,
-        events: {
-          create: {
-            userId,
-            eventType: "openpay_link_retry",
-            payload: {
-              referencia: linkRes.referencia,
-              idLinkPago: linkRes.idLinkPago,
-              link: linkRes.link,
-              checkoutLink: linkRes.checkoutLink,
-            } as Prisma.InputJsonValue,
-          },
-        },
-      },
-      include: saleInclude,
-    });
-
-    const openPayPayment = updated.payments.find((p) => p.method === "openpay_link");
-    if (openPayPayment) {
-      await prisma.pos_payments.update({
-        where: { idPosPayment: openPayPayment.idPosPayment },
-        data: {
-          reference: [linkRes.referencia, linkRes.link, linkRes.checkoutLink]
-            .filter(Boolean)
-            .join(" | ")
-            .slice(0, 255),
-        },
-      });
-    }
-
-    return res.json({
-      ok: true,
-      message: "Link OpenPay regenerado",
-      data: {
-        ...serializeSale(
-          await prisma.pos_sales.findFirst({
-            where: { idPosSale: id },
-            include: saleInclude,
-          }),
-        ),
-        paymentLink: linkRes.link,
-        checkoutLink: linkRes.checkoutLink,
-        linkReferencia: linkRes.referencia,
-      },
-    });
-  } catch (error: any) {
-    return res.status(400).json({
-      ok: false,
-      message: error?.message || "No se pudo regenerar el link",
     });
   }
 };
@@ -2178,7 +1905,7 @@ export const getPosSaleWarrantySheet = async (req: Request, res: Response) => {
     <p class="addr">${escapeHtml(ADDRESS)} · ${escapeHtml(branchLabel)}</p>
     <div class="meta">
       <div><strong>Número de garantía:</strong> ${escapeHtml(warrantyNumber)}</div>
-      <div><strong>Folio venta:</strong> ${escapeHtml(data.folio)}</div>
+      <div><strong>Folio venta:</strong> ${escapeHtml(String(data.folio || "").replace(/^PV-/i, ""))}</div>
       <div><strong>Fecha de compra:</strong> ${escapeHtml(warrantyDate)}</div>
       <div><strong>Vendedor:</strong> PCinBOX</div>
       <div><strong>Cliente:</strong> ${escapeHtml(data.customerName || "Público general")}</div>

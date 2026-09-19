@@ -12,6 +12,7 @@ import {
   getProductSerialFlags,
   productsHaveSerialColumns,
 } from "./posSerialFlags.service";
+import { POS_STOCK_PROVIDER_ID } from "./posStock.service";
 
 const SELLER_MAX_DISCOUNT_PCT = 3;
 
@@ -67,7 +68,7 @@ export async function nextPosFolio(
     `;
   }
 
-  return `PV-${String(next).padStart(7, "0")}`;
+  return String(next).padStart(7, "0");
 }
 
 export type PosBranchStock = {
@@ -412,10 +413,13 @@ export async function searchPosProducts(q: string, limit = 25) {
     });
     const preferred =
       stocksByBranch.find((s) => s.stock > 0) || stocksByBranch[0] || null;
+    // Solo providerId=1 bloquea venta por stock; el resto se puede cobrar sin descontar DB.
     const inStock =
-      stocksByBranch.length > 0
-        ? stocksByBranch.some((s) => s.stock > 0)
-        : Number(p.stock) > 0;
+      providerId !== POS_STOCK_PROVIDER_ID
+        ? true
+        : stocksByBranch.length > 0
+          ? stocksByBranch.some((s) => s.stock > 0)
+          : Number(p.stock) > 0;
 
     return {
       idProduct: Number(p.idProduct),
@@ -437,7 +441,9 @@ export async function searchPosProducts(q: string, limit = 25) {
       providerName,
       stocksByBranch,
       suggestedBranchId:
-        preferred && preferred.stock > 0 ? preferred.branchId : null,
+        preferred && preferred.stock > 0
+          ? preferred.branchId
+          : preferred?.branchId ?? null,
       inStock,
       score,
     };
@@ -565,9 +571,11 @@ export async function hydratePosProductsByIds(productIds: number[]) {
     const preferred =
       stocksByBranch.find((s) => s.stock > 0) || stocksByBranch[0] || null;
     const inStock =
-      stocksByBranch.length > 0
-        ? stocksByBranch.some((s) => s.stock > 0)
-        : Number(p.stock) > 0;
+      providerId !== POS_STOCK_PROVIDER_ID
+        ? true
+        : stocksByBranch.length > 0
+          ? stocksByBranch.some((s) => s.stock > 0)
+          : Number(p.stock) > 0;
 
     return {
       idProduct: Number(p.idProduct),
@@ -591,7 +599,9 @@ export async function hydratePosProductsByIds(productIds: number[]) {
       providerName,
       stocksByBranch,
       suggestedBranchId:
-        preferred && preferred.stock > 0 ? preferred.branchId : null,
+        preferred && preferred.stock > 0
+          ? preferred.branchId
+          : preferred?.branchId ?? null,
       inStock,
       score: 100,
     };

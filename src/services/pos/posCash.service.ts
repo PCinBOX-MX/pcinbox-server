@@ -500,6 +500,7 @@ async function summarizeSessionPayments(cashSessionId: number) {
     tarjeta_debito_sucursal: 0,
     transferencia_bancaria: 0,
     openpay_link: 0,
+    otro: 0,
   };
 
   const [completedAgg, cancelledCount, paymentAgg] = await Promise.all([

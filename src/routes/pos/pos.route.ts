@@ -7,8 +7,6 @@ import {
   addPosCashMovement,
   cancelPosSale,
   closePosCash,
-  completePosByOpenPayLink,
-  confirmPosPayment,
   createPosSale,
   getPosCashSessionById,
   getPosCashStatus,
@@ -25,7 +23,6 @@ import {
   markPosSerialRma,
   openPosCash,
   registerPosSerial,
-  retryPosPaymentLink,
   searchPosCustomers,
   searchPosProductsHandler,
   searchPosSerials,
@@ -33,9 +30,6 @@ import {
 } from "../../controllers/pos/pos.controller";
 
 const router = Router();
-
-// Sin auth de usuario: secreto compartido con la pasarela
-router.post("/internal/completeByOpenPayLink", completePosByOpenPayLink);
 
 router.use(MiddleAuthRoute, MiddlePosRoute);
 
@@ -50,8 +44,6 @@ router.get("/sales/:id", getPosSaleById);
 router.get("/sales/:id/ticket", getPosSaleTicket);
 router.get("/sales/:id/warranty", getPosSaleWarrantySheet);
 router.post("/sales/:id/cancel", cancelPosSale);
-router.post("/sales/:id/confirmPayment", confirmPosPayment);
-router.post("/sales/:id/retryPaymentLink", retryPosPaymentLink);
 
 router.get("/cash/status", getPosCashStatus);
 router.post("/cash/open", openPosCash);

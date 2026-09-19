@@ -1,5 +1,8 @@
 import { Prisma } from "@prisma/client";
 
+/** Solo el catálogo propio (providerId=1) mueve stock en DB al vender/cancelar POS. */
+export const POS_STOCK_PROVIDER_ID = 1;
+
 export type PosStockLine = {
   productId: number;
   quantity: number;
@@ -7,8 +10,29 @@ export type PosStockLine = {
   branchId?: number | null;
 };
 
+async function filterOwnedStockLines(
+  tx: Prisma.TransactionClient,
+  lines: PosStockLine[],
+): Promise<PosStockLine[]> {
+  const ids = [
+    ...new Set(
+      lines
+        .map((l) => Number(l.productId))
+        .filter((id) => Number.isSafeInteger(id) && id > 0),
+    ),
+  ];
+  if (ids.length === 0) return [];
+  const owned = await tx.products.findMany({
+    where: { idProduct: { in: ids }, providerId: POS_STOCK_PROVIDER_ID },
+    select: { idProduct: true },
+  });
+  const ownedSet = new Set(owned.map((p) => Number(p.idProduct)));
+  return lines.filter((l) => ownedSet.has(Number(l.productId)));
+}
+
 /**
  * Decrementa stock global + por bodega (si hay branchId) de forma atómica.
+ * Ignora productos que no sean providerId=1.
  */
 export async function decrementPosStock(
   tx: Prisma.TransactionClient,
@@ -16,7 +40,8 @@ export async function decrementPosStock(
   userId: number,
   refId: string,
 ) {
-  for (const line of lines) {
+  const ownedLines = await filterOwnedStockLines(tx, lines);
+  for (const line of ownedLines) {
     const productId = Number(line.productId);
     const quantity = Number(line.quantity);
     const branchId =
@@ -84,6 +109,7 @@ export async function decrementPosStock(
 
 /**
  * Restaura stock global + bodega al cancelar una venta POS.
+ * Solo providerId=1 (mismo criterio que el descuento).
  */
 export async function restorePosStock(
   tx: Prisma.TransactionClient,
@@ -91,7 +117,8 @@ export async function restorePosStock(
   userId: number,
   refId: string,
 ) {
-  for (const line of lines) {
+  const ownedLines = await filterOwnedStockLines(tx, lines);
+  for (const line of ownedLines) {
     const productId = Number(line.productId);
     const quantity = Number(line.quantity);
     const branchId =

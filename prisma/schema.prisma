@@ -37,7 +37,7 @@ model products {
   isPC            Int?            @db.TinyInt
   licenseType     String?         @db.VarChar(20)
   requiresSerial  Boolean         @default(false)
-  warrantyMonths  Int?            @default(12)
+  warrantyMonths  Int?
   createdAt       DateTime?       @default(now()) @db.DateTime(0)
   active          Int?            @default(1) @db.TinyInt
   cartItems            cartItems[]
@@ -624,6 +624,7 @@ enum pos_payment_method {
   tarjeta_debito_sucursal
   transferencia_bancaria
   openpay_link
+  otro
 }
 
 /// Sesión de caja por sucursal (Fase 2 POS).
