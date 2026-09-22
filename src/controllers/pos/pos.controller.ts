@@ -529,13 +529,19 @@ export const getPosQuoteByNumber = async (req: Request, res: Response) => {
         quoteStoreId: number | null;
       }
     > = [];
-    const missingProductIds: string[] = [];
+    const unresolvedIds: number[] = [];
+    const unresolvedIdStr: string[] = [];
 
     for (const line of lines) {
       const pid = Number(line.productId);
       const product = byId.get(pid);
       if (!product || !Number.isSafeInteger(pid)) {
-        missingProductIds.push(line.productId);
+        if (Number.isSafeInteger(pid) && pid > 0) {
+          unresolvedIds.push(pid);
+          unresolvedIdStr.push(String(line.productId));
+        } else {
+          unresolvedIdStr.push(String(line.productId));
+        }
         continue;
       }
 
@@ -554,6 +560,29 @@ export const getPosQuoteByNumber = async (req: Request, res: Response) => {
         quoteStoreId: line.storeId,
       });
     }
+
+    const uniqueUnresolved = [...new Set(unresolvedIds)];
+    const inactiveRows =
+      uniqueUnresolved.length > 0
+        ? await prisma.products.findMany({
+            where: {
+              idProduct: { in: uniqueUnresolved },
+              NOT: { active: 1 },
+            },
+            select: { idProduct: true, name: true },
+          })
+        : [];
+
+    const inactiveProducts = inactiveRows.map((p) => ({
+      idProduct: Number(p.idProduct),
+      name: String(p.name || `Producto #${p.idProduct}`),
+    }));
+    const inactiveIdSet = new Set(inactiveProducts.map((p) => p.idProduct));
+
+    const missingProductIds = unresolvedIdStr.filter((idStr) => {
+      const n = Number(idStr);
+      return !(Number.isSafeInteger(n) && inactiveIdSet.has(n));
+    });
 
     const customerName = quote.users
       ? [quote.users.name, quote.users.lastname].filter(Boolean).join(" ").trim()
@@ -576,6 +605,7 @@ export const getPosQuoteByNumber = async (req: Request, res: Response) => {
         },
         items,
         missingProductIds,
+        inactiveProducts,
       },
     });
   } catch (error: any) {

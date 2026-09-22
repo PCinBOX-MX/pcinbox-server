@@ -12,7 +12,6 @@ import {
   getProductSerialFlags,
   productsHaveSerialColumns,
 } from "./posSerialFlags.service";
-import { POS_STOCK_PROVIDER_ID } from "./posStock.service";
 
 const SELLER_MAX_DISCOUNT_PCT = 3;
 
@@ -415,13 +414,11 @@ export async function searchPosProducts(q: string, limit = 25) {
     });
     const preferred =
       stocksByBranch.find((s) => s.stock > 0) || stocksByBranch[0] || null;
-    // Solo providerId=1 bloquea venta por stock; el resto se puede cobrar sin descontar DB.
+    // Existencia real desde DB para los 3 proveedores.
     const inStock =
-      providerId !== POS_STOCK_PROVIDER_ID
-        ? true
-        : stocksByBranch.length > 0
-          ? stocksByBranch.some((s) => s.stock > 0)
-          : Number(p.stock) > 0;
+      stocksByBranch.length > 0
+        ? stocksByBranch.some((s) => s.stock > 0)
+        : Number(p.stock) > 0;
 
     return {
       idProduct: Number(p.idProduct),
@@ -578,12 +575,11 @@ export async function hydratePosProductsByIds(productIds: number[]) {
     });
     const preferred =
       stocksByBranch.find((s) => s.stock > 0) || stocksByBranch[0] || null;
+    // Existencia real desde DB (product_stock / products.stock) para los 3 proveedores.
     const inStock =
-      providerId !== POS_STOCK_PROVIDER_ID
-        ? true
-        : stocksByBranch.length > 0
-          ? stocksByBranch.some((s) => s.stock > 0)
-          : Number(p.stock) > 0;
+      stocksByBranch.length > 0
+        ? stocksByBranch.some((s) => s.stock > 0)
+        : Number(p.stock) > 0;
 
     return {
       idProduct: Number(p.idProduct),
