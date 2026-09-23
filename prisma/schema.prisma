@@ -58,17 +58,12 @@ model products {
   @@index([marcaId], map: "fk_marcaId_products_idx")
   @@index([categoryId], map: "fk_categoriaId_products_idx")
   @@index([licenseType], map: "products_software_license_idx")
-<<<<<<< HEAD
   @@index([categoryId, active, providerId], map: "products_catalog_list_idx")
   @@index([active, providerId], map: "products_active_provider_idx")
+  @@index([active], map: "idx_products_active")
   @@index([sku], map: "products_sku_idx")
   @@index([upc], map: "products_upc_idx")
-=======
-  @@index([active], map: "idx_products_active")
-  @@index([sku], map: "idx_products_sku")
-  @@index([upc], map: "idx_products_upc")
   @@index([idProductExt], map: "idx_products_idProductExt")
->>>>>>> pos
 }
 
 model providers {
