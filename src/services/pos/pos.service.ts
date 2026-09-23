@@ -67,7 +67,7 @@ export async function nextPosFolio(
     `;
   }
 
-  return String(next).padStart(7, "0");
+  return String(next);
 }
 
 export type PosBranchStock = {

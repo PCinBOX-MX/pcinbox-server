@@ -118,9 +118,11 @@ function truncateTicketName(name: string, max = 220): string {
 }
 
 function formatTicketFolio(folio: string | null | undefined): string {
-  return String(folio || "")
+  const raw = String(folio || "")
     .trim()
     .replace(/^PV-/i, "");
+  if (/^\d+$/.test(raw)) return String(Number(raw));
+  return raw;
 }
 
 export function buildPosSaleTicketHtml(data: TicketSale): string {

@@ -687,7 +687,7 @@ enum pos_cash_movement_type {
   sale_cash_void
 }
 
-/// Contador atómico de folios POS (PV-#######). Una sola fila con id = 1.
+/// Contador atómico de folios POS (entero desde 3414, sin ceros a la izquierda).
 model pos_folio_seq {
   id       Int    @id @default(1)
   next_val BigInt

@@ -1867,6 +1867,12 @@ export const getPosSaleWarrantySheet = async (req: Request, res: Response) => {
     }
     const formatMoney = (n: number) =>
       n.toLocaleString("es-MX", { style: "currency", currency: "MXN" });
+    const formatFolioDisplay = (folio: unknown) => {
+      const raw = String(folio || "")
+        .trim()
+        .replace(/^PV-/i, "");
+      return /^\d+$/.test(raw) ? String(Number(raw)) : raw;
+    };
     const branchLabel =
       formatPcinboxBranchDisplayName(data.branchName) ||
       formatPcinboxBranchDisplayName(
@@ -1936,7 +1942,7 @@ export const getPosSaleWarrantySheet = async (req: Request, res: Response) => {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Hoja de Garantía ${escapeHtml(data.folio)}</title>
+  <title>Hoja de Garantía ${escapeHtml(formatFolioDisplay(data.folio))}</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: Arial, Helvetica, sans-serif; color: #111; background: #f3f4f6; padding: 24px; }
@@ -1976,7 +1982,7 @@ export const getPosSaleWarrantySheet = async (req: Request, res: Response) => {
     <p class="addr">${escapeHtml(ADDRESS)} · ${escapeHtml(branchLabel)}</p>
     <div class="meta">
       <div><strong>Número de garantía:</strong> ${escapeHtml(warrantyNumber)}</div>
-      <div><strong>Folio venta:</strong> ${escapeHtml(String(data.folio || "").replace(/^PV-/i, ""))}</div>
+      <div><strong>Folio venta:</strong> ${escapeHtml(formatFolioDisplay(data.folio))}</div>
       <div><strong>Fecha de compra:</strong> ${escapeHtml(warrantyDate)}</div>
       <div><strong>Vendedor:</strong> PCinBOX</div>
       <div><strong>Cliente:</strong> ${escapeHtml(data.customerName || "Público general")}</div>

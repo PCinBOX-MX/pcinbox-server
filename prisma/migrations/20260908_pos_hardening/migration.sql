@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS `pos_folio_seq` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 INSERT INTO `pos_folio_seq` (`id`, `next_val`)
-SELECT 1, COALESCE(MAX(`idPosSale`), 0) + 1
+SELECT 1, GREATEST(COALESCE(MAX(`idPosSale`), 0) + 1, 3414)
 FROM `pos_sales`
 WHERE NOT EXISTS (SELECT 1 FROM `pos_folio_seq` WHERE `id` = 1);
 
