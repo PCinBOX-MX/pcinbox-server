@@ -78,3 +78,56 @@ export async function syncShipmentStatusOnPasarela(params: {
     return { ok: false as const, skipped: false };
   }
 }
+
+export type LinkPayOnlineInput = {
+  name: string;
+  lastname?: string | null;
+  email: string;
+  phone: string;
+  monto: number;
+  products: Array<{
+    idProduct?: number;
+    name: string;
+    price: number;
+    quantity: number;
+  }>;
+};
+
+export type LinkPayOnlineResult = {
+  ok: boolean;
+  link: string;
+  checkoutLink?: string;
+  referencia?: string;
+  idLinkPago?: number;
+  message?: string;
+};
+
+/** Crea link OpenPay (checkout) vía pasarela — mismo endpoint que Links de pago del admin. */
+export async function createLinkPayOnline(
+  payload: LinkPayOnlineInput,
+): Promise<LinkPayOnlineResult> {
+  const baseURL = resolvePasarelaBaseUrl();
+  if (!baseURL) {
+    throw new Error("API_URL_PAGOS no está configurada en el servidor");
+  }
+
+  const response = await axios.post(
+    `${baseURL}/openpay/linkPayOnline`,
+    payload,
+    { timeout: 45000 },
+  );
+
+  const data = response.data || {};
+  if (!data.ok && !data.link) {
+    throw new Error(data.message || "No se pudo generar el link de pago");
+  }
+
+  const result: LinkPayOnlineResult = {
+    ok: true,
+    link: String(data.link || ""),
+  };
+  if (data.checkoutLink) result.checkoutLink = String(data.checkoutLink);
+  if (data.referencia) result.referencia = String(data.referencia);
+  if (data.idLinkPago != null) result.idLinkPago = Number(data.idLinkPago);
+  return result;
+}

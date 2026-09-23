@@ -18,4 +18,30 @@ export declare function syncShipmentStatusOnPasarela(params: {
     data: any;
     skipped?: never;
 }>;
+<<<<<<< HEAD
+=======
+export type LinkPayOnlineInput = {
+    name: string;
+    lastname?: string | null;
+    email: string;
+    phone: string;
+    monto: number;
+    products: Array<{
+        idProduct?: number;
+        name: string;
+        price: number;
+        quantity: number;
+    }>;
+};
+export type LinkPayOnlineResult = {
+    ok: boolean;
+    link: string;
+    checkoutLink?: string;
+    referencia?: string;
+    idLinkPago?: number;
+    message?: string;
+};
+/** Crea link OpenPay (checkout) vía pasarela — mismo endpoint que Links de pago del admin. */
+export declare function createLinkPayOnline(payload: LinkPayOnlineInput): Promise<LinkPayOnlineResult>;
+>>>>>>> pos
 //# sourceMappingURL=pasarelaPagos.service.d.ts.map

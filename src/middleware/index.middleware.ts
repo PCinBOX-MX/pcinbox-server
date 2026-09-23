@@ -87,3 +87,35 @@ export const MiddleAdminRoute = async (
     });
   }
 };
+
+/** Panel POS: admin (override) o support (vendedor/caja). */
+export const MiddlePosRoute = async (
+  req: CustomRequestI,
+  res: Response,
+  next: NextFunction,
+) => {
+  const userId = Number(req.idUser);
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    return res.status(401).json({ message: "Sesión inválida" });
+  }
+
+  try {
+    const user = await prisma.users.findFirst({
+      where: { idUser: userId, active: 1 },
+      select: { role: true },
+    });
+    if (user?.role !== "admin" && user?.role !== "support") {
+      return res.status(403).json({
+        ok: false,
+        message: "No tienes permisos para operar el Punto de Venta",
+      });
+    }
+    req.posRole = user.role;
+    next();
+  } catch {
+    return res.status(500).json({
+      ok: false,
+      message: "No fue posible validar los permisos del Punto de Venta",
+    });
+  }
+};

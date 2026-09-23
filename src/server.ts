@@ -14,6 +14,7 @@ import routesSales from "./routes/sales/sales.route";
 import routesReservas from "./routes/reservas/reservas.route";
 import routesCheckout from "./routes/checkout/checkout.route";
 import routesCotizaciones from "./routes/cotizaciones/cotizaciones.route";
+import routesPos from "./routes/pos/pos.route";
 import cookieParser from "cookie-parser";
 import path from "path";
 import helmet from "helmet";
@@ -110,6 +111,7 @@ server.use("/api/v1/sales", routesSales);
 server.use("/api/v1/reservas", routesReservas);
 server.use("/api/v1/checkout", routesCheckout);
 server.use("/api/v1/cotizaciones", routesCotizaciones);
+server.use("/api/v1/pos", routesPos);
 
 server.get("/", (req, res) => {
   res.send("Servidor funcionando correctamente");

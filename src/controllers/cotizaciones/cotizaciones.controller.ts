@@ -62,7 +62,7 @@ type QuoteRecord = Prisma.cotizacionesGetPayload<{ select: typeof quoteSelect }>
 const serializeQuote = (quote: QuoteRecord) => {
   const { users, cartHash: _cart, active: _active, ...safe } = quote;
   if (!users) {
-    throw new Error("La cotización no está asociada a un usuario");
+    throw new Error("La cotizaci?n no est? asociada a un usuario");
   }
   return {
     ...safe,
@@ -96,7 +96,7 @@ export const parseCheckoutContext = (
 
     const lines: CheckoutLine[] = parsed.lines.map((rawLine) => {
       if (!rawLine || typeof rawLine !== "object") {
-        throw new Error("Línea inválida");
+        throw new Error("L?nea inv?lida");
       }
       const line = rawLine as Record<string, unknown>;
       const productId = String(line.productId ?? "").trim();
@@ -114,7 +114,7 @@ export const parseCheckoutContext = (
         (storeId !== null &&
           (!Number.isSafeInteger(storeId) || storeId < 0))
       ) {
-        throw new Error("Línea inválida");
+        throw new Error("L?nea inv?lida");
       }
       return { productId, quantity, storeId };
     });
@@ -185,7 +185,7 @@ export const createQuote = async (req: CustomRequestI, res: Response) => {
     if (!temporaryPath || !uploadedFile) {
       return res.status(400).json({
         ok: false,
-        message: "Debes adjuntar la cotización en formato PDF",
+        message: "Debes adjuntar la cotizaci?n en formato PDF",
       });
     }
 
@@ -193,7 +193,7 @@ export const createQuote = async (req: CustomRequestI, res: Response) => {
     if (!Number.isSafeInteger(parsedUserId) || parsedUserId <= 0) {
       return res.status(401).json({
         ok: false,
-        message: "Debes iniciar sesión para generar una cotización",
+        message: "Debes iniciar sesi?n para generar una cotizaci?n",
       });
     }
     const userId = parsedUserId;
@@ -225,7 +225,7 @@ export const createQuote = async (req: CustomRequestI, res: Response) => {
     ) {
       return res.status(400).json({
         ok: false,
-        message: "Los metadatos de la cotización son inválidos",
+        message: "Los metadatos de la cotizaci?n son inv?lidos",
       });
     }
 
@@ -238,13 +238,13 @@ export const createQuote = async (req: CustomRequestI, res: Response) => {
       if (existing.active === 0) {
         return res.status(409).json({
           ok: false,
-          message: "Esta cotización ya fue archivada",
+          message: "Esta cotizaci?n ya fue archivada",
         });
       }
       if (Number(existing.userId) !== userId) {
         return res.status(409).json({
           ok: false,
-          message: "La clave de idempotencia ya está en uso",
+          message: "La clave de idempotencia ya est? en uso",
         });
       }
       const sameRequest =
@@ -259,12 +259,12 @@ export const createQuote = async (req: CustomRequestI, res: Response) => {
         return res.status(409).json({
           ok: false,
           message:
-            "La clave de idempotencia corresponde a otra cotización",
+            "La clave de idempotencia corresponde a otra cotizaci?n",
         });
       }
       return res.status(200).json({
         ok: true,
-        message: "La cotización ya estaba guardada",
+        message: "La cotizaci?n ya estaba guardada",
         data: serializeQuote(existing),
         quota: await (async () => {
           const since = new Date(Date.now() - QUOTE_WINDOW_MS);
@@ -340,6 +340,7 @@ export const createQuote = async (req: CustomRequestI, res: Response) => {
                 totalAmount: new Prisma.Decimal(totalAmount.toFixed(2)),
                 itemCount,
                 includeAssemblyService,
+                linesJson: checkout.lines as unknown as Prisma.InputJsonValue,
                 createdAt,
                 expiresAt,
               },
@@ -377,7 +378,7 @@ export const createQuote = async (req: CustomRequestI, res: Response) => {
 
     return res.status(201).json({
       ok: true,
-      message: "Cotización guardada correctamente",
+      message: "Cotizaci?n guardada correctamente",
       data: serializeQuote(transactionResult.created),
       quota: transactionResult.quota,
     });
@@ -387,7 +388,7 @@ export const createQuote = async (req: CustomRequestI, res: Response) => {
         ok: false,
         code: "QUOTE_LIMIT_REACHED",
         message:
-          "Alcanzaste el límite de 3 cotizaciones para esta configuración.",
+          "Alcanzaste el l?mite de 3 cotizaciones para esta configuraci?n.",
         quota: {
           limit: QUOTE_LIMIT,
           remaining: 0,
@@ -399,22 +400,35 @@ export const createQuote = async (req: CustomRequestI, res: Response) => {
       if (error.code === "P2002") {
         return res.status(409).json({
           ok: false,
-          message: "La cotización ya fue registrada",
+          message: "La cotizaci?n ya fue registrada",
         });
       }
     }
     if (
       error instanceof Error &&
-      error.message.includes("firma PDF válida")
+      error.message.includes("firma PDF")
     ) {
       return res.status(400).json({
         ok: false,
-        message: "El archivo no contiene una firma PDF válida",
+        message: "El archivo no contiene una firma PDF v?lida",
       });
     }
+    console.error("[createQuote] Error al guardar cotizaci?n:", error);
     return res.status(500).json({
       ok: false,
-      message: "No fue posible guardar la cotización",
+      message: "No fue posible guardar la cotizaci?n",
+      ...(process.env.NODE_ENV !== "production"
+        ? {
+            detail:
+              error instanceof Error
+                ? error.message
+                : String(error?.message || error),
+            code:
+              error instanceof Prisma.PrismaClientKnownRequestError
+                ? error.code
+                : undefined,
+          }
+        : {}),
     });
   } finally {
     if (temporaryPath) {
@@ -444,7 +458,7 @@ export const listAdminQuotes = async (
     ) {
       return res.status(400).json({
         ok: false,
-        message: "El rango de fechas es inválido",
+        message: "El rango de fechas es inv?lido",
       });
     }
     if (to) to.setUTCHours(23, 59, 59, 999);
@@ -508,7 +522,7 @@ export const streamAdminQuote = async (
   try {
     const idCotizacion = parsePositiveId(req.params.id);
     if (!idCotizacion) {
-      return res.status(400).json({ ok: false, message: "Cotización inválida" });
+      return res.status(400).json({ ok: false, message: "Cotizaci?n inv?lida" });
     }
 
     const record = await prisma.cotizaciones.findFirst({
@@ -523,7 +537,7 @@ export const streamAdminQuote = async (
     if (!record) {
       return res.status(404).json({
         ok: false,
-        message: "Cotización no encontrada o ya archivada",
+        message: "Cotizaci?n no encontrada o ya archivada",
       });
     }
 
@@ -532,7 +546,7 @@ export const streamAdminQuote = async (
     if (!details?.isFile()) {
       return res.status(404).json({
         ok: false,
-        message: "El archivo de la cotización ya no está disponible",
+        message: "El archivo de la cotizaci?n ya no est? disponible",
       });
     }
 
@@ -559,7 +573,7 @@ export const streamAdminQuote = async (
   } catch {
     return res.status(500).json({
       ok: false,
-      message: "No fue posible obtener la cotización",
+      message: "No fue posible obtener la cotizaci?n",
     });
   }
 };
@@ -571,7 +585,7 @@ export const archiveAdminQuote = async (
   try {
     const idCotizacion = parsePositiveId(req.params.id);
     if (!idCotizacion) {
-      return res.status(400).json({ ok: false, message: "Cotización inválida" });
+      return res.status(400).json({ ok: false, message: "Cotizaci?n inv?lida" });
     }
 
     const record = await prisma.cotizaciones.findFirst({
@@ -581,7 +595,7 @@ export const archiveAdminQuote = async (
     if (!record) {
       return res.status(404).json({
         ok: false,
-        message: "Cotización no encontrada o ya archivada",
+        message: "Cotizaci?n no encontrada o ya archivada",
       });
     }
 
@@ -592,7 +606,7 @@ export const archiveAdminQuote = async (
     if (archived.count === 0) {
       return res.status(404).json({
         ok: false,
-        message: "Cotización no encontrada o ya archivada",
+        message: "Cotizaci?n no encontrada o ya archivada",
       });
     }
 
@@ -606,7 +620,7 @@ export const archiveAdminQuote = async (
         })
         .catch((rollbackError) => {
           console.error(
-            "No se pudo restaurar la cotización tras fallar el borrado del PDF",
+            "No se pudo restaurar la cotizaci?n tras fallar el borrado del PDF",
             rollbackError,
           );
         });
@@ -615,14 +629,14 @@ export const archiveAdminQuote = async (
 
     return res.status(200).json({
       ok: true,
-      message: "Cotización archivada y PDF eliminado correctamente",
+      message: "Cotizaci?n archivada y PDF eliminado correctamente",
       data: { idCotizacion },
     });
   } catch (error) {
-    console.error("No se pudo archivar la cotización y eliminar su PDF", error);
+    console.error("No se pudo archivar la cotizaci?n y eliminar su PDF", error);
     return res.status(500).json({
       ok: false,
-      message: "No fue posible archivar la cotización y eliminar su PDF",
+      message: "No fue posible archivar la cotizaci?n y eliminar su PDF",
     });
   }
 };
