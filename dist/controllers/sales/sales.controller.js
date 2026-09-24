@@ -26,6 +26,7 @@ async function markSaleLicenseDeliveredAndMaybeCloseShipment(params) {
         data: {
             licenseDeliveredAt: deliveredAt,
             shipStatus: "entregado",
+            statusChangedAt: deliveredAt,
         },
         select: {
             shipmentId: true,
@@ -62,7 +63,11 @@ async function markSaleLicenseDeliveredAndMaybeCloseShipment(params) {
     }
     await prismaClient_1.prisma.shipments.update({
         where: { idShipment: BigInt(shipmentId) },
-        data: { status: "entregado" },
+        data: {
+            status: "entregado",
+            lastUpdated: deliveredAt,
+            statusChangedAt: deliveredAt,
+        },
     });
     await (0, pasarelaPagos_service_1.syncShipmentStatusOnPasarela)({
         idShipment: shipmentId,
@@ -146,17 +151,36 @@ const registerSales = async (req, res) => {
             });
         }
         for (const sale of slcSales) {
+            const quantity = Number(sale.quantity);
+            const productId = Number(sale.productId);
             await prismaClient_1.prisma.products.update({
                 where: {
-                    idProduct: Number(sale.productId),
+                    idProduct: productId,
                     stock: {
-                        gte: Number(sale.quantity),
+                        gte: quantity,
                     },
                 },
                 data: {
-                    stock: { decrement: Number(sale.quantity) },
+                    stock: { decrement: quantity },
                 },
             });
+            try {
+                await prismaClient_1.prisma.inventory_movements.create({
+                    data: {
+                        productId,
+                        branchId: null,
+                        userId: Number(req.idUser) || null,
+                        delta: -quantity,
+                        reason: "web_sale",
+                        refType: "order",
+                        refId: String(idOrder),
+                        note: `Venta web orden ${idOrder}`,
+                    },
+                });
+            }
+            catch {
+                // tabla puede no existir aún si no corrieron migraciones POS
+            }
         }
         return res.status(200).json({
             ok: true,
@@ -379,9 +403,31 @@ const historySalesByUser = async (req, res) => {
 exports.historySalesByUser = historySalesByUser;
 const filterSales = async (req, res) => {
     try {
-        const { status = "allState", startDate = "", endDate = "", searchProduct = "", page = 1, limit = 10, } = req.body;
+        const { status = "allState", paymentStatus = "allPayment", startDate = "", endDate = "", searchProduct = "", page = 1, limit = 10, } = req.body;
         const pageNumber = Math.max(1, Number(page) || 1);
         const pageSize = Math.min(50, Math.max(1, Number(limit) || 10));
+        const normalizedPaymentStatus = String(paymentStatus || "allPayment")
+            .trim()
+            .toLowerCase();
+        const orderStatusesForFilter = (() => {
+            if (normalizedPaymentStatus === "paid" ||
+                normalizedPaymentStatus === "pagado") {
+                return ["paid"];
+            }
+            if (normalizedPaymentStatus === "pending" ||
+                normalizedPaymentStatus === "payment_pending" ||
+                normalizedPaymentStatus === "pendiente") {
+                return ["payment_pending", "pending"];
+            }
+            if (normalizedPaymentStatus === "cancelled" ||
+                normalizedPaymentStatus === "canceled" ||
+                normalizedPaymentStatus === "cancelado") {
+                return ["cancelled", "refunded"];
+            }
+            // Historial: pagadas, pendientes de pago (SPEI/OXXO) y canceladas.
+            // Excluye borradores (`pay_method: esperando`) y rechazos/contracargos.
+            return ["paid", "payment_pending", "cancelled", "refunded"];
+        })();
         const orders = await prismaClient_1.prisma.order.findMany({
             where: {
                 userId: Number(req.idUser),
@@ -389,7 +435,7 @@ const filterSales = async (req, res) => {
                     not: "esperando",
                 },
                 status: {
-                    in: ["paid", "cancelled", "refunded"],
+                    in: [...orderStatusesForFilter],
                 },
             },
             orderBy: {
@@ -432,7 +478,9 @@ const filterSales = async (req, res) => {
                 createdAt: order?.createdAt,
                 updatedAt: order?.updatedAt,
                 payment_method: order.pay_method,
+                cardLast4: order.cardLast4 ?? null,
                 orderStatus: order.status,
+                cancelReason: order.cancelReason ?? null,
                 idUser: Number(order.userId),
                 products: order.sales.map((sale) => {
                     const shipment = sale.shipments;
@@ -441,11 +489,13 @@ const filterSales = async (req, res) => {
                         idShipment: shipment?.idShipment ?? sale.shipmentId,
                         description: sale.products?.description,
                         price: sale?.products?.price,
+                        lineTotal: (0, shipmentCosts_1.toMoneyNumber)(sale.total),
                         idProduct: sale.products.idProduct,
                         name: sale.products.name,
                         quantity: sale.quantity,
                         providerId: sale.products?.providerId,
                         statusShip: sale.shipStatus ?? shipment?.status ?? null,
+                        statusChangedAt: sale.statusChangedAt ?? null,
                         shipping_method: shipment?.shipping_method,
                         status: sale.status,
                         image_url: sale?.products?.image_url,
@@ -523,11 +573,20 @@ const filterSales = async (req, res) => {
 exports.filterSales = filterSales;
 const cancelOrderByUser = async (req, res) => {
     try {
-        const { idOrder } = req.body;
+        const { idOrder, cancelReason } = req.body;
+        const trimmedCancelReason = cancelReason != null && String(cancelReason).trim()
+            ? String(cancelReason).trim()
+            : "";
         if (!idOrder) {
             return res.status(400).json({
                 ok: false,
                 message: "Falta idOrder",
+            });
+        }
+        if (!trimmedCancelReason) {
+            return res.status(400).json({
+                ok: false,
+                message: "El motivo de cancelación es obligatorio",
             });
         }
         const order = await prismaClient_1.prisma.order.findFirst({
@@ -560,19 +619,54 @@ const cancelOrderByUser = async (req, res) => {
                 message: (0, orderCancellationWindow_service_1.getOrderCancellationBlockMessage)(),
             });
         }
-        const pasarelaResult = await (0, pasarelaPagos_service_1.cancelOrderWithGatewayRefund)(Number(order.idOrder), Number(req.idUser), req.headers.authorization);
+        const pasarelaResult = await (0, pasarelaPagos_service_1.cancelOrderWithGatewayRefund)(Number(order.idOrder), Number(req.idUser), req.headers.authorization, trimmedCancelReason);
         const gateway = pasarelaResult?.data?.data?.gateway;
-        const refunded = Boolean(pasarelaResult?.data?.data?.refunded ??
-            (gateway === "mercadopago" || gateway === "openpay"));
+        const refunded = pasarelaResult?.data?.data?.refunded === true;
+        const refundError = pasarelaResult?.data?.data?.refundError != null
+            ? String(pasarelaResult.data.data.refundError)
+            : null;
+        // Misma BD: la pasarela ya marcó order/sales/shipments; reforzamos status local.
+        await prismaClient_1.prisma.order.update({
+            where: { idOrder: Number(order.idOrder) },
+            data: {
+                status: "cancelled",
+                cancelReason: trimmedCancelReason,
+                updatedAt: new Date(),
+            },
+        });
+        await prismaClient_1.prisma.sales.updateMany({
+            where: {
+                orderId: Number(order.idOrder),
+                userId: Number(req.idUser),
+            },
+            data: {
+                status: "cancelled",
+                shipStatus: "cancelado",
+                statusChangedAt: new Date(),
+            },
+        });
+        await prismaClient_1.prisma.shipments.updateMany({
+            where: { orderId: Number(order.idOrder) },
+            data: {
+                status: "cancelado",
+                lastUpdated: new Date(),
+                statusChangedAt: new Date(),
+            },
+        });
         return res.status(200).json({
             ok: true,
-            message: pasarelaResult?.message ?? "Compra cancelada correctamente",
+            message: refundError
+                ? "Compra cancelada. El reembolso automático quedó pendiente."
+                : pasarelaResult?.message ?? "Compra cancelada correctamente",
             data: {
                 data: {
                     idOrder: Number(order.idOrder),
                     payment_method: order.pay_method,
                     refunded,
+                    refundError,
                     gateway: gateway ?? null,
+                    cancelReason: trimmedCancelReason,
+                    status: "cancelled",
                 },
             },
         });

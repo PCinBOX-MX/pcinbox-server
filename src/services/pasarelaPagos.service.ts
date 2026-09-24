@@ -23,6 +23,7 @@ export async function cancelOrderWithGatewayRefund(
   idOrder: number,
   userId: number,
   authorization?: string,
+  cancelReason?: string,
 ) {
   const baseURL = resolvePasarelaBaseUrl();
   if (!baseURL) {
@@ -31,7 +32,7 @@ export async function cancelOrderWithGatewayRefund(
 
   const response = await axios.post(
     `${baseURL}/orders/cancelOrder`,
-    { idOrder, userId },
+    { idOrder, userId, cancelReason },
     {
       ...(authorization
         ? { headers: { Authorization: authorization } }

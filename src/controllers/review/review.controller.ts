@@ -3,6 +3,7 @@ import { Response } from "express";
 import "../../config/loadEnv";
 import CustomRequestI from "./../../interfaces/customrequest.interface";
 import { DateTime } from "luxon";
+import { publishCatalogInvalidation } from "../../infra/redis/catalog-invalidate.pubsub";
 
 const fechaLocal = DateTime.now().setZone("America/Mexico_City");
 
@@ -27,6 +28,12 @@ export const addReview = async (req: CustomRequestI, res: Response) => {
         userId: Number(req.idUser),
         title: title,
       },
+    });
+
+    void publishCatalogInvalidation({
+      source: "pcinbox-server",
+      reason: "review-create",
+      productId: Number(productId),
     });
 
     return res.status(200).json({

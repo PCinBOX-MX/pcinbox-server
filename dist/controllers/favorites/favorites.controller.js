@@ -17,6 +17,7 @@ const getFavoritosUser = async (req, res) => {
         };
         if (search) {
             whereClause.products = {
+                active: 1,
                 OR: [
                     { name: { contains: search } },
                     { sku: { contains: search } },
@@ -47,6 +48,11 @@ const getFavoritosUser = async (req, res) => {
                 products: {
                     include: {
                         reviews: true,
+                        product_stock: {
+                            include: {
+                                branches: true,
+                            },
+                        },
                     },
                 },
             },
@@ -63,7 +69,22 @@ const getFavoritosUser = async (req, res) => {
                 categoryId: Number(item.products.categoryId),
                 providerId: Number(item.products.providerId),
                 marcaId: Number(item.products.marcaId),
+                stock: Number(item.products.stock ?? 0),
                 reviews: (0, index_service_1.parseBigInts)(item.products.reviews),
+                product_stock: (item.products.product_stock ?? []).map((row) => ({
+                    ...row,
+                    idProductStock: Number(row.idProductStock),
+                    branchId: Number(row.branchId),
+                    productId: Number(row.productId),
+                    stock: Number(row.stock ?? 0),
+                    branches: row.branches
+                        ? {
+                            ...row.branches,
+                            idBranche: Number(row.branches.idBranche),
+                            providerId: Number(row.branches.providerId),
+                        }
+                        : null,
+                })),
             },
         }));
         return res.status(200).json({

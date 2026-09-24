@@ -16,6 +16,7 @@
         "pwd",
         "np1",
         "np2",
+        "idUser",
       ];
       var changed = false;
       keys.forEach(function (k) {
@@ -60,18 +61,31 @@
     var np1 = $("np1");
     var np2 = $("np2");
     var tokenEl = $("token");
-    var idUserEl = $("idUser");
     var okMsg = $("okMsg");
     var errMsg = $("errMsg");
     var submitBtn = $("submitBtn");
     var doneBox = $("doneBox");
+    var blockedBox = $("blockedBox");
 
+    // Token: inyectado por el server tras validar, o ?token= del correo
     var params = new URLSearchParams(window.location.search);
-    var token = params.get("token") || "";
-    var idUser = params.get("idUser") || "";
+    var token =
+      (tokenEl && tokenEl.value ? tokenEl.value : "").trim() ||
+      (params.get("token") || "").trim();
 
     if (tokenEl) tokenEl.value = token;
-    if (idUserEl) idUserEl.value = idUser;
+
+    var formBlocked = form && form.style.display === "none";
+
+    if (!formBlocked && !token) {
+      show(
+        errMsg,
+        "El enlace está incompleto o no es válido. Solicita uno nuevo desde «Olvidé mi contraseña».",
+      );
+      if (form) form.style.display = "none";
+      if (blockedBox) blockedBox.classList.add("show");
+      formBlocked = true;
+    }
 
     [np1, np2].forEach(function (input) {
       if (!input) return;
@@ -80,7 +94,6 @@
       });
     });
 
-    // Autofill tardío del navegador
     window.setTimeout(clearPasswords, 50);
     window.setTimeout(function () {
       [np1, np2].forEach(function (input) {
@@ -93,17 +106,17 @@
         var id = btn.getAttribute("data-target");
         var field = id ? $(id) : null;
         if (!field) return;
-        var showText = field.type === "password";
-        field.type = showText ? "text" : "password";
-        btn.classList.toggle("on", showText);
-        btn.setAttribute(
-          "aria-label",
-          showText ? "Ocultar contraseña" : "Mostrar contraseña",
-        );
+
+        var willReveal = field.type === "password";
+        field.type = willReveal ? "text" : "password";
+        btn.classList.toggle("is-visible", willReveal);
+        var label = willReveal ? "Ocultar contraseña" : "Mostrar contraseña";
+        btn.setAttribute("aria-label", label);
+        btn.setAttribute("title", label);
       });
     });
 
-    if (!form) return;
+    if (!form || formBlocked) return;
 
     form.addEventListener("submit", async function (e) {
       e.preventDefault();
@@ -112,8 +125,9 @@
 
       var pass = (np1 && np1.value ? np1.value : "").trim();
       var confirm = (np2 && np2.value ? np2.value : "").trim();
+      token = (tokenEl && tokenEl.value ? tokenEl.value : token).trim();
 
-      if (!token || !idUser) {
+      if (!token) {
         show(errMsg, "El enlace no es válido o está incompleto. Solicita uno nuevo.");
         return;
       }
@@ -145,7 +159,6 @@
           body: JSON.stringify({
             newPassword: pass,
             token: token,
-            idUser: idUser,
           }),
           cache: "no-store",
         });
