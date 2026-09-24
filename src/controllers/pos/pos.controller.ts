@@ -58,6 +58,73 @@ import {
 import { buildPosSaleTicketHtml } from "../../services/pos/posTicketHtml.service";
 import { verifyPassword } from "../../services/index.service";
 
+type PosServiceEquipmentRow = {
+  quantity: number;
+  description: string;
+  serialNumber: string;
+  physicalCondition: string;
+};
+
+type PosServiceIntake = {
+  serviceType: string;
+  equipment: PosServiceEquipmentRow[];
+  failureOrRequestedService: string;
+  technicalObservationsOnReceipt: string;
+};
+
+function parseServiceIntake(
+  raw: unknown,
+  fallbackServiceType: string,
+): PosServiceIntake | null {
+  if (!raw || typeof raw !== "object") return null;
+  const src = raw as Record<string, unknown>;
+  const equipmentRaw = Array.isArray(src.equipment) ? src.equipment : [];
+  const equipment: PosServiceEquipmentRow[] = [];
+  for (const row of equipmentRaw.slice(0, 40)) {
+    if (!row || typeof row !== "object") continue;
+    const r = row as Record<string, unknown>;
+    const description = String(r.description || "").trim().slice(0, 500);
+    if (!description) continue;
+    const quantity = Math.max(
+      1,
+      Math.min(999, Math.round(Number(r.quantity) || 1)),
+    );
+    const serialNumber = String(r.serialNumber || "").trim().slice(0, 128);
+    const physicalCondition = String(r.physicalCondition || "")
+      .trim()
+      .slice(0, 255);
+    if (!physicalCondition) continue;
+    equipment.push({
+      quantity,
+      description,
+      serialNumber,
+      physicalCondition,
+    });
+  }
+  const failureOrRequestedService = String(
+    src.failureOrRequestedService || "",
+  )
+    .trim()
+    .slice(0, 4000);
+  const technicalObservationsOnReceipt = String(
+    src.technicalObservationsOnReceipt || "",
+  )
+    .trim()
+    .slice(0, 4000);
+  if (equipment.length < 1 || failureOrRequestedService.length < 2) {
+    return null;
+  }
+  return {
+    serviceType:
+      String(src.serviceType || fallbackServiceType || "Servicio")
+        .trim()
+        .slice(0, 120) || "Servicio",
+    equipment,
+    failureOrRequestedService,
+    technicalObservationsOnReceipt,
+  };
+}
+
 const PAYMENT_METHODS = new Set([
   "efectivo_sucursal",
   "tarjeta_sucursal",
@@ -257,6 +324,7 @@ function serializeSale(sale: any) {
         warrantyMode: s.warrantyMode ?? null,
         warrantyExpiresAt: s.warrantyExpiresAt,
       })),
+      serviceIntake: it.serviceMetaJson ?? null,
     })),
     payments: (sale.payments || []).map((p: any) => ({
       idPosPayment: Number(p.idPosPayment),
@@ -316,6 +384,7 @@ const saleListInclude = {
       productSku: true,
       productUpc: true,
       branchId: true,
+      serviceMetaJson: true,
     },
   },
   payments: {
@@ -784,6 +853,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       requiresSerial: boolean;
       isManual: boolean;
       providerId: number | null;
+      serviceMetaJson: PosServiceIntake | null;
     }> = [];
 
     let subtotal = 0;
@@ -840,10 +910,10 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
           });
         }
         const unitPrice = money(raw.unitPrice);
-        if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+        if (!Number.isFinite(unitPrice) || unitPrice <= 0) {
           return res.status(400).json({
             ok: false,
-            message: `Precio inválido para «${manualName}»`,
+            message: `Precio unitario inválido para «${manualName}» (debe ser mayor a 0)`,
           });
         }
         const manualProduct = await ensurePosManualLineProduct(manualKind);
@@ -880,6 +950,20 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
         discountTotal = roundMoney(discountTotal + (lineBase - lineTotal));
         allSerials.push(...serials);
         const skuFromClient = String(raw.sku || "").trim().slice(0, 255);
+        let serviceMetaJson: PosServiceIntake | null = null;
+        if (manualKind === "service") {
+          serviceMetaJson = parseServiceIntake(
+            raw.serviceIntake ?? raw.serviceMeta,
+            manualName,
+          );
+          if (!serviceMetaJson) {
+            return res.status(400).json({
+              ok: false,
+              message:
+                "El servicio requiere datos del equipo (tabla) y la falla o servicio solicitado.",
+            });
+          }
+        }
         normalizedItems.push({
           productId: Number(manualProduct.idProduct),
           branchId: null,
@@ -903,6 +987,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
           requiresSerial: requireSerialManual || serials.length > 0,
           isManual: true,
           providerId: null,
+          serviceMetaJson,
         });
         continue;
       }
@@ -1086,6 +1171,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
         requiresSerial: Boolean(serialFlags.requiresSerial),
         isManual: false,
         providerId: productProviderId,
+        serviceMetaJson: null,
       });
     }
 
@@ -1390,6 +1476,9 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
               unitPrice: new Prisma.Decimal(it.unitPrice),
               discountPct: new Prisma.Decimal(it.discountPct),
               lineTotal: new Prisma.Decimal(it.lineTotal),
+              serviceMetaJson: it.serviceMetaJson
+                ? (it.serviceMetaJson as unknown as Prisma.InputJsonValue)
+                : Prisma.JsonNull,
             })),
           },
           payments: {

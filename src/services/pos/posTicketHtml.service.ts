@@ -1,4 +1,7 @@
-import { formatPcinboxBranchDisplayName } from "../../constants/pcinbox-branch-display";
+import {
+  POS_TICKET_BRANCH_FALLBACK,
+  resolveTicketBranchLabel,
+} from "../../constants/pcinbox-branch-display";
 
 
 const SELLER = "pcinbox";
@@ -51,6 +54,17 @@ type TicketSale = {
     discountPct: number;
     lineTotal: number;
     serials?: Array<{ serialNumber: string }>;
+    serviceIntake?: {
+      serviceType?: string;
+      equipment?: Array<{
+        quantity: number;
+        description: string;
+        serialNumber: string;
+        physicalCondition: string;
+      }>;
+      failureOrRequestedService?: string;
+      technicalObservationsOnReceipt?: string;
+    } | null;
   }>;
   payments: Array<{
     method: string;
@@ -141,34 +155,81 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
         qty > 1
           ? `<div>Cant: ${qty} x ${formatMoney(unit)}</div>`
           : `<div>Cantidad: ${qty || 1}</div>`;
-      const bodega =
-        Number(it.providerId) === 1
-          ? formatPcinboxBranchDisplayName(it.branchName) ||
-            formatPcinboxBranchDisplayName(
+      const intake = it.serviceIntake;
+      const isServiceLine = Boolean(
+        intake &&
+          ((Array.isArray(intake.equipment) && intake.equipment.length > 0) ||
+            String(intake.serviceType || "").trim() ||
+            String(intake.failureOrRequestedService || "").trim()),
+      );
+      const bodega = isServiceLine
+        ? POS_TICKET_BRANCH_FALLBACK
+        : resolveTicketBranchLabel({
+            itemBranchName:
+              it.branchName ||
               String(it.branchLabel || "")
                 .split(/[·—-]/)[0]
-                ?.trim(),
-            ) ||
-            "PCinBOX-León"
-          : formatPcinboxBranchDisplayName(it.branchName) ||
-            formatPcinboxBranchDisplayName(
-              String(it.branchLabel || "")
-                .split(/[·—-]/)[0]
-                ?.trim(),
-            ) ||
-            formatPcinboxBranchDisplayName(data.branchName);
-      const bodegaLine = bodega
-        ? `<div>Bodega: ${escapeHtml(bodega)}</div>`
-        : "";
+                ?.trim() ||
+              null,
+            saleBranchName: data.branchName,
+          });
+      // Si el formateo dejó "PCinBOX" genérico, forzar León.
+      const bodegaShown =
+        !bodega || /^pcinbox$/i.test(bodega.trim())
+          ? POS_TICKET_BRANCH_FALLBACK
+          : bodega;
+      const bodegaLine = `<div>Bodega: ${escapeHtml(bodegaShown)}</div>`;
       const serialLine =
         it.serials && it.serials.length
           ? `<div class="muted">S/N: ${it.serials
               .map((s) => escapeHtml(s.serialNumber))
               .join(", ")}</div>`
           : "";
+      let serviceBlock = "";
+      if (intake && Array.isArray(intake.equipment) && intake.equipment.length) {
+        const equipLines = intake.equipment
+          .map((eq) => {
+            const qty = Number(eq.quantity) || 1;
+            const desc = escapeHtml(String(eq.description || "").trim() || "—");
+            const sn = String(eq.serialNumber || "").trim();
+            const cond = String(eq.physicalCondition || "").trim();
+            return `
+            <div class="equip-item">
+              <div class="equip-item-title">${desc}${qty > 1 ? ` (×${qty})` : ""}</div>
+              ${sn ? `<div class="muted">Nº serie: ${escapeHtml(sn)}</div>` : ""}
+              ${cond ? `<div class="muted">Estado físico: ${escapeHtml(cond)}</div>` : ""}
+            </div>`;
+          })
+          .join("");
+        const failure = String(intake.failureOrRequestedService || "").trim();
+        const obs = String(
+          intake.technicalObservationsOnReceipt || "",
+        ).trim();
+        serviceBlock = `
+        <div class="service-intake">
+          <div class="service-title">Datos del Equipo y/o componente</div>
+          ${equipLines}
+          ${
+            failure
+              ? `<div class="equip-note"><strong>Falla o Servicio solicitado:</strong> ${escapeHtml(failure)}</div>`
+              : ""
+          }
+          ${
+            obs
+              ? `<div class="equip-note"><strong>Observaciones Técnicas al Recibir:</strong> ${escapeHtml(obs)}</div>`
+              : ""
+          }
+        </div>`;
+      }
+      const serviceLabel = String(
+        intake?.serviceType || it.productName || "",
+      ).trim();
+      const nameHtml = isServiceLine
+        ? `Servicio: ${escapeHtml(truncateTicketName(serviceLabel || it.productName))}`
+        : escapeHtml(truncateTicketName(it.productName));
       return `
       <div class="item">
-        <div class="item-name">${escapeHtml(truncateTicketName(it.productName))}</div>
+        <div class="item-name">${nameHtml}</div>
         ${isMeaningfulCode(it.productSku) ? `<div>Clave: ${escapeHtml(String(it.productSku))}</div>` : ""}
         ${isMeaningfulCode(it.productUpc) ? `<div>UPC: ${escapeHtml(String(it.productUpc))}</div>` : ""}
         ${bodegaLine}
@@ -178,6 +239,7 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
           <span>${formatMoney(lineTotal)}</span>
         </div>
         ${serialLine}
+        ${serviceBlock}
       </div>`;
     })
     .join("");
@@ -231,6 +293,12 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
     .item { font-size: 12px; line-height: 1.45; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px dashed #e5e7eb; }
     .item-name { font-weight: 700; margin-bottom: 2px; word-break: break-word; overflow-wrap: anywhere; }
     .item-prices { display: flex; justify-content: space-between; margin-top: 4px; font-weight: 600; gap: 8px; }
+    .service-intake { margin-top: 8px; padding: 8px; background: #f9fafb; border-radius: 8px; font-size: 11px; line-height: 1.45; }
+    .service-title { font-weight: 700; margin-bottom: 8px; color: #374151; }
+    .equip-item { margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px dashed #e5e7eb; }
+    .equip-item:last-of-type { margin-bottom: 6px; }
+    .equip-item-title { font-weight: 700; margin-bottom: 2px; color: #111; }
+    .equip-note { margin-top: 6px; }
     .totals { margin-top: 8px; font-size: 13px; }
     .totals .row { display: flex; justify-content: space-between; margin: 4px 0; }
     .count { text-align: center; font-size: 16px; font-weight: 800; margin: 14px 0 8px; }
