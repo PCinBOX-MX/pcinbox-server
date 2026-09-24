@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.cacheGetJson = cacheGetJson;
 exports.cacheSetJson = cacheSetJson;
 exports.cacheDel = cacheDel;
+exports.cacheDelByPrefix = cacheDelByPrefix;
 exports.cacheSetNx = cacheSetNx;
 const redis_client_1 = require("./redis.client");
 function defaultTtlSec() {
@@ -40,6 +41,24 @@ async function cacheDel(key) {
         if (!redis)
             return;
         await redis.del(key);
+    }
+    catch {
+        // fail-open
+    }
+}
+async function cacheDelByPrefix(prefix) {
+    try {
+        const redis = await (0, redis_client_1.ensureRedisConnected)();
+        if (!redis)
+            return;
+        let cursor = "0";
+        do {
+            const [next, keys] = await redis.scan(cursor, "MATCH", `${prefix}*`, "COUNT", 100);
+            cursor = next;
+            if (keys.length > 0) {
+                await redis.del(...keys);
+            }
+        } while (cursor !== "0");
     }
     catch {
         // fail-open

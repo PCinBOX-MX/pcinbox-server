@@ -14,10 +14,7 @@ exports.calculateExtrasTotal = calculateExtrasTotal;
 exports.validateProductPrices = validateProductPrices;
 const prismaClient_1 = require("../../db/prismaClient");
 const pcinbox_pickup_constants_1 = require("../../constants/pcinbox-pickup.constants");
-<<<<<<< HEAD
 const cache_util_1 = require("../../infra/redis/cache.util");
-=======
->>>>>>> pos
 exports.ESTAFETA_FIXED_COST = 178.0;
 exports.PAQUETE_EXPRESS_TARIFAS = [
     { max: 5, price: 303 },

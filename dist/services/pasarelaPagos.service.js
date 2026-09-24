@@ -5,10 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.cancelOrderWithGatewayRefund = cancelOrderWithGatewayRefund;
 exports.syncShipmentStatusOnPasarela = syncShipmentStatusOnPasarela;
-<<<<<<< HEAD
-=======
 exports.createLinkPayOnline = createLinkPayOnline;
->>>>>>> pos
 const axios_1 = __importDefault(require("axios"));
 function resolvePasarelaBaseUrl() {
     const configured = process.env.API_URL_PAGOS?.trim().replace(/\/$/, "");
@@ -25,12 +22,12 @@ function resolvePasarelaBaseUrl() {
  * Cancelación + reembolso del cliente vía política unificada de la pasarela.
  * Usa /orders/cancelOrder (evaluateOrderCancellation + shipments bloqueados).
  */
-async function cancelOrderWithGatewayRefund(idOrder, userId, authorization) {
+async function cancelOrderWithGatewayRefund(idOrder, userId, authorization, cancelReason) {
     const baseURL = resolvePasarelaBaseUrl();
     if (!baseURL) {
         throw new Error("API_URL_PAGOS no está configurada en el servidor");
     }
-    const response = await axios_1.default.post(`${baseURL}/orders/cancelOrder`, { idOrder, userId }, {
+    const response = await axios_1.default.post(`${baseURL}/orders/cancelOrder`, { idOrder, userId, cancelReason }, {
         ...(authorization
             ? { headers: { Authorization: authorization } }
             : {}),
@@ -61,8 +58,6 @@ async function syncShipmentStatusOnPasarela(params) {
         return { ok: false, skipped: false };
     }
 }
-<<<<<<< HEAD
-=======
 /** Crea link OpenPay (checkout) vía pasarela — mismo endpoint que Links de pago del admin. */
 async function createLinkPayOnline(payload) {
     const baseURL = resolvePasarelaBaseUrl();
@@ -86,5 +81,4 @@ async function createLinkPayOnline(payload) {
         result.idLinkPago = Number(data.idLinkPago);
     return result;
 }
->>>>>>> pos
 //# sourceMappingURL=pasarelaPagos.service.js.map

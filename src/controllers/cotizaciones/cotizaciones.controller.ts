@@ -94,15 +94,21 @@ export const parseCheckoutContext = (
       return null;
     }
 
+    const expectedItemCount = Number(itemCount);
     const lines: CheckoutLine[] = parsed.lines.map((rawLine) => {
       if (!rawLine || typeof rawLine !== "object") {
         throw new Error("L?nea inv?lida");
       }
       const line = rawLine as Record<string, unknown>;
       const productId = String(line.productId ?? "").trim();
-      const quantity = Number(line.quantity);
+      const quantityRaw = Number(line.quantity);
+      const quantity = Number.isFinite(quantityRaw)
+        ? Math.round(quantityRaw)
+        : NaN;
       const storeId =
-        line.storeId === null || line.storeId === undefined
+        line.storeId === null ||
+        line.storeId === undefined ||
+        line.storeId === ""
           ? null
           : Number(line.storeId);
       if (
@@ -119,7 +125,11 @@ export const parseCheckoutContext = (
       return { productId, quantity, storeId };
     });
 
-    if (lines.reduce((total, line) => total + line.quantity, 0) !== itemCount) {
+    if (
+      !Number.isFinite(expectedItemCount) ||
+      lines.reduce((total, line) => total + line.quantity, 0) !==
+        Math.round(expectedItemCount)
+    ) {
       return null;
     }
     lines.sort((a, b) =>
