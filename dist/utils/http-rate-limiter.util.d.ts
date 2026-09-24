@@ -6,7 +6,9 @@ export declare class HttpRateLimiter {
     private readonly name;
     private readonly buckets;
     constructor(maxRequests: number, windowMs: number, name: string);
-    middleware: (req: Request, res: Response, next: NextFunction) => void;
+    private consumeMemory;
+    private consumeRedis;
+    middleware: (req: Request, res: Response, next: NextFunction) => Promise<void>;
 }
 export declare function createPathPrefixRateLimiter(prefixes: string[], limiter: HttpRateLimiter): (req: Request, res: Response, next: NextFunction) => void;
 //# sourceMappingURL=http-rate-limiter.util.d.ts.map

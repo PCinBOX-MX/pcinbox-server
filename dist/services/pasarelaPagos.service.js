@@ -22,12 +22,12 @@ function resolvePasarelaBaseUrl() {
  * Cancelación + reembolso del cliente vía política unificada de la pasarela.
  * Usa /orders/cancelOrder (evaluateOrderCancellation + shipments bloqueados).
  */
-async function cancelOrderWithGatewayRefund(idOrder, userId, authorization) {
+async function cancelOrderWithGatewayRefund(idOrder, userId, authorization, cancelReason) {
     const baseURL = resolvePasarelaBaseUrl();
     if (!baseURL) {
         throw new Error("API_URL_PAGOS no está configurada en el servidor");
     }
-    const response = await axios_1.default.post(`${baseURL}/orders/cancelOrder`, { idOrder, userId }, {
+    const response = await axios_1.default.post(`${baseURL}/orders/cancelOrder`, { idOrder, userId, cancelReason }, {
         ...(authorization
             ? { headers: { Authorization: authorization } }
             : {}),

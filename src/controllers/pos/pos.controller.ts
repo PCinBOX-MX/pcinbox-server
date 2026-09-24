@@ -485,17 +485,32 @@ function parseStoredQuoteLines(raw: unknown): Array<{
   quantity: number;
   storeId: number | null;
 }> | null {
-  if (!Array.isArray(raw) || raw.length < 1 || raw.length > 100) return null;
+  let value: unknown = raw;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(value) || value.length < 1 || value.length > 100) {
+    return null;
+  }
   try {
-    return raw.map((rawLine) => {
+    return value.map((rawLine) => {
       if (!rawLine || typeof rawLine !== "object") {
         throw new Error("invalid");
       }
       const line = rawLine as Record<string, unknown>;
       const productId = String(line.productId ?? "").trim();
-      const quantity = Number(line.quantity);
+      const quantityRaw = Number(line.quantity);
+      const quantity = Number.isFinite(quantityRaw)
+        ? Math.round(quantityRaw)
+        : NaN;
       const storeId =
-        line.storeId === null || line.storeId === undefined
+        line.storeId === null ||
+        line.storeId === undefined ||
+        line.storeId === ""
           ? null
           : Number(line.storeId);
       if (
@@ -579,13 +594,17 @@ export const getPosQuoteByNumber = async (req: Request, res: Response) => {
       });
     }
 
+    const hasRawLines =
+      quote.linesJson != null &&
+      !(Array.isArray(quote.linesJson) && quote.linesJson.length === 0);
     const lines = parseStoredQuoteLines(quote.linesJson);
     if (!lines) {
       return res.status(400).json({
         ok: false,
         code: "QUOTE_NO_LINES",
-        message:
-          "Esta cotización no tiene productos guardados para el POS. Pide al cliente regenerarla desde la tienda (las cotizaciones nuevas sí incluyen las líneas).",
+        message: hasRawLines
+          ? "Esta cotización tiene líneas guardadas en un formato que el POS no puede leer. Pide al cliente regenerarla desde la tienda."
+          : "Esta cotización no tiene productos guardados para el POS (cotizaciones anteriores a la vinculación con caja). Pide al cliente regenerarla desde la tienda; las nuevas sí incluyen las líneas.",
       });
     }
 

@@ -1,6 +1,10 @@
 import { order_status } from "@prisma/client";
+import { getBusinessAwareDeadline } from "../utils/mexicoBusinessDays";
 
 export const ORDER_CANCELLATION_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+export const ORDER_CANCELLATION_WINDOW_EXPIRED_MESSAGE =
+  "Ya no es posible cancelar esta compra. El plazo es de 24 horas después del pago; si vence en fin de semana o día festivo nacional de descanso obligatorio, se extiende al siguiente día hábil.";
 
 export type OrderPaidAtSource = {
   status?: order_status | null;
@@ -20,14 +24,41 @@ export function resolveOrderPaidAt(order: OrderPaidAtSource): Date | null {
 }
 
 export function getOrderCancellationBlockMessage(): string {
-  return "Ya no es posible cancelar esta compra. Solo puedes cancelar dentro de las 24 horas siguientes a la fecha de tu compra.";
+  return ORDER_CANCELLATION_WINDOW_EXPIRED_MESSAGE;
 }
 
-export function isOrderWithinCancellationWindow(order: OrderPaidAtSource): boolean {
+export function getOrderCancellationDeadline(
+  paidReferenceDate: Date | null,
+): Date | null {
+  if (!paidReferenceDate) return null;
+  return getBusinessAwareDeadline(
+    paidReferenceDate,
+    ORDER_CANCELLATION_WINDOW_MS,
+  );
+}
+
+export function isWithinOrderCancellationWindow(
+  paidReferenceDate: Date | null,
+  now: Date = new Date(),
+): boolean {
+  const deadline = getOrderCancellationDeadline(paidReferenceDate);
+  if (!deadline) return true;
+  return now.getTime() <= deadline.getTime();
+}
+
+export function isOrderWithinCancellationWindow(
+  order: OrderPaidAtSource,
+): boolean {
   if (!isPaidOrder(order.status)) return true;
 
   const paidAt = resolveOrderPaidAt(order);
   if (!paidAt || Number.isNaN(paidAt.getTime())) return true;
 
-  return Date.now() - paidAt.getTime() <= ORDER_CANCELLATION_WINDOW_MS;
+  return isWithinOrderCancellationWindow(paidAt);
+}
+
+export function getOrderCancellationDeadlineForOrder(
+  order: OrderPaidAtSource,
+): Date | null {
+  return getOrderCancellationDeadline(resolveOrderPaidAt(order));
 }

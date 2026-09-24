@@ -3,4 +3,6 @@ import "../config/loadEnv";
 import CustomRequestI from "../interfaces/customrequest.interface";
 export declare const MiddleAuthRoute: (req: CustomRequestI, res: Response, next: NextFunction) => Promise<Response<any, Record<string, any>> | undefined>;
 export declare const MiddleAdminRoute: (req: CustomRequestI, res: Response, next: NextFunction) => Promise<Response<any, Record<string, any>> | undefined>;
+/** Panel POS: admin (override) o support (vendedor/caja). */
+export declare const MiddlePosRoute: (req: CustomRequestI, res: Response, next: NextFunction) => Promise<Response<any, Record<string, any>> | undefined>;
 //# sourceMappingURL=index.middleware.d.ts.map
