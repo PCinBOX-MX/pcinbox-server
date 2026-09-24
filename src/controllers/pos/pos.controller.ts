@@ -41,6 +41,7 @@ import {
   searchSerials,
 } from "../../services/pos/posSerial.service";
 import {
+  fromCashierWarranty,
   resolvePosLineWarranty,
   warrantyCoverageLabel,
 } from "../../services/pos/posWarranty.service";
@@ -930,20 +931,31 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
         } catch (e: any) {
           return res.status(400).json({ ok: false, message: e.message });
         }
-        const warrantyMonths =
-          manualKind === "service"
-            ? null
-            : raw.warrantyMonths != null && Number(raw.warrantyMonths) > 0
-              ? Math.round(Number(raw.warrantyMonths))
-              : null;
-        const warrantyMode =
-          manualKind === "service"
-            ? null
-            : warrantyMonths != null
-              ? "months"
-              : raw.warrantyMode
-                ? String(raw.warrantyMode)
-                : null;
+        const modeRaw = String(raw.warrantyMode || "").trim();
+        if (!modeRaw) {
+          return res.status(400).json({
+            ok: false,
+            message: `Elige la garantía de «${manualName}» (meses, años, no aplica o centro de servicio)`,
+          });
+        }
+        let resolvedManualWarranty: {
+          warrantyMode: string | null;
+          warrantyMonths: number | null;
+        };
+        try {
+          resolvedManualWarranty = fromCashierWarranty({
+            warrantyMode: raw.warrantyMode,
+            warrantyMonths: raw.warrantyMonths,
+            warrantyUnit: raw.warrantyUnit,
+          });
+        } catch (e: any) {
+          return res.status(400).json({
+            ok: false,
+            message: `${manualName}: ${e.message || "Garantía inválida"}`,
+          });
+        }
+        const warrantyMonths = resolvedManualWarranty.warrantyMonths;
+        const warrantyMode = resolvedManualWarranty.warrantyMode;
         const lineBase = roundMoney(unitPrice * quantity);
         const lineTotal = computeLineTotal(unitPrice, quantity, discountPct);
         subtotal = roundMoney(subtotal + lineBase);
@@ -1533,33 +1545,48 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       const allSerialsFlat = normalizedItems.flatMap((it) => it.serials);
       if (allSerialsFlat.length > 0) {
         await assertSerialsAvailable(tx, allSerialsFlat);
-        if (status === "completed") {
-          const usedItemIds = new Set<number>();
-          for (const norm of normalizedItems) {
-            if (!norm.serials.length) continue;
-            const itemRow = created.items.find((i) => {
-              const id = Number(i.idPosSaleItem);
-              if (usedItemIds.has(id)) return false;
-              return (
-                Number(i.productId) === norm.productId &&
-                String(i.productName || "") === norm.productName &&
-                Number(i.quantity) === norm.quantity
-              );
-            });
-            if (!itemRow) continue;
-            usedItemIds.add(Number(itemRow.idPosSaleItem));
-            await assignSerialsOnSale(tx, {
-              productId: norm.productId,
-              branchId: norm.branchId ?? branch,
-              posSaleId: created.idPosSale,
-              posSaleItemId: itemRow.idPosSaleItem,
-              serials: norm.serials,
-              customerUserId: customerUser,
-              customerName: displayName,
-              warrantyMonths: norm.warrantyMonths,
-              warrantyMode: norm.warrantyMode,
-            });
+      }
+      if (status === "completed") {
+        const usedItemIds = new Set<number>();
+        for (const norm of normalizedItems) {
+          const itemRow = created.items.find((i) => {
+            const id = Number(i.idPosSaleItem);
+            if (usedItemIds.has(id)) return false;
+            return (
+              Number(i.productId) === norm.productId &&
+              String(i.productName || "") === norm.productName &&
+              Number(i.quantity) === norm.quantity
+            );
+          });
+          if (!itemRow) continue;
+          usedItemIds.add(Number(itemRow.idPosSaleItem));
+
+          let serialsToAssign = [...(norm.serials || [])].filter((s) =>
+            String(s || "").trim(),
+          );
+          const hasWarranty =
+            norm.warrantyMode === "none" ||
+            norm.warrantyMode === "service_center" ||
+            norm.warrantyMode === "months" ||
+            (norm.warrantyMonths != null && Number(norm.warrantyMonths) > 0);
+          if (serialsToAssign.length === 0 && hasWarranty && norm.isManual) {
+            const qty = Math.max(1, Number(norm.quantity) || 1);
+            serialsToAssign = Array.from({ length: qty }, (_, i) =>
+              `POS-W-${created.idPosSale}-${itemRow.idPosSaleItem}-${i + 1}`,
+            );
           }
+          if (serialsToAssign.length === 0) continue;
+          await assignSerialsOnSale(tx, {
+            productId: norm.productId,
+            branchId: norm.branchId ?? branch,
+            posSaleId: created.idPosSale,
+            posSaleItemId: itemRow.idPosSaleItem,
+            serials: serialsToAssign,
+            customerUserId: customerUser,
+            customerName: displayName,
+            warrantyMonths: norm.warrantyMonths,
+            warrantyMode: norm.warrantyMode,
+          });
         }
       }
 
@@ -2014,6 +2041,11 @@ export const getPosSaleWarrantySheet = async (req: Request, res: Response) => {
         );
         const upc = meaningfulCode(it.productUpc) || "—";
         const clave = meaningfulCode(it.productSku) || "—";
+        const serialRaw = String(s.serialNumber || "").trim();
+        const serialDisplay =
+          !serialRaw || /^POS-W-\d+-\d+-\d+$/i.test(serialRaw)
+            ? "—"
+            : serialRaw;
         rows.push(`
       <tr>
         <td>${escapeHtml(upc)}</td>
@@ -2021,7 +2053,7 @@ export const getPosSaleWarrantySheet = async (req: Request, res: Response) => {
         <td>${escapeHtml(it.productName)}</td>
         <td style="text-align:right">${formatMoney(it.unitPrice)}</td>
         <td style="text-align:center">${escapeHtml(tiempo)}</td>
-        <td>${escapeHtml(s.serialNumber || "—")}</td>
+        <td>${escapeHtml(serialDisplay)}</td>
       </tr>`);
       }
     }
