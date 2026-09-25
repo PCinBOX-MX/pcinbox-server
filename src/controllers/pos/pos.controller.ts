@@ -2072,7 +2072,7 @@ export const getPosSaleWarrantySheet = async (req: Request, res: Response) => {
         <td>${escapeHtml(it.productName)}</td>
         <td style="text-align:right">${formatMoney(it.unitPrice)}</td>
         <td style="text-align:center">${escapeHtml(tiempo)}</td>
-        <td>${escapeHtml(serialDisplay)}</td>
+        <td class="serie">${escapeHtml(serialDisplay)}</td>
       </tr>`);
       }
     }
@@ -2095,9 +2095,10 @@ export const getPosSaleWarrantySheet = async (req: Request, res: Response) => {
     .meta { font-size: 13px; line-height: 1.7; margin-bottom: 16px; }
     .meta strong { display: inline-block; min-width: 140px; }
     h2 { font-size: 14px; margin: 16px 0 8px; text-transform: uppercase; }
-    table { width: 100%; border-collapse: collapse; font-size: 12px; }
-    th, td { border: 1px solid #d1d5db; padding: 8px 6px; vertical-align: top; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; table-layout: fixed; }
+    th, td { border: 1px solid #d1d5db; padding: 8px 6px; vertical-align: top; word-break: break-word; overflow-wrap: anywhere; }
     th { background: #f9fafb; text-align: left; }
+    td.serie { font-size: 11px; word-break: break-all; }
     .terms { margin-top: 18px; font-size: 11px; line-height: 1.45; color: #374151; }
     .terms ol { padding-left: 18px; }
     .terms li { margin: 6px 0; }
