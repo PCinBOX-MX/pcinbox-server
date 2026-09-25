@@ -192,12 +192,10 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
             const qty = Number(eq.quantity) || 1;
             const desc = escapeHtml(String(eq.description || "").trim() || "—");
             const sn = String(eq.serialNumber || "").trim();
-            const cond = String(eq.physicalCondition || "").trim();
             return `
             <div class="equip-item">
               <div class="equip-item-title">${desc}${qty > 1 ? ` (×${qty})` : ""}</div>
               ${sn ? `<div class="muted">Nº serie: ${escapeHtml(sn)}</div>` : ""}
-              ${cond ? `<div class="muted">Estado físico: ${escapeHtml(cond)}</div>` : ""}
             </div>`;
           })
           .join("");
