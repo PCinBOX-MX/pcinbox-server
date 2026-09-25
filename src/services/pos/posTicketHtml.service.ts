@@ -16,7 +16,7 @@ const DISCLAIMER_PARAGRAPHS = [
   "No hay devolución ni cambios de productos. Cualquier devolución justificada genera el 20% de comisión.",
 ] as const;
 const TERMS_LINE =
-  "Acepto términos y condiciones de pcinbox en mantenimiento preventivo y correctivo";
+  "Al dejar su equipo, el cliente acepta nuestros Términos y Condiciones de Servicio Técnico. Consúltelos en pcinbox.com.mx/servicio-tecnico";
 
 function isMeaningfulCode(value?: string | null): boolean {
   const v = String(value || "").trim();
