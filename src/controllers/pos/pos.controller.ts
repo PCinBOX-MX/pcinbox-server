@@ -31,6 +31,10 @@ import {
   requireOpenCashSession,
 } from "../../services/pos/posCash.service";
 import {
+  readQuotePdfClientIdentity,
+  resolvePosCustomerFromPdf,
+} from "../../services/quotePdfClient.service";
+import {
   assignSerialsOnSale,
   assertSerialsAvailable,
   getSerialByNumber,
@@ -272,7 +276,8 @@ function serializeSale(sale: any) {
     customerName: sale.customerName ||
       (sale.customer
         ? `${sale.customer.name || ""} ${sale.customer.lastname || ""}`.trim()
-        : "Público general"),
+        : "") ||
+      null,
     status: sale.status,
     subtotal: Number(sale.subtotal),
     discountTotal: Number(sale.discountTotal),
@@ -555,6 +560,7 @@ export const getPosQuoteByNumber = async (req: Request, res: Response) => {
         expiresAt: true,
         createdAt: true,
         linesJson: true,
+        storageKey: true,
         active: true,
         users: {
           select: {
@@ -673,9 +679,13 @@ export const getPosQuoteByNumber = async (req: Request, res: Response) => {
       return !(Number.isSafeInteger(n) && inactiveIdSet.has(n));
     });
 
-    const customerName = quote.users
-      ? [quote.users.name, quote.users.lastname].filter(Boolean).join(" ").trim()
-      : "";
+    // Cliente del POS: bloque "Cliente" del PDF (no la cuenta a ciegas).
+    // Si el PDF trae nombre+correo sin teléfono, se usa users.phone del dueño.
+    const pdfClient = await readQuotePdfClientIdentity(quote.storageKey);
+    const customer = resolvePosCustomerFromPdf(
+      pdfClient,
+      quote.users?.phone ?? null,
+    );
 
     return res.json({
       ok: true,
@@ -687,11 +697,7 @@ export const getPosQuoteByNumber = async (req: Request, res: Response) => {
         expired: false,
         expiresAt: quote.expiresAt,
         createdAt: quote.createdAt,
-        customer: {
-          name: customerName || null,
-          email: quote.users?.email || null,
-          phone: quote.users?.phone || null,
-        },
+        customer,
         items,
         missingProductIds,
         inactiveProducts,
@@ -1452,25 +1458,25 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       guestPhone = guestPhone || exists.phone || "";
     }
 
-    if (!guestName || guestName.trim().length < 2) {
+    // Nombre y teléfono son opcionales; si se capturan, validar formato.
+    if (guestName && guestName.trim().length > 0 && guestName.trim().length < 2) {
       return res.status(400).json({
         ok: false,
-        message: "Nombre del cliente requerido (mín. 2 caracteres)",
+        message: "Si capturas nombre, usa al menos 2 caracteres",
       });
     }
     const phoneDigits = String(guestPhone || "").replace(/\D/g, "");
-    if (phoneDigits.length < 10) {
+    if (phoneDigits.length > 0 && phoneDigits.length < 10) {
       return res.status(400).json({
         ok: false,
-        message: "Teléfono del cliente requerido (10 dígitos)",
+        message: "Si capturas teléfono, debe tener al menos 10 dígitos",
       });
     }
 
     const sale = await prisma.$transaction(async (tx) => {
       const folio = await nextPosFolio(tx);
       const displayName =
-        [guestName, guestLastname].filter(Boolean).join(" ").trim() ||
-        (customerUser ? null : "Público general");
+        [guestName, guestLastname].filter(Boolean).join(" ").trim() || null;
 
       let cashSessionId: bigint | null = null;
       if (status === "completed" && cashAmount > 0) {
@@ -2126,7 +2132,7 @@ export const getPosSaleWarrantySheet = async (req: Request, res: Response) => {
       <div><strong>Folio venta:</strong> ${escapeHtml(formatFolioDisplay(data.folio))}</div>
       <div><strong>Fecha de compra:</strong> ${escapeHtml(warrantyDate)}</div>
       <div><strong>Vendedor:</strong> PCinBOX</div>
-      <div><strong>Cliente:</strong> ${escapeHtml(data.customerName || "Público general")}</div>
+      <div><strong>Cliente:</strong> ${escapeHtml(data.customerName || "")}</div>
     </div>
     <h2>Detalle de garantía</h2>
     <table>

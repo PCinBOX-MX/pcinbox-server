@@ -1,0 +1,413 @@
+import { readFile } from "fs/promises";
+import { PDFParse } from "pdf-parse";
+import { resolveQuotePath } from "./quoteStorage.service";
+
+export type QuotePdfClientIdentity = {
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+  /** true cuando el bloque Cliente es "Venta público general" o está vacío */
+  isPublicSale: boolean;
+};
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
+/** Ej: +52 5512345678 | +1 5551234567 */
+const PHONE_RE = /^\+\d{1,3}\s+\d{7,15}$/;
+const CLIENT_START = /^cliente$/i;
+const CLIENT_END =
+  /^(no\.?\s*cotizaci[oó]n|vigencia|venta\s+p[uú]blico\s+general)$/i;
+const PUBLIC_SALE_RE = /^venta\s+p[uú]blico\s+general$/i;
+const META_PREFIX = "pcinbox-client-v1";
+
+const emptyIdentity = (): QuotePdfClientIdentity => ({
+  name: null,
+  email: null,
+  phone: null,
+  isPublicSale: true,
+});
+
+const decodePdfLiteral = (raw: string): string => {
+  let out = "";
+  for (let i = 0; i < raw.length; i += 1) {
+    const ch = raw[i]!;
+    if (ch !== "\\") {
+      out += ch;
+      continue;
+    }
+    const next = raw[i + 1];
+    if (next === undefined) break;
+    if (next === "n") {
+      out += "\n";
+      i += 1;
+      continue;
+    }
+    if (next === "r") {
+      out += "\r";
+      i += 1;
+      continue;
+    }
+    if (next === "t") {
+      out += "\t";
+      i += 1;
+      continue;
+    }
+    if (next === "b" || next === "f") {
+      i += 1;
+      continue;
+    }
+    if (next === "(" || next === ")" || next === "\\") {
+      out += next;
+      i += 1;
+      continue;
+    }
+    if (/[0-7]/.test(next)) {
+      let oct = next;
+      i += 1;
+      for (let k = 0; k < 2; k += 1) {
+        const dig = raw[i + 1];
+        if (dig === undefined || !/[0-7]/.test(dig)) break;
+        i += 1;
+        oct += dig;
+      }
+      out += String.fromCharCode(parseInt(oct, 8));
+      continue;
+    }
+    out += next;
+    i += 1;
+  }
+  return out;
+};
+
+const EMAIL_VALUE_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
+const PHONE_VALUE_RE = /^\+\d{1,3}\s+\d{7,15}$/;
+/** Corta basura de objetos PDF pegada al valor (")endobj…", "<<", etc.). */
+const PDF_JUNK_CUT_RE = /\)?\s*(?:endobj|obj<<|<<|\/Type|\/Font|\/Producer)/i;
+
+const sanitizeKeywordValue = (raw: string): string => {
+  let value = String(raw || "").trim();
+  const junk = value.search(PDF_JUNK_CUT_RE);
+  if (junk >= 0) value = value.slice(0, junk);
+  // Paréntesis de cierre del literal PDF
+  value = value.replace(/\)+$/g, "").trim();
+  return value;
+};
+
+const sanitizeName = (raw: string | null): string | null => {
+  if (!raw) return null;
+  const value = sanitizeKeywordValue(raw)
+    .replace(/[^\p{L}\p{N}\s.'\-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return value.slice(0, 120) || null;
+};
+
+const sanitizeEmail = (raw: string | null): string | null => {
+  if (!raw) return null;
+  const value = sanitizeKeywordValue(raw).slice(0, 255);
+  return EMAIL_VALUE_RE.test(value) ? value : null;
+};
+
+const sanitizePhone = (raw: string | null): string | null => {
+  if (!raw) return null;
+  const value = sanitizeKeywordValue(raw);
+  if (PHONE_VALUE_RE.test(value)) return value;
+  // Intentar rescatar "+52 ##########" al inicio si vino basura pegada
+  const m = value.match(/^(\+\d{1,3}\s+\d{7,15})/);
+  return m?.[1] || null;
+};
+
+/** Parsea el string Keywords embebido (con o sin prefijo visible). */
+export const parseClientKeywordsString = (
+  keywords: string | null | undefined,
+): QuotePdfClientIdentity | null => {
+  if (!keywords || !keywords.includes(META_PREFIX)) return null;
+
+  // Solo el segmento de metadatos; evita arrastrar "endobj…" del PDF
+  const metaMatch = keywords.match(
+    /pcinbox-client-v1(?:\|(?:name|email|phone)=[^|\n\r]+|\|public=1)*/i,
+  );
+  const scoped = metaMatch?.[0] || keywords;
+  const parts = scoped.split("|").map((p) => p.trim());
+  if (!parts.some((p) => p === META_PREFIX || p.toLowerCase() === META_PREFIX)) {
+    return null;
+  }
+
+  let name: string | null = null;
+  let email: string | null = null;
+  let phone: string | null = null;
+  let isPublic = false;
+
+  for (const part of parts) {
+    if (part === "public=1") isPublic = true;
+    else if (part.startsWith("name=")) name = sanitizeName(part.slice(5));
+    else if (part.startsWith("email=")) email = sanitizeEmail(part.slice(6));
+    else if (part.startsWith("phone=")) phone = sanitizePhone(part.slice(6));
+  }
+
+  if (isPublic || (!name && !email && !phone)) {
+    return emptyIdentity();
+  }
+
+  return { name, email, phone, isPublicSale: false };
+};
+
+const utf16BeToString = (bytes: Buffer): string => {
+  const swapped = Buffer.alloc(bytes.length);
+  for (let i = 0; i + 1 < bytes.length; i += 2) {
+    swapped[i] = bytes[i + 1]!;
+    swapped[i + 1] = bytes[i]!;
+  }
+  return swapped.toString("utf16le");
+};
+
+const decodePdfHexString = (hex: string): string => {
+  const cleaned = hex.replace(/[^0-9a-fA-F]/g, "");
+  if (cleaned.length < 2 || cleaned.length % 2 !== 0) return "";
+  const bytes = Buffer.from(cleaned, "hex");
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) {
+    return utf16BeToString(bytes.subarray(2));
+  }
+  if (bytes.length % 2 === 0) {
+    return utf16BeToString(bytes);
+  }
+  return bytes.toString("latin1");
+};
+
+/** Lee Keywords del Info dict del PDF (metadatos embebidos al generar). */
+export const parseClientFromPdfKeywords = (
+  pdfBytes: Buffer,
+): QuotePdfClientIdentity | null => {
+  const source = pdfBytes.toString("latin1");
+
+  const literal = source.match(/\/Keywords\s*\((?:\\.|[^\\)])*\)/);
+  if (literal) {
+    const inner = literal[0].replace(/^\/Keywords\s*\(/, "").replace(/\)$/, "");
+    const parsed = parseClientKeywordsString(decodePdfLiteral(inner));
+    if (parsed) return parsed;
+  }
+
+  const hex = source.match(/\/Keywords\s*<([0-9A-Fa-f\s]+)>/);
+  if (hex?.[1]) {
+    const parsed = parseClientKeywordsString(decodePdfHexString(hex[1]));
+    if (parsed) return parsed;
+  }
+
+  // Fallback: prefijo ASCII en el binario; cortar antes de basura PDF
+  const idx = source.indexOf(META_PREFIX);
+  if (idx >= 0) {
+    const slice = source.slice(idx, idx + 300);
+    const cutAt = slice.search(/\)|\bendobj\b|obj<<|<<|\x00/);
+    const candidate = (cutAt >= 0 ? slice.slice(0, cutAt) : slice).trim();
+    const parsed = parseClientKeywordsString(candidate);
+    if (parsed) return parsed;
+  }
+
+  return null;
+};
+
+export const parseQuotePdfClientFromText = (
+  textOrTokens: string | string[],
+): QuotePdfClientIdentity => {
+  const flat = (Array.isArray(textOrTokens) ? textOrTokens : [textOrTokens])
+    .flatMap((t) => String(t).split(/\r?\n+/))
+    .map((t) => t.trim())
+    .filter(Boolean);
+
+  let start = -1;
+  for (let i = 0; i < flat.length; i += 1) {
+    const token = flat[i];
+    if (token !== undefined && CLIENT_START.test(token)) {
+      start = i + 1;
+      break;
+    }
+  }
+
+  if (start < 0) {
+    return emptyIdentity();
+  }
+
+  const lines: string[] = [];
+  for (let i = start; i < flat.length; i += 1) {
+    const line = flat[i];
+    if (line === undefined) continue;
+    if (PUBLIC_SALE_RE.test(line)) {
+      return emptyIdentity();
+    }
+    if (CLIENT_END.test(line)) break;
+    if (
+      /^(imagen|cant\.?|producto|descripci[oó]n|precio|importe|p\.\s*unitario|subtotal)$/i.test(
+        line,
+      )
+    ) {
+      break;
+    }
+    lines.push(line);
+    if (lines.length >= 6) break;
+  }
+
+  let name: string | null = null;
+  let email: string | null = null;
+  let phone: string | null = null;
+
+  for (const line of lines) {
+    if (!email && EMAIL_RE.test(line)) {
+      email = line;
+      continue;
+    }
+    if (!phone && PHONE_RE.test(line)) {
+      phone = line;
+      continue;
+    }
+    if (!phone && /^\+\d{8,18}$/.test(line)) {
+      const digits = line.slice(1);
+      const known = ["52", "1", "34", "54", "57", "56", "51", "58"];
+      let split: { lada: string; rest: string } | null = null;
+      for (const code of known) {
+        if (digits.startsWith(code) && digits.length - code.length >= 7) {
+          split = { lada: `+${code}`, rest: digits.slice(code.length) };
+          break;
+        }
+      }
+      phone = split ? `${split.lada} ${split.rest}` : line;
+      continue;
+    }
+    if (
+      !name &&
+      !EMAIL_RE.test(line) &&
+      !PHONE_RE.test(line) &&
+      !/^\+\d/.test(line)
+    ) {
+      name = line;
+    }
+  }
+
+  return {
+    name,
+    email,
+    phone,
+    isPublicSale: !name && !email && !phone,
+  };
+};
+
+const extractInfoKeywordsWithPdfParse = async (
+  pdfBytes: Buffer,
+): Promise<string | null> => {
+  const parser = new PDFParse({ data: pdfBytes });
+  try {
+    const info = await parser.getInfo();
+    const keywords =
+      (info as { keywords?: unknown; Keywords?: unknown })?.keywords ??
+      (info as { Keywords?: unknown })?.Keywords ??
+      (info as { info?: { Keywords?: unknown; keywords?: unknown } })?.info
+        ?.Keywords ??
+      (info as { info?: { keywords?: unknown } })?.info?.keywords;
+    return typeof keywords === "string" && keywords.trim() ? keywords : null;
+  } catch {
+    return null;
+  } finally {
+    await parser.destroy().catch(() => undefined);
+  }
+};
+
+const extractTextWithPdfParse = async (
+  pdfBytes: Buffer,
+): Promise<string | null> => {
+  const parser = new PDFParse({ data: pdfBytes });
+  try {
+    const result = await parser.getText();
+    const text =
+      typeof result === "string"
+        ? result
+        : typeof (result as { text?: unknown })?.text === "string"
+          ? (result as { text: string }).text
+          : null;
+    return text && text.trim() ? text : null;
+  } catch {
+    return null;
+  } finally {
+    await parser.destroy().catch(() => undefined);
+  }
+};
+
+/**
+ * Lee solo Keywords del PDF (rápido; sin pdf-parse).
+ * Devuelve null si el PDF no trae metadatos pcinbox-client-v1.
+ */
+export const readQuotePdfClientIdentityLight = async (
+  storageKey: string,
+): Promise<QuotePdfClientIdentity | null> => {
+  try {
+    const pdfPath = resolveQuotePath(storageKey);
+    const bytes = await readFile(pdfPath);
+    return parseClientFromPdfKeywords(bytes);
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Lee el PDF de una cotización y obtiene el bloque Cliente.
+ * Prioridad: Keywords (binario / pdf-parse info) → texto (pdf-parse) → vacío.
+ */
+export const readQuotePdfClientIdentity = async (
+  storageKey: string,
+): Promise<QuotePdfClientIdentity> => {
+  try {
+    const pdfPath = resolveQuotePath(storageKey);
+    const bytes = await readFile(pdfPath);
+
+    const fromKeywordsRaw = parseClientFromPdfKeywords(bytes);
+    if (fromKeywordsRaw) return fromKeywordsRaw;
+
+    const infoKeywords = await extractInfoKeywordsWithPdfParse(bytes);
+    const fromInfo = parseClientKeywordsString(infoKeywords);
+    if (fromInfo) return fromInfo;
+
+    const text = await extractTextWithPdfParse(bytes);
+    if (text) return parseQuotePdfClientFromText(text);
+
+    return emptyIdentity();
+  } catch {
+    return emptyIdentity();
+  }
+};
+
+/**
+ * Resuelve customer para POS a partir del PDF + teléfono de cuenta (fallback).
+ *
+ * - PDF con teléfono → name/phone/email del PDF (email solo si viene en PDF).
+ * - PDF con name+email (sin teléfono) → name/email del PDF; phone desde users si existe.
+ * - PDF solo name → name del PDF; sin forzar phone de cuenta.
+ * - PDF solo phone → phone del PDF.
+ */
+export const resolvePosCustomerFromPdf = (
+  pdfClient: QuotePdfClientIdentity,
+  accountPhone: string | null | undefined,
+): {
+  name: string | null;
+  email: string | null;
+  phone: string | null;
+} => {
+  if (pdfClient.isPublicSale) {
+    return { name: null, email: null, phone: null };
+  }
+
+  const name = pdfClient.name;
+  const email = pdfClient.email;
+  const pdfPhone = pdfClient.phone;
+
+  if (pdfPhone) {
+    return { name, email, phone: pdfPhone };
+  }
+
+  // Nombre + correo en PDF → buscar teléfono en DB del dueño de la cotización
+  if (name && email) {
+    const dbPhone =
+      typeof accountPhone === "string" && accountPhone.trim()
+        ? accountPhone.trim()
+        : null;
+    return { name, email, phone: dbPhone };
+  }
+
+  return { name, email, phone: null };
+};

@@ -333,6 +333,8 @@ export const getPhone = async (req: CustomRequestI, res: Response) => {
       message: "Teléfono obtenido correctamente",
       data: {
         hasPhone,
+        /** Teléfono completo (solo del usuario autenticado) para cotizaciones / perfil. */
+        phone: hasPhone ? phone : null,
         phoneMasked: maskUserPhone(phone),
         isGoogleAccount,
         reminderDue: reminder.reminderDue,
@@ -450,6 +452,7 @@ export const updatePhone = async (req: CustomRequestI, res: Response) => {
       message: "Teléfono actualizado correctamente",
       data: {
         hasPhone: true,
+        phone: saved,
         phoneMasked: maskUserPhone(saved),
         reminderDue: false,
         reminderAvailableAt: null,
