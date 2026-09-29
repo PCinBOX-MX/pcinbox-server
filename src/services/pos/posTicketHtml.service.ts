@@ -281,7 +281,7 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
     body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #111; background: #f3f4f6; padding: 24px; }
     .ticket { max-width: 360px; margin: 0 auto; background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 20px 16px; }
     .brand { text-align: center; margin-bottom: 10px; }
-    .brand img { width: 72px; height: 72px; object-fit: contain; display: block; margin: 0 auto 6px; }
+    .brand img { width: auto; height: 72px; max-width: 120px; object-fit: contain; display: block; margin: 0 auto 6px; }
     .brand h1 { font-size: 22px; letter-spacing: -0.02em; color: #bb3d4b; }
     .brand .title { font-size: 13px; font-weight: 700; margin-top: 4px; }
     .brand .branch { font-size: 12px; margin-top: 2px; }
@@ -352,12 +352,8 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
       }
       <div>Fecha: ${new Date(data.createdAt).toLocaleString("es-MX")}</div>
       <div>Vendedor: ${escapeHtml(SELLER)}</div>
-      <div>Cliente: ${escapeHtml(data.customerName || "Público general")}</div>
-      ${
-        String(data.customerPhone || "").trim()
-          ? `<div>Teléfono: ${escapeHtml(String(data.customerPhone).trim())}</div>`
-          : ""
-      }
+      <div>Cliente: ${escapeHtml(String(data.customerName || "").trim())}</div>
+      <div>Teléfono: ${escapeHtml(String(data.customerPhone || "").trim())}</div>
     </div>
     <div class="sep">*** PRODUCTOS ***</div>
     ${itemsHtml}
@@ -391,7 +387,7 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
         : ""
     }
     <div class="actions">
-      <button type="button" onclick="window.print()">Imprimir</button>
+      <button type="button" onclick="window.print()">Imprimir / Guardar PDF</button>
     </div>
   </div>
 </body>

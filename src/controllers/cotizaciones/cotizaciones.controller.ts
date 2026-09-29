@@ -12,6 +12,10 @@ import {
   resolveQuotePath,
   validatePdfAndHash,
 } from "../../services/quoteStorage.service";
+import {
+  readQuotePdfClientIdentityLight,
+  resolvePosCustomerFromPdf,
+} from "../../services/quotePdfClient.service";
 
 const QUOTE_NUMBER_PATTERN = /^(?:\d{13}|COT-[A-Z0-9-]{8,55})$/;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9:_-]{8,100}$/;
@@ -48,30 +52,73 @@ const quoteSelect = {
   userId: true,
   cartHash: true,
   checkoutMode: true,
+  storageKey: true,
   users: {
     select: {
       name: true,
       lastname: true,
       email: true,
+      phone: true,
     },
   },
 } satisfies Prisma.cotizacionesSelect;
 
 type QuoteRecord = Prisma.cotizacionesGetPayload<{ select: typeof quoteSelect }>;
 
+const accountCustomer = (users: QuoteRecord["users"]) => {
+  if (!users) {
+    return { name: null as string | null, email: null as string | null, phone: null as string | null };
+  }
+  const name = [users.name, users.lastname].filter(Boolean).join(" ").trim();
+  return {
+    name: name || null,
+    email: users.email || null,
+    phone: users.phone || null,
+  };
+};
+
 const serializeQuote = (quote: QuoteRecord) => {
-  const { users, cartHash: _cart, active: _active, ...safe } = quote;
+  const {
+    users,
+    cartHash: _cart,
+    active: _active,
+    storageKey: _storageKey,
+    ...safe
+  } = quote;
   if (!users) {
     throw new Error("La cotizaci?n no est? asociada a un usuario");
   }
+  const fromAccount = accountCustomer(users);
   return {
     ...safe,
     idCotizacion: Number(quote.idCotizacion),
     userId: Number(quote.userId),
     totalAmount: Number(quote.totalAmount),
     customer: {
-      name: [users.name, users.lastname].filter(Boolean).join(" "),
-      email: users.email,
+      name: fromAccount.name || "",
+      email: fromAccount.email || "",
+      phone: fromAccount.phone,
+    },
+  };
+};
+
+/** Cliente del PDF (Keywords); si no hay metadatos, cae a la cuenta dueña. */
+const serializeQuoteWithPdfCustomer = async (quote: QuoteRecord) => {
+  const base = serializeQuote(quote);
+  const pdfClient = await readQuotePdfClientIdentityLight(quote.storageKey);
+  if (!pdfClient) {
+    return base;
+  }
+  const fromPdf = resolvePosCustomerFromPdf(
+    pdfClient,
+    quote.users?.phone ?? null,
+  );
+  return {
+    ...base,
+    customer: {
+      name: fromPdf.name || "",
+      email: fromPdf.email || "",
+      phone: fromPdf.phone,
     },
   };
 };
@@ -473,19 +520,9 @@ export const listAdminQuotes = async (
     }
     if (to) to.setUTCHours(23, 59, 59, 999);
 
-    const where: Prisma.cotizacionesWhereInput = {
+    // El Cliente de la UI sale del PDF; con búsqueda hay que filtrar tras enriquecer.
+    const baseWhere: Prisma.cotizacionesWhereInput = {
       active: 1,
-      ...(search
-        ? {
-            OR: [
-              { quoteNumber: { contains: search } },
-              { originalFileName: { contains: search } },
-              { users: { email: { contains: search } } },
-              { users: { name: { contains: search } } },
-              { users: { lastname: { contains: search } } },
-            ],
-          }
-        : {}),
       ...(from || to
         ? {
             createdAt: {
@@ -496,25 +533,85 @@ export const listAdminQuotes = async (
         : {}),
     };
 
-    const [records, total] = await prisma.$transaction([
-      prisma.cotizaciones.findMany({
-        where,
-        select: quoteSelect,
-        orderBy: [{ createdAt: "desc" }, { idCotizacion: "desc" }],
-        skip: (page - 1) * PAGE_SIZE,
-        take: PAGE_SIZE,
-      }),
-      prisma.cotizaciones.count({ where }),
-    ]);
+    if (!search) {
+      const [records, total] = await prisma.$transaction([
+        prisma.cotizaciones.findMany({
+          where: baseWhere,
+          select: quoteSelect,
+          orderBy: [{ createdAt: "desc" }, { idCotizacion: "desc" }],
+          skip: (page - 1) * PAGE_SIZE,
+          take: PAGE_SIZE,
+        }),
+        prisma.cotizaciones.count({ where: baseWhere }),
+      ]);
+
+      const data = await Promise.all(
+        records.map((record) => serializeQuoteWithPdfCustomer(record)),
+      );
+
+      return res.status(200).json({
+        ok: true,
+        data,
+        pagination: {
+          page,
+          limit: PAGE_SIZE,
+          total,
+          totalPages: Math.ceil(total / PAGE_SIZE) || 1,
+        },
+      });
+    }
+
+    const SEARCH_POOL_LIMIT = 500;
+    const pool = await prisma.cotizaciones.findMany({
+      where: baseWhere,
+      select: quoteSelect,
+      orderBy: [{ createdAt: "desc" }, { idCotizacion: "desc" }],
+      take: SEARCH_POOL_LIMIT,
+    });
+
+    const enriched = await Promise.all(
+      pool.map((record) => serializeQuoteWithPdfCustomer(record)),
+    );
+
+    const needle = search.toLowerCase();
+    const needleDigits = search.replace(/\D/g, "");
+    const filtered = enriched.filter((item) => {
+      const name = String(item.customer?.name || "").toLowerCase();
+      const email = String(item.customer?.email || "").toLowerCase();
+      const phone = String(item.customer?.phone || "").toLowerCase();
+      const phoneDigits = phone.replace(/\D/g, "");
+      const folio = String(item.quoteNumber || "").toLowerCase();
+      const file = String(item.originalFileName || "").toLowerCase();
+
+      if (
+        folio.includes(needle) ||
+        file.includes(needle) ||
+        name.includes(needle) ||
+        email.includes(needle) ||
+        phone.includes(needle)
+      ) {
+        return true;
+      }
+      if (needleDigits.length >= 4 && phoneDigits.includes(needleDigits)) {
+        return true;
+      }
+      return false;
+    });
+
+    const total = filtered.length;
+    const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    const safePage = Math.min(page, totalPages);
+    const start = (safePage - 1) * PAGE_SIZE;
+    const data = filtered.slice(start, start + PAGE_SIZE);
 
     return res.status(200).json({
       ok: true,
-      data: records.map(serializeQuote),
+      data,
       pagination: {
-        page,
+        page: safePage,
         limit: PAGE_SIZE,
         total,
-        totalPages: Math.ceil(total / PAGE_SIZE),
+        totalPages,
       },
     });
   } catch {
