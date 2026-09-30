@@ -679,13 +679,9 @@ export const getPosQuoteByNumber = async (req: Request, res: Response) => {
       return !(Number.isSafeInteger(n) && inactiveIdSet.has(n));
     });
 
-    // Cliente del POS: bloque "Cliente" del PDF (no la cuenta a ciegas).
-    // Si el PDF trae nombre+correo sin teléfono, se usa users.phone del dueño.
+    // Cliente del POS: solo lo capturado en el PDF (sin rellenar con users.phone).
     const pdfClient = await readQuotePdfClientIdentity(quote.storageKey);
-    const customer = resolvePosCustomerFromPdf(
-      pdfClient,
-      quote.users?.phone ?? null,
-    );
+    const customer = resolvePosCustomerFromPdf(pdfClient);
 
     return res.json({
       ok: true,

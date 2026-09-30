@@ -13,6 +13,7 @@ import {
   validatePdfAndHash,
 } from "../../services/quoteStorage.service";
 import {
+  readQuotePdfClientIdentity,
   readQuotePdfClientIdentityLight,
   resolvePosCustomerFromPdf,
 } from "../../services/quotePdfClient.service";
@@ -102,25 +103,29 @@ const serializeQuote = (quote: QuoteRecord) => {
   };
 };
 
-/** Cliente del PDF (Keywords); si no hay metadatos, cae a la cuenta dueña. */
+/**
+ * Cliente del PDF (Keywords o texto).
+ * Solo lo que venga en el PDF; si no hay nombre/tel/email, cae a la cuenta dueña.
+ */
 const serializeQuoteWithPdfCustomer = async (quote: QuoteRecord) => {
   const base = serializeQuote(quote);
-  const pdfClient = await readQuotePdfClientIdentityLight(quote.storageKey);
+  let pdfClient = await readQuotePdfClientIdentityLight(quote.storageKey);
+  // Keywords indirectos / PDFs viejos: leer bloque Cliente del PDF.
   if (!pdfClient) {
-    return base;
+    pdfClient = await readQuotePdfClientIdentity(quote.storageKey);
   }
-  const fromPdf = resolvePosCustomerFromPdf(
-    pdfClient,
-    quote.users?.phone ?? null,
-  );
-  return {
-    ...base,
-    customer: {
-      name: fromPdf.name || "",
-      email: fromPdf.email || "",
-      phone: fromPdf.phone,
-    },
-  };
+  const fromPdf = resolvePosCustomerFromPdf(pdfClient);
+  if (fromPdf.name || fromPdf.email || fromPdf.phone) {
+    return {
+      ...base,
+      customer: {
+        name: fromPdf.name || "",
+        email: fromPdf.email || "",
+        phone: fromPdf.phone,
+      },
+    };
+  }
+  return base;
 };
 
 export const parseCheckoutContext = (

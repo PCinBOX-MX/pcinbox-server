@@ -71,6 +71,17 @@ describe("parseClientFromPdfKeywords", () => {
     assert.equal(parsed!.email, null);
   });
 
+  it("resuelve /Keywords N 0 R (objeto indirecto de react-pdf)", () => {
+    const pdf = Buffer.from(
+      "%PDF-1.4\n22 0 obj\n(pcinbox-client-v1|name=Patricio Estrella|phone=+52 2312321321)\nendobj\n1 0 obj<< /Keywords 22 0 R >>endobj\n",
+      "latin1",
+    );
+    const parsed = parseClientFromPdfKeywords(pdf);
+    assert.ok(parsed);
+    assert.equal(parsed!.name, "Patricio Estrella");
+    assert.equal(parsed!.phone, "+52 2312321321");
+  });
+
   it("lee public=1", () => {
     const pdf = Buffer.from(
       "%PDF-1.4\n<< /Keywords (pcinbox-client-v1|public=1) >>\n",
@@ -83,7 +94,7 @@ describe("parseClientFromPdfKeywords", () => {
 });
 
 describe("resolvePosCustomerFromPdf", () => {
-  it("usa teléfono del PDF cuando existe", () => {
+  it("usa teléfono del PDF cuando existe y no mezcla cuenta", () => {
     const customer = resolvePosCustomerFromPdf(
       {
         name: "Juan",
@@ -97,7 +108,7 @@ describe("resolvePosCustomerFromPdf", () => {
     assert.equal(customer.name, "Juan");
   });
 
-  it("con nombre+correo busca teléfono en DB del cliente", () => {
+  it("nombre+correo sin teléfono en PDF no usa users.phone", () => {
     const customer = resolvePosCustomerFromPdf(
       {
         name: "Ana López",
@@ -109,19 +120,6 @@ describe("resolvePosCustomerFromPdf", () => {
     );
     assert.equal(customer.name, "Ana López");
     assert.equal(customer.email, "ana@mail.com");
-    assert.equal(customer.phone, "5511223344");
-  });
-
-  it("con nombre+correo sin teléfono en DB deja phone null", () => {
-    const customer = resolvePosCustomerFromPdf(
-      {
-        name: "Ana López",
-        email: "ana@mail.com",
-        phone: null,
-        isPublicSale: false,
-      },
-      null,
-    );
     assert.equal(customer.phone, null);
   });
 
@@ -136,6 +134,35 @@ describe("resolvePosCustomerFromPdf", () => {
       "5511223344",
     );
     assert.equal(customer.name, "Solo Nombre");
+    assert.equal(customer.email, null);
+    assert.equal(customer.phone, null);
+  });
+
+  it("solo teléfono no fuerza nombre de cuenta", () => {
+    const customer = resolvePosCustomerFromPdf(
+      {
+        name: null,
+        email: null,
+        phone: "+52 5512345678",
+        isPublicSale: false,
+      },
+      "5511223344",
+    );
+    assert.equal(customer.name, null);
+    assert.equal(customer.phone, "+52 5512345678");
+  });
+
+  it("venta pública deja todo null (caller usa cuenta)", () => {
+    const customer = resolvePosCustomerFromPdf(
+      {
+        name: null,
+        email: null,
+        phone: null,
+        isPublicSale: true,
+      },
+      "5511223344",
+    );
+    assert.equal(customer.name, null);
     assert.equal(customer.phone, null);
   });
 });

@@ -179,6 +179,21 @@ export const parseClientFromPdfKeywords = (
 ): QuotePdfClientIdentity | null => {
   const source = pdfBytes.toString("latin1");
 
+  const tryParseLiteralOrHex = (raw: string): QuotePdfClientIdentity | null => {
+    const trimmed = raw.trim();
+    if (trimmed.startsWith("(") && trimmed.endsWith(")")) {
+      return parseClientKeywordsString(
+        decodePdfLiteral(trimmed.slice(1, -1)),
+      );
+    }
+    if (trimmed.startsWith("<") && trimmed.endsWith(">")) {
+      return parseClientKeywordsString(
+        decodePdfHexString(trimmed.slice(1, -1)),
+      );
+    }
+    return null;
+  };
+
   const literal = source.match(/\/Keywords\s*\((?:\\.|[^\\)])*\)/);
   if (literal) {
     const inner = literal[0].replace(/^\/Keywords\s*\(/, "").replace(/\)$/, "");
@@ -190,6 +205,22 @@ export const parseClientFromPdfKeywords = (
   if (hex?.[1]) {
     const parsed = parseClientKeywordsString(decodePdfHexString(hex[1]));
     if (parsed) return parsed;
+  }
+
+  // @react-pdf suele guardar: /Keywords 22 0 R  →  22 0 obj (texto) endobj
+  const ref = source.match(/\/Keywords\s+(\d+)\s+(\d+)\s+R/);
+  if (ref?.[1]) {
+    const objNum = ref[1];
+    const gen = ref[2] || "0";
+    const objRe = new RegExp(
+      `${objNum}\\s+${gen}\\s+obj\\s*(\\((?:\\\\.|[^\\\\)])*\\)|<[0-9A-Fa-f\\s]+>)\\s*endobj`,
+      "m",
+    );
+    const objMatch = source.match(objRe);
+    if (objMatch?.[1]) {
+      const parsed = tryParseLiteralOrHex(objMatch[1]);
+      if (parsed) return parsed;
+    }
   }
 
   // Fallback: prefijo ASCII en el binario; cortar antes de basura PDF
@@ -373,16 +404,18 @@ export const readQuotePdfClientIdentity = async (
 };
 
 /**
- * Resuelve customer para POS a partir del PDF + teléfono de cuenta (fallback).
+ * Resuelve customer a partir del PDF (sin mezclar con users de la cuenta).
  *
- * - PDF con teléfono → name/phone/email del PDF (email solo si viene en PDF).
- * - PDF con name+email (sin teléfono) → name/email del PDF; phone desde users si existe.
- * - PDF solo name → name del PDF; sin forzar phone de cuenta.
- * - PDF solo phone → phone del PDF.
+ * - Solo nombre → solo nombre (phone/email null).
+ * - Solo teléfono → solo teléfono.
+ * - Ambos → ambos (email solo si viene en el PDF).
+ * - Público / vacío → nulls (el caller decide caer a la cuenta).
+ *
+ * `accountPhone` se ignora (firmas legacy); no rellenar huecos con users.phone.
  */
 export const resolvePosCustomerFromPdf = (
   pdfClient: QuotePdfClientIdentity,
-  accountPhone: string | null | undefined,
+  _accountPhone?: string | null,
 ): {
   name: string | null;
   email: string | null;
@@ -392,22 +425,9 @@ export const resolvePosCustomerFromPdf = (
     return { name: null, email: null, phone: null };
   }
 
-  const name = pdfClient.name;
-  const email = pdfClient.email;
-  const pdfPhone = pdfClient.phone;
-
-  if (pdfPhone) {
-    return { name, email, phone: pdfPhone };
-  }
-
-  // Nombre + correo en PDF → buscar teléfono en DB del dueño de la cotización
-  if (name && email) {
-    const dbPhone =
-      typeof accountPhone === "string" && accountPhone.trim()
-        ? accountPhone.trim()
-        : null;
-    return { name, email, phone: dbPhone };
-  }
-
-  return { name, email, phone: null };
+  return {
+    name: pdfClient.name,
+    email: pdfClient.email,
+    phone: pdfClient.phone,
+  };
 };
