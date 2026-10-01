@@ -29,6 +29,8 @@ type CheckoutLine = {
   productId: string;
   quantity: number;
   storeId: number | null;
+  /** Precio unitario al generar; null en cotizaciones legacy sin precio. */
+  unitPrice: number | null;
 };
 
 class QuoteLimitError extends Error {
@@ -163,6 +165,18 @@ export const parseCheckoutContext = (
         line.storeId === ""
           ? null
           : Number(line.storeId);
+      const unitPriceRaw =
+        line.unitPrice === null ||
+        line.unitPrice === undefined ||
+        line.unitPrice === ""
+          ? null
+          : Number(line.unitPrice);
+      const unitPrice =
+        unitPriceRaw === null
+          ? null
+          : Number.isFinite(unitPriceRaw) && unitPriceRaw >= 0
+            ? Math.round((unitPriceRaw + Number.EPSILON) * 100) / 100
+            : NaN;
       if (
         !productId ||
         productId.length > 64 ||
@@ -170,11 +184,12 @@ export const parseCheckoutContext = (
         quantity < 1 ||
         quantity > 1_000 ||
         (storeId !== null &&
-          (!Number.isSafeInteger(storeId) || storeId < 0))
+          (!Number.isSafeInteger(storeId) || storeId < 0)) ||
+        (unitPrice !== null && !Number.isFinite(unitPrice))
       ) {
         throw new Error("L?nea inv?lida");
       }
-      return { productId, quantity, storeId };
+      return { productId, quantity, storeId, unitPrice };
     });
 
     if (
@@ -189,7 +204,13 @@ export const parseCheckoutContext = (
         `${b.productId}:${b.storeId ?? "null"}:${b.quantity}`,
       ),
     );
-    const canonical = JSON.stringify({ mode: parsed.mode, lines });
+    // Hash sin unitPrice: la cuota no debe romper si el catálogo cambió de precio.
+    const hashLines = lines.map(({ productId, quantity, storeId }) => ({
+      productId,
+      quantity,
+      storeId,
+    }));
+    const canonical = JSON.stringify({ mode: parsed.mode, lines: hashLines });
     return {
       mode: parsed.mode,
       lines,

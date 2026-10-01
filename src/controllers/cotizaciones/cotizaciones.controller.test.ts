@@ -45,6 +45,25 @@ test("rechaza contexto manipulado que no coincide con la cantidad total", () => 
   assert.equal(parseCheckoutContext(context("cart"), 99), null);
 });
 
+test("persiste unitPrice y no altera cartHash si solo cambia el precio", () => {
+  const withoutPrice = parseCheckoutContext(context("cart"), 2);
+  const withPrice = parseCheckoutContext(
+    JSON.stringify({
+      mode: "cart",
+      lines: [
+        { productId: "20", quantity: 1, storeId: 1, unitPrice: 1999.5 },
+        { productId: "10", quantity: 1, storeId: null, unitPrice: 100 },
+      ],
+    }),
+    2,
+  );
+  assert.ok(withoutPrice && withPrice);
+  assert.equal(withoutPrice.cartHash, withPrice.cartHash);
+  assert.equal(withPrice.lines[0].unitPrice, 100);
+  assert.equal(withPrice.lines[1].unitPrice, 1999.5);
+  assert.equal(withoutPrice.lines[0].unitPrice, null);
+});
+
 test("la cuota llega a cero exactamente después de tres generaciones", () => {
   const oldest = new Date("2026-08-06T10:00:00.000Z");
   assert.equal(quotaResponse(1, oldest).remaining, 2);

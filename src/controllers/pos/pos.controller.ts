@@ -489,6 +489,7 @@ function parseStoredQuoteLines(raw: unknown): Array<{
   productId: string;
   quantity: number;
   storeId: number | null;
+  unitPrice: number | null;
 }> | null {
   let value: unknown = raw;
   if (typeof value === "string") {
@@ -518,17 +519,30 @@ function parseStoredQuoteLines(raw: unknown): Array<{
         line.storeId === ""
           ? null
           : Number(line.storeId);
+      const unitPriceRaw =
+        line.unitPrice === null ||
+        line.unitPrice === undefined ||
+        line.unitPrice === ""
+          ? null
+          : Number(line.unitPrice);
+      const unitPrice =
+        unitPriceRaw === null
+          ? null
+          : Number.isFinite(unitPriceRaw) && unitPriceRaw >= 0
+            ? money(unitPriceRaw)
+            : NaN;
       if (
         !productId ||
         !Number.isInteger(quantity) ||
         quantity < 1 ||
         quantity > 1_000 ||
         (storeId !== null &&
-          (!Number.isSafeInteger(storeId) || storeId < 0))
+          (!Number.isSafeInteger(storeId) || storeId < 0)) ||
+        (unitPrice !== null && !Number.isFinite(unitPrice))
       ) {
         throw new Error("invalid");
       }
-      return { productId, quantity, storeId };
+      return { productId, quantity, storeId, unitPrice };
     });
   } catch {
     return null;
@@ -622,6 +636,7 @@ export const getPosQuoteByNumber = async (req: Request, res: Response) => {
       (typeof hydrated)[number] & {
         quantity: number;
         quoteStoreId: number | null;
+        quoteUnitPrice: number | null;
       }
     > = [];
     const unresolvedIds: number[] = [];
@@ -653,6 +668,7 @@ export const getPosQuoteByNumber = async (req: Request, res: Response) => {
         suggestedBranchId,
         quantity: line.quantity,
         quoteStoreId: line.storeId,
+        quoteUnitPrice: line.unitPrice,
       });
     }
 
@@ -859,6 +875,56 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
     const posRole = await resolvePosRole(req);
     const isAdmin = posRole === "admin";
 
+    /** Precios unitarios de la cotización vinculada (productId → unitPrice). */
+    let quoteUnitPriceByProductId = new Map<number, number>();
+    let linkedQuoteLines: ReturnType<typeof parseStoredQuoteLines> = null;
+    if (quoteNumber) {
+      const linkedQuote = await prisma.cotizaciones.findFirst({
+        where: { quoteNumber, active: 1 },
+        select: {
+          quoteNumber: true,
+          expiresAt: true,
+          linesJson: true,
+        },
+      });
+      if (!linkedQuote) {
+        return res.status(400).json({
+          ok: false,
+          code: "QUOTE_NOT_FOUND",
+          message:
+            "La cotización vinculada no existe o fue archivada. Quita el vínculo o carga una cotización vigente.",
+        });
+      }
+      if (linkedQuote.expiresAt.getTime() < Date.now()) {
+        return res.status(400).json({
+          ok: false,
+          code: "QUOTE_EXPIRED",
+          message:
+            "La cotización vinculada ya venció (retención 5 días). Quita el vínculo o pide una cotización nueva.",
+        });
+      }
+      linkedQuoteLines = parseStoredQuoteLines(linkedQuote.linesJson);
+      if (!linkedQuoteLines) {
+        return res.status(400).json({
+          ok: false,
+          code: "QUOTE_NO_LINES",
+          message:
+            "La cotización vinculada no tiene líneas válidas. Regenera la cotización en la tienda.",
+        });
+      }
+      for (const ql of linkedQuoteLines) {
+        const pid = Number(ql.productId);
+        if (
+          Number.isSafeInteger(pid) &&
+          pid > 0 &&
+          ql.unitPrice != null &&
+          Number.isFinite(ql.unitPrice)
+        ) {
+          quoteUnitPriceByProductId.set(pid, money(ql.unitPrice));
+        }
+      }
+    }
+
     const normalizedItems: Array<{
       productId: number;
       branchId: number | null;
@@ -885,6 +951,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       productId: number;
       catalogPrice: number;
       unitPrice: number;
+      source?: "quote" | "admin";
     }> = [];
 
     for (const raw of items) {
@@ -1146,7 +1213,26 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
           : catalogPrice;
       let unitPrice = catalogPrice;
       let priceOverride = false;
-      if (
+      let overrideSource: "quote" | "admin" | undefined;
+      const quoteStoredPrice = quoteUnitPriceByProductId.get(productId);
+      const wantsQuotePrice = Boolean(raw.useQuotePrice);
+      if (wantsQuotePrice) {
+        if (quoteStoredPrice == null || !Number.isFinite(quoteStoredPrice)) {
+          return res.status(400).json({
+            ok: false,
+            message: `La cotización no tiene precio guardado para: ${product.name}. Usa el precio actual o regenera la cotización.`,
+          });
+        }
+        if (Math.abs(requestedPrice - quoteStoredPrice) > 0.009) {
+          return res.status(400).json({
+            ok: false,
+            message: `El precio cotizado no coincide para: ${product.name}`,
+          });
+        }
+        unitPrice = quoteStoredPrice;
+        priceOverride = Math.abs(quoteStoredPrice - catalogPrice) > 0.009;
+        if (priceOverride) overrideSource = "quote";
+      } else if (
         isAdmin &&
         Boolean(raw.priceOverride) &&
         Number.isFinite(requestedPrice) &&
@@ -1154,6 +1240,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       ) {
         unitPrice = requestedPrice;
         priceOverride = Math.abs(requestedPrice - catalogPrice) > 0.009;
+        if (priceOverride) overrideSource = "admin";
       } else if (Math.abs(requestedPrice - catalogPrice) > 0.009) {
         // Ignora precios manipulados desde el cliente.
         unitPrice = catalogPrice;
@@ -1167,6 +1254,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
           productId,
           catalogPrice,
           unitPrice,
+          ...(overrideSource ? { source: overrideSource } : {}),
         });
       }
 
@@ -1374,54 +1462,9 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       });
     }
 
-    if (quoteNumber) {
-      const quote = await prisma.cotizaciones.findFirst({
-        where: { quoteNumber, active: 1 },
-        select: {
-          quoteNumber: true,
-          expiresAt: true,
-          linesJson: true,
-        },
-      });
-      if (!quote) {
-        return res.status(400).json({
-          ok: false,
-          code: "QUOTE_NOT_FOUND",
-          message:
-            "La cotización vinculada no existe o fue archivada. Quita el vínculo o carga una cotización vigente.",
-        });
-      }
-      if (quote.expiresAt.getTime() < Date.now()) {
-        return res.status(400).json({
-          ok: false,
-          code: "QUOTE_EXPIRED",
-          message:
-            "La cotización vinculada ya venció (retención 5 días). Quita el vínculo o pide una cotización nueva.",
-        });
-      }
-      const quoteLines = parseStoredQuoteLines(quote.linesJson);
-      if (!quoteLines) {
-        return res.status(400).json({
-          ok: false,
-          code: "QUOTE_NO_LINES",
-          message:
-            "La cotización vinculada no tiene líneas válidas. Regenera la cotización en la tienda.",
-        });
-      }
-      const quoteProductIds = new Set(
-        quoteLines.map((l) => Number(l.productId)).filter((id) => id > 0),
-      );
-      const catalogLines = normalizedItems.filter((it) => !it.isManual);
-      const outside = catalogLines.filter(
-        (it) => !quoteProductIds.has(it.productId),
-      );
-      if (outside.length > 0) {
-        return res.status(400).json({
-          ok: false,
-          message: `Hay productos en el carrito que no están en la cotización ${quoteNumber}. Quita el vínculo o alinea el carrito.`,
-        });
-      }
-    }
+    // Cotización vinculada: no exige que todo el carrito sea solo de la cotización.
+    // Se permiten productos extra de catálogo y líneas manuales/servicios.
+    // Los precios cotizados se validan por línea vía useQuotePrice + linesJson.
 
     let guestEmail = String(customerEmail || "").trim();
     let guestPhone = String(customerPhone || "").trim();
