@@ -2,12 +2,21 @@ import { readFile } from "fs/promises";
 import { PDFParse } from "pdf-parse";
 import { resolveQuotePath } from "./quoteStorage.service";
 
+const META_PREFIX = "pcinbox-client-v1";
+const LINES_META_PREFIX = "pcinbox-lines-v1";
+
 export type QuotePdfClientIdentity = {
   name: string | null;
   email: string | null;
   phone: string | null;
   /** true cuando el bloque Cliente es "Venta público general" o está vacío */
   isPublicSale: boolean;
+};
+
+export type QuotePdfLinePrice = {
+  productId: string;
+  quantity: number;
+  unitPrice: number;
 };
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
@@ -17,7 +26,6 @@ const CLIENT_START = /^cliente$/i;
 const CLIENT_END =
   /^(no\.?\s*cotizaci[oó]n|vigencia|venta\s+p[uú]blico\s+general)$/i;
 const PUBLIC_SALE_RE = /^venta\s+p[uú]blico\s+general$/i;
-const META_PREFIX = "pcinbox-client-v1";
 
 const emptyIdentity = (): QuotePdfClientIdentity => ({
   name: null,
@@ -173,23 +181,19 @@ const decodePdfHexString = (hex: string): string => {
   return bytes.toString("latin1");
 };
 
-/** Lee Keywords del Info dict del PDF (metadatos embebidos al generar). */
-export const parseClientFromPdfKeywords = (
+/** Lee el string crudo de /Keywords del PDF (literal, hex u objeto indirecto). */
+export const extractPdfKeywordsString = (
   pdfBytes: Buffer,
-): QuotePdfClientIdentity | null => {
+): string | null => {
   const source = pdfBytes.toString("latin1");
 
-  const tryParseLiteralOrHex = (raw: string): QuotePdfClientIdentity | null => {
+  const decodeLiteralOrHex = (raw: string): string | null => {
     const trimmed = raw.trim();
     if (trimmed.startsWith("(") && trimmed.endsWith(")")) {
-      return parseClientKeywordsString(
-        decodePdfLiteral(trimmed.slice(1, -1)),
-      );
+      return decodePdfLiteral(trimmed.slice(1, -1));
     }
     if (trimmed.startsWith("<") && trimmed.endsWith(">")) {
-      return parseClientKeywordsString(
-        decodePdfHexString(trimmed.slice(1, -1)),
-      );
+      return decodePdfHexString(trimmed.slice(1, -1));
     }
     return null;
   };
@@ -197,17 +201,16 @@ export const parseClientFromPdfKeywords = (
   const literal = source.match(/\/Keywords\s*\((?:\\.|[^\\)])*\)/);
   if (literal) {
     const inner = literal[0].replace(/^\/Keywords\s*\(/, "").replace(/\)$/, "");
-    const parsed = parseClientKeywordsString(decodePdfLiteral(inner));
-    if (parsed) return parsed;
+    const decoded = decodePdfLiteral(inner);
+    if (decoded.trim()) return decoded;
   }
 
   const hex = source.match(/\/Keywords\s*<([0-9A-Fa-f\s]+)>/);
   if (hex?.[1]) {
-    const parsed = parseClientKeywordsString(decodePdfHexString(hex[1]));
-    if (parsed) return parsed;
+    const decoded = decodePdfHexString(hex[1]);
+    if (decoded.trim()) return decoded;
   }
 
-  // @react-pdf suele guardar: /Keywords 22 0 R  →  22 0 obj (texto) endobj
   const ref = source.match(/\/Keywords\s+(\d+)\s+(\d+)\s+R/);
   if (ref?.[1]) {
     const objNum = ref[1];
@@ -218,22 +221,113 @@ export const parseClientFromPdfKeywords = (
     );
     const objMatch = source.match(objRe);
     if (objMatch?.[1]) {
-      const parsed = tryParseLiteralOrHex(objMatch[1]);
-      if (parsed) return parsed;
+      const decoded = decodeLiteralOrHex(objMatch[1]);
+      if (decoded?.trim()) return decoded;
     }
   }
 
-  // Fallback: prefijo ASCII en el binario; cortar antes de basura PDF
-  const idx = source.indexOf(META_PREFIX);
+  // Fallback: prefijo ASCII en el binario
+  const clientIdx = source.indexOf(META_PREFIX);
+  const linesIdx = source.indexOf(LINES_META_PREFIX);
+  const idx =
+    clientIdx >= 0 && linesIdx >= 0
+      ? Math.min(clientIdx, linesIdx)
+      : clientIdx >= 0
+        ? clientIdx
+        : linesIdx;
   if (idx >= 0) {
-    const slice = source.slice(idx, idx + 300);
+    const slice = source.slice(idx, idx + 8000);
     const cutAt = slice.search(/\)|\bendobj\b|obj<<|<<|\x00/);
     const candidate = (cutAt >= 0 ? slice.slice(0, cutAt) : slice).trim();
-    const parsed = parseClientKeywordsString(candidate);
-    if (parsed) return parsed;
+    if (candidate) return candidate;
   }
 
   return null;
+};
+
+/**
+ * Precios unitarios embebidos: pcinbox-lines-v1|id:qty:price;id:qty:price
+ * (números sin $ ni comas).
+ */
+export const parseLinesKeywordsString = (
+  keywords: string | null | undefined,
+): QuotePdfLinePrice[] | null => {
+  if (!keywords || !keywords.includes(LINES_META_PREFIX)) return null;
+
+  const match = keywords.match(
+    /pcinbox-lines-v1\|([0-9:;.\s]+?)(?=\|pcinbox-|$|\)|\bendobj\b|obj<<|<<)/i,
+  );
+  const payload = (match?.[1] || "").trim();
+  if (!payload) return null;
+
+  const lines: QuotePdfLinePrice[] = [];
+  for (const rawPart of payload.split(";")) {
+    const part = rawPart.trim();
+    if (!part) continue;
+    const [productIdRaw, qtyRaw, priceRaw] = part.split(":");
+    const productId = String(productIdRaw || "").trim();
+    const quantity = Math.round(Number(qtyRaw));
+    const unitPrice = Number(priceRaw);
+    if (
+      !productId ||
+      productId.length > 64 ||
+      !Number.isInteger(quantity) ||
+      quantity < 1 ||
+      quantity > 1_000 ||
+      !Number.isFinite(unitPrice) ||
+      unitPrice < 0
+    ) {
+      continue;
+    }
+    lines.push({
+      productId,
+      quantity,
+      unitPrice: Math.round((unitPrice + Number.EPSILON) * 100) / 100,
+    });
+  }
+
+  return lines.length > 0 ? lines : null;
+};
+
+/** Lee Keywords del Info dict del PDF (metadatos embebidos al generar). */
+export const parseClientFromPdfKeywords = (
+  pdfBytes: Buffer,
+): QuotePdfClientIdentity | null => {
+  const keywords = extractPdfKeywordsString(pdfBytes);
+  if (!keywords) return null;
+  return parseClientKeywordsString(keywords);
+};
+
+export const parseLinesFromPdfKeywords = (
+  pdfBytes: Buffer,
+): QuotePdfLinePrice[] | null => {
+  const keywords = extractPdfKeywordsString(pdfBytes);
+  if (!keywords) return null;
+  return parseLinesKeywordsString(keywords);
+};
+
+/** productId → unitPrice desde Keywords del PDF de cotización. */
+export const readQuotePdfLinePrices = async (
+  storageKey: string,
+): Promise<Map<number, number>> => {
+  const map = new Map<number, number>();
+  try {
+    const pdfPath = resolveQuotePath(storageKey);
+    const bytes = await readFile(pdfPath);
+    let lines = parseLinesFromPdfKeywords(bytes);
+    if (!lines?.length) {
+      const infoKeywords = await extractInfoKeywordsWithPdfParse(bytes);
+      lines = parseLinesKeywordsString(infoKeywords);
+    }
+    for (const line of lines || []) {
+      const pid = Number(line.productId);
+      if (!Number.isSafeInteger(pid) || pid <= 0) continue;
+      if (!map.has(pid)) map.set(pid, line.unitPrice);
+    }
+  } catch {
+    /* PDF ausente o ilegible */
+  }
+  return map;
 };
 
 export const parseQuotePdfClientFromText = (

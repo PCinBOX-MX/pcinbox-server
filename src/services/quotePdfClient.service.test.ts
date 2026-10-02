@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import {
   parseClientFromPdfKeywords,
+  parseLinesKeywordsString,
   parseQuotePdfClientFromText,
   resolvePosCustomerFromPdf,
 } from "./quotePdfClient.service";
@@ -90,6 +91,30 @@ describe("parseClientFromPdfKeywords", () => {
     const parsed = parseClientFromPdfKeywords(pdf);
     assert.ok(parsed);
     assert.equal(parsed!.isPublicSale, true);
+  });
+});
+
+describe("parseLinesKeywordsString", () => {
+  it("lee precios embebidos junto al cliente", () => {
+    const parsed = parseLinesKeywordsString(
+      "pcinbox-client-v1|name=Juan|pcinbox-lines-v1|20:2:1999.50;10:1:100.00",
+    );
+    assert.ok(parsed);
+    assert.equal(parsed!.length, 2);
+    assert.equal(parsed![0]!.productId, "20");
+    assert.equal(parsed![0]!.quantity, 2);
+    assert.equal(parsed![0]!.unitPrice, 1999.5);
+    assert.equal(parsed![1]!.productId, "10");
+    assert.equal(parsed![1]!.unitPrice, 100);
+  });
+
+  it("devuelve null si no hay segmento de líneas", () => {
+    assert.equal(
+      parseLinesKeywordsString(
+        "pcinbox-client-v1|name=Juan|phone=+52 5512345678",
+      ),
+      null,
+    );
   });
 });
 

@@ -32,6 +32,7 @@ import {
 } from "../../services/pos/posCash.service";
 import {
   readQuotePdfClientIdentity,
+  readQuotePdfLinePrices,
   resolvePosCustomerFromPdf,
 } from "../../services/quotePdfClient.service";
 import {
@@ -631,6 +632,10 @@ export const getPosQuoteByNumber = async (req: Request, res: Response) => {
     const productIds = lines.map((l) => Number(l.productId));
     const hydrated = await hydratePosProductsByIds(productIds);
     const byId = new Map(hydrated.map((p) => [p.idProduct, p]));
+    // Precios cotizados: Keywords del PDF (no linesJson / DB).
+    const quotePricesByProductId = await readQuotePdfLinePrices(
+      quote.storageKey,
+    );
 
     const items: Array<
       (typeof hydrated)[number] & {
@@ -668,7 +673,7 @@ export const getPosQuoteByNumber = async (req: Request, res: Response) => {
         suggestedBranchId,
         quantity: line.quantity,
         quoteStoreId: line.storeId,
-        quoteUnitPrice: line.unitPrice,
+        quoteUnitPrice: quotePricesByProductId.get(pid) ?? null,
       });
     }
 
@@ -875,7 +880,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
     const posRole = await resolvePosRole(req);
     const isAdmin = posRole === "admin";
 
-    /** Precios unitarios de la cotización vinculada (productId → unitPrice). */
+    /** Precios unitarios de la cotización (desde Keywords del PDF). */
     let quoteUnitPriceByProductId = new Map<number, number>();
     let linkedQuoteLines: ReturnType<typeof parseStoredQuoteLines> = null;
     if (quoteNumber) {
@@ -885,6 +890,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
           quoteNumber: true,
           expiresAt: true,
           linesJson: true,
+          storageKey: true,
         },
       });
       if (!linkedQuote) {
@@ -912,17 +918,9 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
             "La cotización vinculada no tiene líneas válidas. Regenera la cotización en la tienda.",
         });
       }
-      for (const ql of linkedQuoteLines) {
-        const pid = Number(ql.productId);
-        if (
-          Number.isSafeInteger(pid) &&
-          pid > 0 &&
-          ql.unitPrice != null &&
-          Number.isFinite(ql.unitPrice)
-        ) {
-          quoteUnitPriceByProductId.set(pid, money(ql.unitPrice));
-        }
-      }
+      quoteUnitPriceByProductId = await readQuotePdfLinePrices(
+        linkedQuote.storageKey,
+      );
     }
 
     const normalizedItems: Array<{
