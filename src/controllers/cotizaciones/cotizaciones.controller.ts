@@ -29,7 +29,7 @@ type CheckoutLine = {
   productId: string;
   quantity: number;
   storeId: number | null;
-  /** Precio unitario al generar; null en cotizaciones legacy sin precio. */
+  /** Opcional en request; no se persiste (precios van en Keywords del PDF). */
   unitPrice: number | null;
 };
 
@@ -312,6 +312,15 @@ export const createQuote = async (req: CustomRequestI, res: Response) => {
       });
     }
 
+    // Solo identidad/qty/bodega en DB; precios cotizados viven en Keywords del PDF.
+    const linesForStorage = checkout.lines.map(
+      ({ productId, quantity, storeId }) => ({
+        productId,
+        quantity,
+        storeId,
+      }),
+    );
+
     const sha256 = await validatePdfAndHash(temporaryPath);
     const existing = await prisma.cotizaciones.findUnique({
       where: { idempotencyKey },
@@ -423,7 +432,7 @@ export const createQuote = async (req: CustomRequestI, res: Response) => {
                 totalAmount: new Prisma.Decimal(totalAmount.toFixed(2)),
                 itemCount,
                 includeAssemblyService,
-                linesJson: checkout.lines as unknown as Prisma.InputJsonValue,
+                linesJson: linesForStorage as unknown as Prisma.InputJsonValue,
                 createdAt,
                 expiresAt,
               },
