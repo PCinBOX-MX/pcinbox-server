@@ -36,6 +36,10 @@ import {
   resolvePosCustomerFromPdf,
 } from "../../services/quotePdfClient.service";
 import {
+  parseStoredQuoteLines,
+  QUOTE_NUMBER_PATTERN as POS_QUOTE_NUMBER_PATTERN,
+} from "../../services/quoteLines.service";
+import {
   assignSerialsOnSale,
   assertSerialsAvailable,
   getSerialByNumber,
@@ -483,72 +487,6 @@ export const searchPosProductsHandler = async (req: Request, res: Response) => {
     });
   }
 };
-
-const POS_QUOTE_NUMBER_PATTERN = /^(?:\d{13}|COT-[A-Z0-9-]{8,55})$/;
-
-function parseStoredQuoteLines(raw: unknown): Array<{
-  productId: string;
-  quantity: number;
-  storeId: number | null;
-  unitPrice: number | null;
-}> | null {
-  let value: unknown = raw;
-  if (typeof value === "string") {
-    try {
-      value = JSON.parse(value);
-    } catch {
-      return null;
-    }
-  }
-  if (!Array.isArray(value) || value.length < 1 || value.length > 100) {
-    return null;
-  }
-  try {
-    return value.map((rawLine) => {
-      if (!rawLine || typeof rawLine !== "object") {
-        throw new Error("invalid");
-      }
-      const line = rawLine as Record<string, unknown>;
-      const productId = String(line.productId ?? "").trim();
-      const quantityRaw = Number(line.quantity);
-      const quantity = Number.isFinite(quantityRaw)
-        ? Math.round(quantityRaw)
-        : NaN;
-      const storeId =
-        line.storeId === null ||
-        line.storeId === undefined ||
-        line.storeId === ""
-          ? null
-          : Number(line.storeId);
-      const unitPriceRaw =
-        line.unitPrice === null ||
-        line.unitPrice === undefined ||
-        line.unitPrice === ""
-          ? null
-          : Number(line.unitPrice);
-      const unitPrice =
-        unitPriceRaw === null
-          ? null
-          : Number.isFinite(unitPriceRaw) && unitPriceRaw >= 0
-            ? money(unitPriceRaw)
-            : NaN;
-      if (
-        !productId ||
-        !Number.isInteger(quantity) ||
-        quantity < 1 ||
-        quantity > 1_000 ||
-        (storeId !== null &&
-          (!Number.isSafeInteger(storeId) || storeId < 0)) ||
-        (unitPrice !== null && !Number.isFinite(unitPrice))
-      ) {
-        throw new Error("invalid");
-      }
-      return { productId, quantity, storeId, unitPrice };
-    });
-  } catch {
-    return null;
-  }
-}
 
 /** Carga una cotización web por número para rellenar el carrito POS. */
 export const getPosQuoteByNumber = async (req: Request, res: Response) => {

@@ -8,6 +8,7 @@ import {
   generateCotizacion,
   changeSucursal,
   changeQuantity,
+  importFromQuote,
 } from "./../../controllers/cart/cart.controller";
 import { MiddleAuthRoute } from "./../../middleware/index.middleware";
 
@@ -21,5 +22,6 @@ router.post("/removeAllCart", MiddleAuthRoute, removeAllCart);
 router.post("/generateCotizacion", MiddleAuthRoute, generateCotizacion);
 router.post("/changeSucursal", MiddleAuthRoute, changeSucursal);
 router.post("/changeQuantity", MiddleAuthRoute, changeQuantity);
+router.post("/importFromQuote", MiddleAuthRoute, importFromQuote);
 
 export default router;

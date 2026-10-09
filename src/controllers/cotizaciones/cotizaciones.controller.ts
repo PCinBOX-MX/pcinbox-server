@@ -17,6 +17,10 @@ import {
   readQuotePdfClientIdentityLight,
   resolvePosCustomerFromPdf,
 } from "../../services/quotePdfClient.service";
+import {
+  decryptCapturedPhone,
+  encryptCapturedPhone,
+} from "../../services/quotePhoneCrypto.service";
 
 const QUOTE_NUMBER_PATTERN = /^(?:\d{13}|COT-[A-Z0-9-]{8,55})$/;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9:_-]{8,100}$/;
@@ -49,6 +53,8 @@ const quoteSelect = {
   totalAmount: true,
   itemCount: true,
   includeAssemblyService: true,
+  capturedName: true,
+  capturedPhone: true,
   active: true,
   createdAt: true,
   expiresAt: true,
@@ -65,6 +71,25 @@ const quoteSelect = {
     },
   },
 } satisfies Prisma.cotizacionesSelect;
+
+const CAPTURED_PHONE_RE = /^\+\d{1,3}\s+\d{7,15}$/;
+
+const sanitizeCapturedName = (raw: unknown): string | null => {
+  const value = String(raw || "")
+    .replace(/[^\p{L}\p{N}\s.'\-]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+  return value || null;
+};
+
+const sanitizeCapturedPhone = (raw: unknown): string | null => {
+  const value = String(raw || "").trim().slice(0, 32);
+  if (!value) return null;
+  if (CAPTURED_PHONE_RE.test(value)) return value;
+  const match = value.match(/^(\+\d{1,3}\s+\d{7,15})/);
+  return match?.[1] || null;
+};
 
 type QuoteRecord = Prisma.cotizacionesGetPayload<{ select: typeof quoteSelect }>;
 
@@ -86,6 +111,8 @@ const serializeQuote = (quote: QuoteRecord) => {
     cartHash: _cart,
     active: _active,
     storageKey: _storageKey,
+    capturedName: _capturedName,
+    capturedPhone: _capturedPhone,
     ...safe
   } = quote;
   if (!users) {
@@ -106,11 +133,30 @@ const serializeQuote = (quote: QuoteRecord) => {
 };
 
 /**
- * Cliente del PDF (Keywords o texto).
- * Solo lo que venga en el PDF; si no hay nombre/tel/email, cae a la cuenta dueña.
+ * Cliente para admin:
+ * 1) Nombre/tel capturados al generar (columnas)
+ * 2) PDF Keywords / texto (cotizaciones viejas)
+ * 3) Cuenta dueña de la cotización
  */
 const serializeQuoteWithPdfCustomer = async (quote: QuoteRecord) => {
   const base = serializeQuote(quote);
+  const capturedName = String(quote.capturedName || "").trim();
+  const capturedPhone = String(quote.capturedPhone || "").trim();
+
+  if (capturedName || capturedPhone) {
+    const phonePlain = capturedPhone
+      ? decryptCapturedPhone(capturedPhone)
+      : null;
+    return {
+      ...base,
+      customer: {
+        name: capturedName,
+        email: "",
+        phone: phonePlain,
+      },
+    };
+  }
+
   let pdfClient = await readQuotePdfClientIdentityLight(quote.storageKey);
   // Keywords indirectos / PDFs viejos: leer bloque Cliente del PDF.
   if (!pdfClient) {
@@ -293,6 +339,20 @@ export const createQuote = async (req: CustomRequestI, res: Response) => {
     const itemCount = Number(req.body.itemCount);
     const includeAssemblyService =
       String(req.body.includeAssemblyService).toLowerCase() === "true";
+    const capturedName = sanitizeCapturedName(req.body.capturedName);
+    const capturedPhonePlain = sanitizeCapturedPhone(req.body.capturedPhone);
+    let capturedPhone: string | null = null;
+    if (capturedPhonePlain) {
+      try {
+        capturedPhone = encryptCapturedPhone(capturedPhonePlain);
+      } catch (error) {
+        console.error("No se pudo cifrar el teléfono de la cotización", error);
+        return res.status(500).json({
+          ok: false,
+          message: "No fue posible guardar el teléfono de la cotización",
+        });
+      }
+    }
     const checkout = parseCheckoutContext(req.body.checkoutContext, itemCount);
 
     if (
@@ -433,6 +493,8 @@ export const createQuote = async (req: CustomRequestI, res: Response) => {
                 itemCount,
                 includeAssemblyService,
                 linesJson: linesForStorage as unknown as Prisma.InputJsonValue,
+                capturedName,
+                capturedPhone,
                 createdAt,
                 expiresAt,
               },
