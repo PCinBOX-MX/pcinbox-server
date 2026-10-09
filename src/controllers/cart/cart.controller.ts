@@ -30,9 +30,10 @@ import {
 
 import { getTechSmartBranchValidationError } from "../../constants/techsmart-branches";
 import {
+  buildImportedLinesJson,
   normalizeQuoteNumber,
-  parseStoredQuoteLines,
   QUOTE_NUMBER_PATTERN,
+  readStoredQuoteLinesPayload,
 } from "../../services/quoteLines.service";
 
 
@@ -1086,6 +1087,7 @@ export const changeQuantity = async (req: CustomRequestI, res: Response) => {
 /**
  * Importa líneas de una cotización web al carrito del usuario autenticado (merge).
  * Disponible para cualquier usuario logueado.
+ * Tras un import exitoso marca linesJson.importedAt (sin columnas nuevas).
  */
 export const importFromQuote = async (
   req: CustomRequestI,
@@ -1106,6 +1108,7 @@ export const importFromQuote = async (
     const quote = await prisma.cotizaciones.findFirst({
       where: { quoteNumber },
       select: {
+        idCotizacion: true,
         quoteNumber: true,
         expiresAt: true,
         active: true,
@@ -1144,8 +1147,8 @@ export const importFromQuote = async (
     const hasRawLines =
       quote.linesJson != null &&
       !(Array.isArray(quote.linesJson) && quote.linesJson.length === 0);
-    const lines = parseStoredQuoteLines(quote.linesJson);
-    if (!lines) {
+    const payload = readStoredQuoteLinesPayload(quote.linesJson);
+    if (!payload) {
       return res.status(400).json({
         ok: false,
         code: "QUOTE_NO_LINES",
@@ -1155,6 +1158,20 @@ export const importFromQuote = async (
       });
     }
 
+    if (payload.importedAt) {
+      return res.status(409).json({
+        ok: false,
+        code: "QUOTE_ALREADY_IMPORTED",
+        message:
+          "Esta cotización ya fue importada al carrito. No se puede volver a importar el mismo número.",
+        data: {
+          quoteNumber: quote.quoteNumber,
+          importedAt: payload.importedAt,
+        },
+      });
+    }
+
+    const lines = payload.lines;
     const cart = await getOrCreateActiveCart(userId);
     await consolidateActiveCartItems(userId, cart.idCart);
 
@@ -1321,6 +1338,14 @@ export const importFromQuote = async (
         },
       });
     }
+
+    // Persiste el flag dentro de linesJson (compatible con POS: lee `.lines`).
+    await prisma.cotizaciones.update({
+      where: { idCotizacion: quote.idCotizacion },
+      data: {
+        linesJson: buildImportedLinesJson(lines, userId),
+      },
+    });
 
     return res.status(200).json({
       ok: true,
