@@ -633,6 +633,40 @@ const parseCaracteristicas = (raw: unknown) => {
   return [];
 };
 
+const quotePcKind = (caracteristicas: unknown): string => {
+  const tipo = parseCaracteristicas(caracteristicas).find((item) => {
+    if (!item || typeof item !== "object") return false;
+    return String((item as { prop?: unknown }).prop || "").trim().toLowerCase() === "tipo";
+  }) as { value?: unknown } | undefined;
+  const value = String(tipo?.value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase();
+  if (value === "workstation") return "Workstation";
+  if (value === "pro" || value === "intermedia" || value === "entrada") return "PC Gamer";
+  return "PC";
+};
+
+const quotePcTipoNeedles = (query: string): string[] => {
+  const text = query
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+  if (/^(pc|pcs|pc gamer|pcs gamer|gamer|gamers|computadora|computadoras)$/.test(text)) {
+    return ["pro", "intermedia", "entrada"];
+  }
+  if (
+    /^(workstation|workstations|work station|estacion|estacion de trabajo|estaciones de trabajo)$/.test(
+      text,
+    )
+  ) {
+    return ["workStation"];
+  }
+  return [];
+};
+
 type QuoteStockSource = {
   idProduct: bigint;
   providerId: bigint;
@@ -782,34 +816,77 @@ export const searchAdminQuoteProducts = async (
     }
 
     const numericId = /^\d+$/.test(q) ? Number(q) : null;
-    const products = await prisma.products.findMany({
-      where: {
-        OR: [
-          { name: { contains: q } },
-          { sku: { startsWith: q } },
-          { upc: { startsWith: q } },
-          { idProductExt: { startsWith: q } },
-          ...(numericId && Number.isSafeInteger(numericId) && numericId > 0
-            ? [{ idProduct: BigInt(numericId) }]
-            : []),
-        ],
-      },
-      select: {
-        idProduct: true,
-        name: true,
-        description: true,
-        caracteristicas: true,
-        price: true,
-        image_url: true,
-        upc: true,
-        sku: true,
-        stock: true,
-        active: true,
-        providerId: true,
-      },
-      orderBy: { name: "asc" },
-      take: 15,
-    });
+    const idMatch =
+      numericId && Number.isSafeInteger(numericId) && numericId > 0
+        ? [{ idProduct: BigInt(numericId) }]
+        : [];
+    const tokens = q.split(/\s+/).filter((token) => token.length >= 2);
+    const nameTokens =
+      tokens.length >= 2
+        ? [{ AND: tokens.map((token) => ({ name: { contains: token } })) }]
+        : [];
+    const select = {
+      idProduct: true,
+      name: true,
+      description: true,
+      caracteristicas: true,
+      price: true,
+      image_url: true,
+      upc: true,
+      sku: true,
+      stock: true,
+      active: true,
+      providerId: true,
+      isPC: true,
+    } as const;
+    const [components, pcs] = await Promise.all([
+      prisma.products.findMany({
+        where: {
+          AND: [
+            { OR: [{ isPC: null }, { isPC: { not: 1 } }] },
+            {
+              OR: [
+                { name: { contains: q } },
+                { sku: { startsWith: q } },
+                { upc: { startsWith: q } },
+                { idProductExt: { startsWith: q } },
+                ...idMatch,
+                ...nameTokens,
+              ],
+            },
+          ],
+        },
+        select,
+        orderBy: { name: "asc" },
+        take: 10,
+      }),
+      prisma.products.findMany({
+        where: {
+          isPC: 1,
+          OR: [
+            { name: { contains: q } },
+            { description: { contains: q } },
+            { sku: { startsWith: q } },
+            { upc: { startsWith: q } },
+            { idProductExt: { startsWith: q } },
+            { caracteristicas: { string_contains: q } },
+            ...idMatch,
+            ...nameTokens,
+            ...quotePcTipoNeedles(q).map((needle) => ({
+              caracteristicas: { string_contains: needle },
+            })),
+          ],
+        },
+        select,
+        orderBy: { name: "asc" },
+        take: 8,
+      }),
+    ]);
+    const seen = new Set(components.map((product) => String(product.idProduct)));
+    const products = [
+      ...components,
+      ...pcs.filter((product) => !seen.has(String(product.idProduct))),
+    ];
 
     const snapshots = await loadQuoteStockSnapshots(products);
 
@@ -817,6 +894,7 @@ export const searchAdminQuoteProducts = async (
       ok: true,
       data: products.map((product) => {
         const snapshot = snapshots.get(String(product.idProduct));
+        const isPc = product.isPC === 1;
         return {
           idProduct: Number(product.idProduct),
           name: product.name,
@@ -829,6 +907,7 @@ export const searchAdminQuoteProducts = async (
           active: snapshot?.active ?? false,
           stock: snapshot?.stock ?? Number(product.stock ?? 0),
           stocksByBranch: snapshot?.stocksByBranch ?? [],
+          kind: isPc ? quotePcKind(product.caracteristicas) : null,
         };
       }),
     });
