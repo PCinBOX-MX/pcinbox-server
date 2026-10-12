@@ -15,12 +15,26 @@ import {
 import {
   readQuotePdfClientIdentity,
   readQuotePdfClientIdentityLight,
+  readQuotePdfLinePrices,
   resolvePosCustomerFromPdf,
 } from "../../services/quotePdfClient.service";
 import {
   decryptCapturedPhone,
   encryptCapturedPhone,
 } from "../../services/quotePhoneCrypto.service";
+import {
+  buildImportedLinesJson,
+  normalizeQuoteNumber,
+  readStoredQuoteLinesPayload,
+} from "../../services/quoteLines.service";
+import { readAdminQuoteCart } from "../../services/adminQuoteCart.service";
+import {
+  DICOTECH_PROVIDER_ID,
+  TECHSMART_PROVIDER_ID,
+  formatPcinboxBranchDisplayName,
+  isPosSellableBranchName,
+  normalizePosBranchKey,
+} from "../../constants/pcinbox-branch-display";
 
 const QUOTE_NUMBER_PATTERN = /^(?:\d{13}|COT-[A-Z0-9-]{8,55})$/;
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9:_-]{8,100}$/;
@@ -305,7 +319,11 @@ export const quotaResponse = (count: number, oldestCreatedAt: Date) => ({
   resetAt: new Date(oldestCreatedAt.getTime() + QUOTE_WINDOW_MS),
 });
 
-export const createQuote = async (req: CustomRequestI, res: Response) => {
+const saveUploadedQuote = async (
+  req: CustomRequestI,
+  res: Response,
+  source: "client" | "admin",
+) => {
   const uploadedFile = req.file;
   const temporaryPath = uploadedFile?.path;
   let finalPath: string | null = null;
@@ -339,7 +357,9 @@ export const createQuote = async (req: CustomRequestI, res: Response) => {
     const itemCount = Number(req.body.itemCount);
     const includeAssemblyService =
       String(req.body.includeAssemblyService).toLowerCase() === "true";
-    const capturedName = sanitizeCapturedName(req.body.capturedName);
+    const capturedName =
+      sanitizeCapturedName(req.body.capturedName) ||
+      (source === "admin" ? "Venta público general" : null);
     const capturedPhonePlain = sanitizeCapturedPhone(req.body.capturedPhone);
     let capturedPhone: string | null = null;
     if (capturedPhonePlain) {
@@ -591,6 +611,512 @@ export const createQuote = async (req: CustomRequestI, res: Response) => {
     if (res.statusCode >= 400 && finalPath) {
       await removeFileIfPresent(finalPath).catch(() => undefined);
     }
+  }
+};
+
+export const createQuote = (req: CustomRequestI, res: Response) =>
+  saveUploadedQuote(req, res, "client");
+
+export const createAdminQuote = (req: CustomRequestI, res: Response) =>
+  saveUploadedQuote(req, res, "admin");
+
+const parseCaracteristicas = (raw: unknown) => {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+};
+
+type QuoteStockSource = {
+  idProduct: bigint;
+  providerId: bigint;
+  stock: number | null;
+  active: number | null;
+};
+
+type QuoteStockSnapshot = {
+  active: boolean;
+  stock: number;
+  stocksByBranch: { branchId: number; label: string; stock: number }[];
+};
+
+type QuoteBranchRow = {
+  idBranche: bigint;
+  name: string | null;
+  city: string | null;
+  providerId: bigint;
+};
+
+const QUOTE_BRANCH_ORDER: Record<number, readonly string[]> = {
+  [DICOTECH_PROVIDER_ID]: ["santafe", "leon2"],
+  [TECHSMART_PROVIDER_ID]: ["gdl", "cdmx"],
+};
+
+export function buildQuoteStocksByBranch(
+  providerId: number,
+  branches: QuoteBranchRow[],
+  stockByBranch: Map<string, number>,
+) {
+  const restricted = QUOTE_BRANCH_ORDER[providerId];
+  return branches
+    .filter((branch) => {
+      const sameProvider = Number(branch.providerId) === providerId;
+      if (restricted) {
+        return sameProvider && isPosSellableBranchName(providerId, branch.name);
+      }
+      return sameProvider || stockByBranch.has(String(branch.idBranche));
+    })
+    .map((branch) => {
+      const name = String(branch.name || "").trim();
+      const city = String(branch.city || "").trim();
+      return {
+        branchId: Number(branch.idBranche),
+        rawName: name,
+        label:
+          formatPcinboxBranchDisplayName(name) ||
+          city ||
+          `Bodega ${branch.idBranche}`,
+        stock: stockByBranch.get(String(branch.idBranche)) ?? 0,
+      };
+    })
+    .sort((a, b) => {
+      if (restricted) {
+        const rank = (rawName: string) => {
+          const key = normalizePosBranchKey(rawName);
+          const index = restricted.findIndex(
+            (name) => normalizePosBranchKey(name) === key,
+          );
+          return index === -1 ? restricted.length : index;
+        };
+        return rank(a.rawName) - rank(b.rawName);
+      }
+      return b.stock - a.stock || a.label.localeCompare(b.label, "es");
+    })
+    .map(({ branchId, label, stock }) => ({ branchId, label, stock }));
+}
+
+async function loadQuoteStockSnapshots(products: QuoteStockSource[]) {
+  const snapshots = new Map<string, QuoteStockSnapshot>();
+  if (products.length === 0) return snapshots;
+
+  const productIds = products.map((product) => product.idProduct);
+  const providerIds = [...new Set(products.map((product) => product.providerId))];
+  const [branchRows, stockRows] = await Promise.all([
+    prisma.branches.findMany({
+      where: { providerId: { in: providerIds } },
+      select: {
+        idBranche: true,
+        name: true,
+        city: true,
+        providerId: true,
+      },
+      orderBy: { name: "asc" },
+    }),
+    prisma.product_stock.findMany({
+      where: { productId: { in: productIds } },
+      select: { productId: true, branchId: true, stock: true },
+    }),
+  ]);
+
+  const extraBranchIds = stockRows
+    .map((row) => row.branchId)
+    .filter(
+      (branchId) => !branchRows.some((branch) => branch.idBranche === branchId),
+    );
+  const extraBranches = extraBranchIds.length
+    ? await prisma.branches.findMany({
+        where: { idBranche: { in: extraBranchIds } },
+        select: {
+          idBranche: true,
+          name: true,
+          city: true,
+          providerId: true,
+        },
+      })
+    : [];
+  const branches = [...branchRows, ...extraBranches];
+  const stockByProduct = new Map<string, Map<string, number>>();
+  for (const row of stockRows) {
+    const productKey = String(row.productId);
+    const byBranch = stockByProduct.get(productKey) ?? new Map<string, number>();
+    byBranch.set(String(row.branchId), Number(row.stock ?? 0));
+    stockByProduct.set(productKey, byBranch);
+  }
+
+  for (const product of products) {
+    const byBranch =
+      stockByProduct.get(String(product.idProduct)) ?? new Map<string, number>();
+    const stocksByBranch = buildQuoteStocksByBranch(
+      Number(product.providerId),
+      branches,
+      byBranch,
+    );
+    const branchTotal = stocksByBranch.reduce(
+      (sum, branch) => sum + branch.stock,
+      0,
+    );
+    snapshots.set(String(product.idProduct), {
+      active: product.active === 1,
+      stock: stocksByBranch.length > 0 ? branchTotal : Number(product.stock ?? 0),
+      stocksByBranch,
+    });
+  }
+
+  return snapshots;
+}
+
+export const searchAdminQuoteProducts = async (
+  req: CustomRequestI,
+  res: Response,
+) => {
+  try {
+    const q = String(req.query.q || "").trim().slice(0, 80);
+    if (q.length < 2) {
+      return res.status(200).json({ ok: true, data: [] });
+    }
+
+    const numericId = /^\d+$/.test(q) ? Number(q) : null;
+    const products = await prisma.products.findMany({
+      where: {
+        OR: [
+          { name: { contains: q } },
+          { sku: { startsWith: q } },
+          { upc: { startsWith: q } },
+          { idProductExt: { startsWith: q } },
+          ...(numericId && Number.isSafeInteger(numericId) && numericId > 0
+            ? [{ idProduct: BigInt(numericId) }]
+            : []),
+        ],
+      },
+      select: {
+        idProduct: true,
+        name: true,
+        description: true,
+        caracteristicas: true,
+        price: true,
+        image_url: true,
+        upc: true,
+        sku: true,
+        stock: true,
+        active: true,
+        providerId: true,
+      },
+      orderBy: { name: "asc" },
+      take: 15,
+    });
+
+    const snapshots = await loadQuoteStockSnapshots(products);
+
+    return res.status(200).json({
+      ok: true,
+      data: products.map((product) => {
+        const snapshot = snapshots.get(String(product.idProduct));
+        return {
+          idProduct: Number(product.idProduct),
+          name: product.name,
+          description: product.description,
+          caracteristicas: parseCaracteristicas(product.caracteristicas),
+          price: Number(product.price),
+          image_url: product.image_url,
+          upc: product.upc,
+          sku: product.sku,
+          active: snapshot?.active ?? false,
+          stock: snapshot?.stock ?? Number(product.stock ?? 0),
+          stocksByBranch: snapshot?.stocksByBranch ?? [],
+        };
+      }),
+    });
+  } catch (error) {
+    console.error("[searchAdminQuoteProducts]", error);
+    return res.status(500).json({
+      ok: false,
+      message: "No fue posible buscar productos",
+    });
+  }
+};
+
+export const getAdminQuoteImport = async (
+  req: CustomRequestI,
+  res: Response,
+) => {
+  try {
+    const quoteNumber = normalizeQuoteNumber(req.params.quoteNumber);
+    if (!QUOTE_NUMBER_PATTERN.test(quoteNumber)) {
+      return res.status(400).json({
+        ok: false,
+        message: "El número de cotización no es válido.",
+      });
+    }
+
+    const quote = await prisma.cotizaciones.findFirst({
+      where: { quoteNumber },
+      select: {
+        idCotizacion: true,
+        quoteNumber: true,
+        expiresAt: true,
+        active: true,
+        linesJson: true,
+        storageKey: true,
+        includeAssemblyService: true,
+        capturedName: true,
+        capturedPhone: true,
+      },
+    });
+    if (!quote) {
+      return res.status(404).json({
+        ok: false,
+        message:
+          "No se encontró esa cotización. Revisa el número o genera una nueva.",
+      });
+    }
+    if (quote.active !== 1 || quote.expiresAt.getTime() < Date.now()) {
+      return res.status(410).json({
+        ok: false,
+        message: "Esa cotización ya no está disponible. Venció o fue archivada.",
+      });
+    }
+
+    const payload = readStoredQuoteLinesPayload(quote.linesJson);
+    if (!payload?.lines.length) {
+      return res.status(400).json({
+        ok: false,
+        message: "Esa cotización no tiene productos para importar.",
+      });
+    }
+    if (payload.importedAt) {
+      const userId = Number(req.idUser);
+      const cartIsEmpty =
+        Number.isSafeInteger(userId) &&
+        userId > 0 &&
+        (await readAdminQuoteCart(userId)).length === 0;
+      if (!cartIsEmpty) {
+        return res.status(409).json({
+          ok: false,
+          message:
+            "Esta cotización ya fue importada. No se puede volver a cargar el mismo número.",
+        });
+      }
+    }
+
+    const storedLines = payload.lines;
+
+    const productIds = [
+      ...new Set(
+        storedLines
+          .map((line) => Number(line.productId))
+          .filter((id) => Number.isSafeInteger(id) && id > 0),
+      ),
+    ].slice(0, 100);
+    const products = productIds.length
+      ? await prisma.products.findMany({
+          where: { idProduct: { in: productIds.map((id) => BigInt(id)) } },
+          select: {
+            idProduct: true,
+            name: true,
+            description: true,
+            caracteristicas: true,
+            price: true,
+            image_url: true,
+            upc: true,
+            sku: true,
+            stock: true,
+            active: true,
+            providerId: true,
+          },
+        })
+      : [];
+    const snapshots = await loadQuoteStockSnapshots(products);
+    const quotedPrices = await readQuotePdfLinePrices(quote.storageKey);
+    const byId = new Map(products.map((product) => [Number(product.idProduct), product]));
+
+    let missing = 0;
+    const lines = storedLines.flatMap((line) => {
+      const idProduct = Number(line.productId);
+      if (!Number.isSafeInteger(idProduct) || idProduct <= 0) return [];
+      const quantity = Math.min(999, Math.max(1, Math.round(line.quantity)));
+      const quotedPrice = quotedPrices.get(idProduct);
+      const product = byId.get(idProduct);
+      if (!product) {
+        missing += 1;
+        return [
+          {
+            idProduct,
+            name: `Producto #${idProduct}`,
+            description: null as string | null,
+            caracteristicas: null as unknown,
+            price: quotedPrice ?? 0,
+            image_url: null as unknown,
+            upc: null as string | null,
+            sku: null as string | null,
+            active: false,
+            stock: 0,
+            stocksByBranch: [] as { branchId: number; label: string; stock: number }[],
+            quantity,
+          },
+        ];
+      }
+      const snapshot = snapshots.get(String(product.idProduct));
+      return [
+        {
+          idProduct,
+          name: product.name,
+          description: product.description,
+          caracteristicas: parseCaracteristicas(product.caracteristicas),
+          price: quotedPrice ?? Number(product.price),
+          image_url: product.image_url,
+          upc: product.upc,
+          sku: product.sku,
+          active: snapshot?.active ?? false,
+          stock: snapshot?.stock ?? Number(product.stock ?? 0),
+          stocksByBranch: snapshot?.stocksByBranch ?? [],
+          quantity,
+        },
+      ];
+    });
+
+    if (lines.length === 0) {
+      return res.status(400).json({
+        ok: false,
+        message: "Esa cotización no tiene productos para importar.",
+      });
+    }
+
+    let customerPhone = "";
+    if (quote.capturedPhone) {
+      try {
+        customerPhone = decryptCapturedPhone(quote.capturedPhone) || "";
+      } catch {
+        customerPhone = "";
+      }
+    }
+    const capturedName = String(quote.capturedName || "").trim();
+    const customerName =
+      capturedName.toLowerCase() === "venta público general" ? "" : capturedName;
+
+    return res.status(200).json({
+      ok: true,
+      data: {
+        quoteNumber: quote.quoteNumber,
+        customerName,
+        customerPhone,
+        includeAssembly: quote.includeAssemblyService === true,
+        missing,
+        lines,
+      },
+    });
+  } catch (error) {
+    console.error("[getAdminQuoteImport]", error);
+    return res.status(500).json({
+      ok: false,
+      message: "No fue posible importar la cotización.",
+    });
+  }
+};
+
+export const markAdminQuoteImported = async (
+  req: CustomRequestI,
+  res: Response,
+) => {
+  try {
+    const quoteNumber = normalizeQuoteNumber(req.params.quoteNumber);
+    if (!QUOTE_NUMBER_PATTERN.test(quoteNumber)) {
+      return res.status(400).json({
+        ok: false,
+        message: "El número de cotización no es válido.",
+      });
+    }
+    const userId = Number(req.idUser);
+    const quote = await prisma.cotizaciones.findFirst({
+      where: { quoteNumber },
+      select: { idCotizacion: true, linesJson: true },
+    });
+    if (!quote) {
+      return res.status(404).json({
+        ok: false,
+        message: "No se encontró esa cotización.",
+      });
+    }
+    const payload = readStoredQuoteLinesPayload(quote.linesJson);
+    if (!payload?.lines.length) {
+      return res.status(400).json({
+        ok: false,
+        message: "Esa cotización no tiene productos para importar.",
+      });
+    }
+    if (!payload.importedAt) {
+      await prisma.cotizaciones.update({
+        where: { idCotizacion: quote.idCotizacion },
+        data: {
+          linesJson: buildImportedLinesJson(
+            payload.lines,
+            Number.isSafeInteger(userId) && userId > 0 ? userId : 0,
+          ),
+        },
+      });
+    }
+    return res.status(200).json({ ok: true });
+  } catch (error) {
+    console.error("[markAdminQuoteImported]", error);
+    return res.status(500).json({
+      ok: false,
+      message: "No fue posible registrar la importación de la cotización.",
+    });
+  }
+};
+
+export const getAdminQuoteProductAvailability = async (
+  req: CustomRequestI,
+  res: Response,
+) => {
+  try {
+    const ids = [
+      ...new Set(
+        String(req.query.ids || "")
+          .split(",")
+          .map((part) => Number(part.trim()))
+          .filter((id) => Number.isSafeInteger(id) && id > 0),
+      ),
+    ].slice(0, 100);
+
+    if (ids.length === 0) {
+      return res.status(200).json({ ok: true, data: [] });
+    }
+
+    const products = await prisma.products.findMany({
+      where: { idProduct: { in: ids.map((id) => BigInt(id)) } },
+      select: {
+        idProduct: true,
+        providerId: true,
+        stock: true,
+        active: true,
+      },
+    });
+    const snapshots = await loadQuoteStockSnapshots(products);
+
+    return res.status(200).json({
+      ok: true,
+      data: products.map((product) => {
+        const snapshot = snapshots.get(String(product.idProduct));
+        return {
+          idProduct: Number(product.idProduct),
+          active: snapshot?.active ?? product.active === 1,
+          stock: snapshot?.stock ?? Number(product.stock ?? 0),
+          stocksByBranch: snapshot?.stocksByBranch ?? [],
+        };
+      }),
+    });
+  } catch (error) {
+    console.error("[getAdminQuoteProductAvailability]", error);
+    return res.status(500).json({
+      ok: false,
+      message: "No fue posible consultar el stock de los productos",
+    });
   }
 };
 
