@@ -156,6 +156,7 @@ function scorePosProduct(
   },
   query: string,
   tokens: string[],
+  specs?: string | null,
 ): number {
   let score = 0;
   const q = normalizeMatchText(query);
@@ -166,6 +167,7 @@ function scorePosProduct(
   const marcaName = normalizeMatchText(product.marcaName);
   const categoryName = normalizeMatchText(product.categoryName);
   const idExt = normalizeMatchText(product.idProductExt);
+  const specText = normalizeMatchText(specs);
 
   if (sku === q || upc === q || idExt === q) score += 200;
   if (name === q) score += 150;
@@ -174,6 +176,7 @@ function scorePosProduct(
   if (marcaName.includes(q)) score += 40;
   if (categoryName.includes(q)) score += 35;
   if (description.includes(q)) score += 15;
+  if (specText.includes(q)) score += 18;
 
   for (const rawToken of tokens) {
     const token = normalizeMatchText(rawToken);
@@ -184,9 +187,119 @@ function scorePosProduct(
     if (sku.includes(token) || upc.includes(token) || idExt.includes(token))
       score += 35;
     if (description.includes(token)) score += 8;
+    if (specText.includes(token)) score += 12;
   }
 
   return score;
+}
+
+const PC_TIPO_LABELS: Record<string, string> = {
+  workstation: "Workstation",
+  pro: "PC Gamer Pro",
+  intermedia: "PC Gamer Intermedia",
+  entrada: "PC Gamer de entrada",
+};
+
+function specsBlob(raw: unknown): string {
+  if (raw == null) return "";
+  if (typeof raw === "string") return raw;
+  try {
+    return JSON.stringify(raw);
+  } catch {
+    return "";
+  }
+}
+
+function pcTipoValue(raw: unknown): string | null {
+  let parsed: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(parsed)) return null;
+  const row = parsed.find(
+    (item) => String(item?.prop ?? "").trim().toLowerCase() === "tipo",
+  );
+  const value = String(row?.value ?? "").trim();
+  return value || null;
+}
+
+function pcTipoLabel(raw: unknown): string | null {
+  const tipo = pcTipoValue(raw);
+  if (!tipo) return null;
+  return PC_TIPO_LABELS[tipo.toLowerCase()] || null;
+}
+
+/** Tipos de PC armada que el cajero está buscando (gamer / workstation). */
+function assembledPcTipos(rawQuery: string): string[] {
+  const n = normalizeMatchText(rawQuery);
+  const tipos = new Set<string>();
+  if (/workstation|work station|estacion de trabajo/.test(n)) {
+    tipos.add("workStation");
+  }
+  if (/\bgamer\b/.test(n)) {
+    tipos.add("pro");
+    tipos.add("intermedia");
+    tipos.add("entrada");
+  }
+  return [...tipos];
+}
+
+function likeTerm(term: string): string | null {
+  const clean = term.replace(/[%_\\]/g, "").trim();
+  if (clean.length < 3 && !/^\d{2,}$/.test(clean)) return null;
+  return `%${clean}%`;
+}
+
+/** PCs armadas que coinciden por nombre, specs o tipo, aparte del tope de componentes. */
+async function findAssembledPcIds(params: {
+  terms: string[];
+  tipos: string[];
+}): Promise<number[]> {
+  const likes = [
+    ...new Set(
+      params.terms.map(likeTerm).filter((value): value is string => Boolean(value)),
+    ),
+  ].slice(0, 4);
+  const tipoLikes = params.tipos.flatMap((tipo) => {
+    const value = tipo.toLowerCase();
+    return [
+      `%"value":"${value}",%`,
+      `%"value":"${value}"}%`,
+      `%"value": "${value}",%`,
+      `%"value": "${value}"}%`,
+    ];
+  });
+  if (likes.length === 0 && tipoLikes.length === 0) return [];
+
+  const clauses = [
+    ...likes.map(
+      (like) => Prisma.sql`(
+        LOWER(name) LIKE LOWER(${like})
+        OR LOWER(IFNULL(sku, '')) LIKE LOWER(${like})
+        OR LOWER(IFNULL(upc, '')) LIKE LOWER(${like})
+        OR LOWER(IFNULL(description, '')) LIKE LOWER(${like})
+        OR LOWER(CAST(IFNULL(caracteristicas, '') AS CHAR)) LIKE LOWER(${like})
+      )`,
+    ),
+    ...tipoLikes.map(
+      (like) =>
+        Prisma.sql`LOWER(CAST(IFNULL(caracteristicas, '') AS CHAR)) LIKE LOWER(${like})`,
+    ),
+  ];
+
+  const rows = await prisma.$queryRaw<Array<{ idProduct: bigint | number }>>`
+    SELECT idProduct
+    FROM products
+    WHERE active = 1 AND isPC = 1 AND (${Prisma.join(clauses, " OR ")})
+    LIMIT 24
+  `;
+  return rows
+    .map((row) => Number(row.idProduct))
+    .filter((id) => Number.isFinite(id) && id > 0);
 }
 
 /** Frases/sinónimos útiles para SQL (además del término ya normalizado). */
@@ -290,6 +403,7 @@ export async function searchPosProducts(q: string, limit = 25) {
     image_url: true,
     providerId: true,
     isPC: true,
+    caracteristicas: true,
     marca: { select: { name: true } },
     categories: { select: { name: true } },
     providers: { select: { companyName: true } },
@@ -312,13 +426,41 @@ export async function searchPosProducts(q: string, limit = 25) {
         select: lightSelect,
       });
 
+  const pcTipos = assembledPcTipos(raw);
+  const extraPcIds = (
+    await findAssembledPcIds({ terms: termBag, tipos: pcTipos }).catch(
+      () => [] as number[],
+    )
+  ).filter((id) => !products.some((p) => Number(p.idProduct) === id));
+
+  const pcExtra =
+    extraPcIds.length === 0
+      ? []
+      : hasSerialCols
+        ? await prisma.products.findMany({
+            where: { active: 1, isPC: 1, idProduct: { in: extraPcIds } },
+            select: {
+              ...lightSelect,
+              requiresSerial: true,
+              warrantyMonths: true,
+              warrantyMode: true,
+            },
+          })
+        : await prisma.products.findMany({
+            where: { active: 1, isPC: 1, idProduct: { in: extraPcIds } },
+            select: lightSelect,
+          });
+
+  const catalog = [...products, ...pcExtra];
+
   // Scoring: tokens originales + normalizados (para "tarjeta madre" y "motherboard")
   const scoreTokens = [
     ...new Set([...rawTokens, ...tokens].filter((t) => t.length >= 1)),
   ];
 
-  const ranked = products
+  const rankedAll = catalog
     .map((p: any) => {
+      const specs = specsBlob(p.caracteristicas);
       const row = {
         name: p.name as string,
         sku: p.sku as string | null,
@@ -328,17 +470,54 @@ export async function searchPosProducts(q: string, limit = 25) {
         marcaName: (p.marca?.name as string | null) ?? null,
         categoryName: (p.categories?.name as string | null) ?? null,
       };
-      const scoreRaw = scorePosProduct(row, normalizeMatchText(raw), rawTokens);
-      const scoreNorm = scorePosProduct(row, normalizedQuery, scoreTokens);
-      return { p, score: Math.max(scoreRaw, scoreNorm) };
+      const scoreRaw = scorePosProduct(
+        row,
+        normalizeMatchText(raw),
+        rawTokens,
+        specs,
+      );
+      const scoreNorm = scorePosProduct(
+        row,
+        normalizedQuery,
+        scoreTokens,
+        specs,
+      );
+      let score = Math.max(scoreRaw, scoreNorm);
+      const tipo = pcTipoValue(p.caracteristicas);
+      if (
+        Number(p.isPC) === 1 &&
+        tipo &&
+        pcTipos.some((item) => item.toLowerCase() === tipo.toLowerCase())
+      ) {
+        score += 120;
+      }
+      return { p, score };
     })
     .filter((r) => r.score > 0)
     .sort(
       (a, b) =>
         b.score - a.score ||
         String(a.p.name || "").localeCompare(String(b.p.name || "")),
+    );
+
+  const resultCap = Math.min(Math.max(limit, 1), 40);
+  const top = rankedAll.slice(0, resultCap);
+  const topIds = new Set(top.map((r) => Number(r.p.idProduct)));
+  const extraPcs = rankedAll
+    .filter(
+      (r) =>
+        Number(r.p.isPC) === 1 &&
+        !topIds.has(Number(r.p.idProduct)),
     )
-    .slice(0, Math.min(Math.max(limit, 1), 40));
+    .slice(0, 5);
+  const ranked =
+    extraPcs.length === 0
+      ? top
+      : [...top.slice(0, resultCap - extraPcs.length), ...extraPcs].sort(
+          (a, b) =>
+            b.score - a.score ||
+            String(a.p.name || "").localeCompare(String(b.p.name || "")),
+        );
 
   if (ranked.length === 0) return [];
 
@@ -440,6 +619,10 @@ export async function searchPosProducts(q: string, limit = 25) {
         ? String((p as any).warrantyMode)
         : null,
       isPC: Number((p as any).isPC) === 1,
+      pcLabel:
+        Number((p as any).isPC) === 1
+          ? pcTipoLabel((p as any).caracteristicas) || "PC armada"
+          : null,
       providerId,
       providerName,
       stocksByBranch,

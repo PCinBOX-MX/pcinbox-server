@@ -125,7 +125,7 @@ function parsePagoCambio(sale: TicketSale) {
   return { pago, cambio };
 }
 
-function truncateTicketName(name: string, max = 220): string {
+function truncateProductName(name: string, max = 160): string {
   const s = String(name || "").trim();
   if (s.length <= max) return s;
   return `${s.slice(0, Math.max(1, max - 1))}…`;
@@ -223,8 +223,8 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
         intake?.serviceType || it.productName || "",
       ).trim();
       const nameHtml = isServiceLine
-        ? `Servicio: ${escapeHtml(truncateTicketName(serviceLabel || it.productName))}`
-        : escapeHtml(truncateTicketName(it.productName));
+        ? `Servicio: ${escapeHtml(truncateProductName(serviceLabel || it.productName))}`
+        : escapeHtml(truncateProductName(it.productName));
       return `
       <div class="item">
         <div class="item-name">${nameHtml}</div>
@@ -289,14 +289,14 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
     .meta { font-size: 12px; margin: 12px 0; line-height: 1.55; }
     .sep { text-align: center; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; margin: 12px 0 8px; color: #374151; }
     .item { font-size: 12px; line-height: 1.45; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px dashed #e5e7eb; }
-    .item-name { font-weight: 700; margin-bottom: 2px; word-break: break-word; overflow-wrap: anywhere; }
+    .item-name { font-weight: 700; margin-bottom: 2px; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
     .item-prices { display: flex; justify-content: space-between; margin-top: 4px; font-weight: 600; gap: 8px; }
     .service-intake { margin-top: 8px; padding: 8px; background: #f9fafb; border-radius: 8px; font-size: 11px; line-height: 1.45; }
     .service-title { font-weight: 700; margin-bottom: 8px; color: #374151; }
     .equip-item { margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px dashed #e5e7eb; }
     .equip-item:last-of-type { margin-bottom: 6px; }
-    .equip-item-title { font-weight: 700; margin-bottom: 2px; color: #111; }
-    .equip-note { margin-top: 6px; }
+    .equip-item-title { font-weight: 700; margin-bottom: 2px; color: #111; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .equip-note { margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
     .totals { margin-top: 8px; font-size: 13px; }
     .totals .row { display: flex; justify-content: space-between; margin: 4px 0; }
     .count { text-align: center; font-size: 16px; font-weight: 800; margin: 14px 0 8px; }
