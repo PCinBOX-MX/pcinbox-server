@@ -10,6 +10,7 @@ import {
   markAdminQuoteImported,
   searchAdminQuoteProducts,
   streamAdminQuote,
+  unlinkAdminQuoteImport,
 } from "../../controllers/cotizaciones/cotizaciones.controller";
 import {
   addAdminQuoteCartLine,
@@ -17,6 +18,7 @@ import {
   getAdminQuoteCart,
   removeAdminQuoteCartLine,
   replaceAdminQuoteCart,
+  mergeAdminQuoteCart,
   updateAdminQuoteCartQuantity,
 } from "../../controllers/cotizaciones/adminQuoteCart.controller";
 import {
@@ -101,12 +103,24 @@ router.post(
   MiddleAdminRoute,
   markAdminQuoteImported,
 );
+router.post(
+  "/admin/import/:quoteNumber/unlink",
+  MiddleAuthRoute,
+  MiddleAdminRoute,
+  unlinkAdminQuoteImport,
+);
 router.get("/admin/cart", MiddleAuthRoute, MiddleAdminRoute, getAdminQuoteCart);
 router.post(
   "/admin/cart/replace",
   MiddleAuthRoute,
   MiddleAdminRoute,
   replaceAdminQuoteCart,
+);
+router.post(
+  "/admin/cart/merge",
+  MiddleAuthRoute,
+  MiddleAdminRoute,
+  mergeAdminQuoteCart,
 );
 router.post(
   "/admin/cart/lines",

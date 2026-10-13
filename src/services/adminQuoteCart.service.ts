@@ -1,4 +1,5 @@
 import { cacheDel, cacheGetJson, cacheSetJson } from "../infra/redis/cache.util";
+import { normalizeQuoteNumber } from "./quoteLines.service";
 
 export const QUOTE_CART_PAGE_SIZE = 4;
 export const QUOTE_CART_MAX_LINES = 100;
@@ -36,7 +37,18 @@ export type QuoteCartPage = {
   totalAmount: number;
 };
 
-const memoryCarts = new Map<number, StoredQuoteLine[]>();
+export type ImportedQuoteRef = {
+  quoteNumber: string;
+  productIds: number[];
+};
+
+type StoredCart = {
+  lines: StoredQuoteLine[];
+  importedQuotes: ImportedQuoteRef[];
+};
+
+const QUOTE_NUMBER_PATTERN = /^(?:\d{13}|COT-[A-Z0-9-]{8,55})$/;
+const memoryCarts = new Map<number, StoredCart>();
 
 function cartKey(userId: number): string {
   return `admin-quote-cart:v1:${userId}`;
@@ -153,6 +165,31 @@ export function upsertQuoteCartLine(
   return { lines: next, page: Math.floor(placed / QUOTE_CART_PAGE_SIZE) + 1 };
 }
 
+export function mergeQuoteCartLines(
+  current: StoredQuoteLine[],
+  incoming: StoredQuoteLine[],
+): { lines: StoredQuoteLine[]; page: number } | { error: "full" } {
+  const next = current.map((line) => ({ ...line }));
+  let page = 1;
+  for (const line of incoming) {
+    const index = next.findIndex((item) => item.idProduct === line.idProduct);
+    const add = line.quantity ?? 1;
+    if (index >= 0) {
+      const existing = next[index];
+      if (!existing) continue;
+      next[index] = {
+        ...existing,
+        quantity: Math.min(999, (existing.quantity ?? 0) + add),
+      };
+      continue;
+    }
+    if (next.length >= QUOTE_CART_MAX_LINES) return { error: "full" };
+    next.push({ ...line, quantity: add });
+    page = Math.floor((next.length - 1) / QUOTE_CART_PAGE_SIZE) + 1;
+  }
+  return { lines: next, page };
+}
+
 export function setQuoteCartQuantity(
   lines: StoredQuoteLine[],
   idProduct: number,
@@ -172,30 +209,136 @@ export function removeQuoteCartLine(
   return lines.filter((line) => line.idProduct !== idProduct);
 }
 
-export async function readAdminQuoteCart(userId: number): Promise<StoredQuoteLine[]> {
-  const cached = memoryCarts.get(userId);
-  if (cached) return cached.map((line) => ({ ...line }));
-  const stored = await cacheGetJson<unknown[]>(cartKey(userId));
-  const lines = Array.isArray(stored)
-    ? stored
-        .map(normalizeStoredQuoteLine)
-        .filter((line): line is StoredQuoteLine => Boolean(line))
-        .slice(0, QUOTE_CART_MAX_LINES)
+function normalizeLines(raw: unknown[]): StoredQuoteLine[] {
+  return raw
+    .map(normalizeStoredQuoteLine)
+    .filter((line): line is StoredQuoteLine => Boolean(line))
+    .slice(0, QUOTE_CART_MAX_LINES);
+}
+
+function normalizeImportedQuote(raw: unknown): ImportedQuoteRef | null {
+  if (!raw || typeof raw !== "object") return null;
+  const item = raw as Record<string, unknown>;
+  const quoteNumber = normalizeQuoteNumber(item.quoteNumber);
+  if (!QUOTE_NUMBER_PATTERN.test(quoteNumber)) return null;
+  const productIds = [
+    ...new Set(
+      (Array.isArray(item.productIds) ? item.productIds : [])
+        .map((id) => Number(id))
+        .filter((id) => Number.isSafeInteger(id) && id > 0),
+    ),
+  ].slice(0, QUOTE_CART_MAX_LINES);
+  if (productIds.length === 0) return null;
+  return { quoteNumber, productIds };
+}
+
+function pruneImportedQuotes(
+  lines: StoredQuoteLine[],
+  quotes: ImportedQuoteRef[],
+): ImportedQuoteRef[] {
+  const ids = new Set(lines.map((line) => line.idProduct));
+  const seen = new Set<string>();
+  const next: ImportedQuoteRef[] = [];
+  for (const quote of quotes) {
+    if (seen.has(quote.quoteNumber)) continue;
+    const productIds = quote.productIds.filter((id) => ids.has(id));
+    if (productIds.length === 0) continue;
+    seen.add(quote.quoteNumber);
+    next.push({ quoteNumber: quote.quoteNumber, productIds });
+  }
+  return next.slice(0, 20);
+}
+
+function parseStoredCart(stored: unknown): StoredCart {
+  if (Array.isArray(stored)) {
+    return { lines: normalizeLines(stored), importedQuotes: [] };
+  }
+  if (!stored || typeof stored !== "object") {
+    return { lines: [], importedQuotes: [] };
+  }
+  const body = stored as Record<string, unknown>;
+  const lines = Array.isArray(body.lines) ? normalizeLines(body.lines) : [];
+  const importedQuotes = Array.isArray(body.importedQuotes)
+    ? body.importedQuotes
+        .map(normalizeImportedQuote)
+        .filter((quote): quote is ImportedQuoteRef => Boolean(quote))
     : [];
-  memoryCarts.set(userId, lines);
-  return lines;
+  return { lines, importedQuotes: pruneImportedQuotes(lines, importedQuotes) };
+}
+
+function cloneCart(cart: StoredCart): StoredCart {
+  return {
+    lines: cart.lines.map((line) => ({ ...line })),
+    importedQuotes: cart.importedQuotes.map((quote) => ({
+      quoteNumber: quote.quoteNumber,
+      productIds: [...quote.productIds],
+    })),
+  };
+}
+
+async function loadCart(userId: number): Promise<StoredCart> {
+  const cached = memoryCarts.get(userId);
+  if (cached) return cloneCart(cached);
+  const stored = await cacheGetJson<unknown>(cartKey(userId));
+  const parsed = parseStoredCart(stored);
+  memoryCarts.set(userId, parsed);
+  return cloneCart(parsed);
+}
+
+export async function readAdminQuoteCart(userId: number): Promise<StoredQuoteLine[]> {
+  const cart = await loadCart(userId);
+  return cart.lines;
+}
+
+export function stageAdminQuoteImport(
+  userId: number,
+  rawQuoteNumber: unknown,
+  productIds: number[],
+): void {
+  const current = memoryCarts.get(userId);
+  if (!current) return;
+  const quoteNumber = normalizeQuoteNumber(rawQuoteNumber);
+  if (!QUOTE_NUMBER_PATTERN.test(quoteNumber)) return;
+  const ids = [
+    ...new Set(productIds.filter((id) => Number.isSafeInteger(id) && id > 0)),
+  ];
+  if (ids.length === 0) return;
+  current.importedQuotes = [
+    ...current.importedQuotes.filter((quote) => quote.quoteNumber !== quoteNumber),
+    { quoteNumber, productIds: ids },
+  ];
+}
+
+export function forgetAdminQuoteImport(userId: number, rawQuoteNumber: unknown): void {
+  const current = memoryCarts.get(userId);
+  if (!current) return;
+  const quoteNumber = normalizeQuoteNumber(rawQuoteNumber);
+  current.importedQuotes = current.importedQuotes.filter(
+    (quote) => quote.quoteNumber !== quoteNumber,
+  );
+}
+
+export function listAdminImportedQuoteNumbers(userId: number): string[] {
+  return (memoryCarts.get(userId)?.importedQuotes ?? []).map(
+    (quote) => quote.quoteNumber,
+  );
 }
 
 export async function writeAdminQuoteCart(
   userId: number,
   lines: StoredQuoteLine[],
 ): Promise<void> {
-  const next = lines.slice(0, QUOTE_CART_MAX_LINES);
-  memoryCarts.set(userId, next);
-  if (next.length === 0) {
+  const current = memoryCarts.get(userId) ?? (await loadCart(userId));
+  const nextLines = lines.slice(0, QUOTE_CART_MAX_LINES);
+  if (nextLines.length === 0) {
     memoryCarts.delete(userId);
     await cacheDel(cartKey(userId));
     return;
   }
+  const next: StoredCart = {
+    lines: nextLines,
+    importedQuotes: pruneImportedQuotes(nextLines, current.importedQuotes),
+  };
+  memoryCarts.set(userId, next);
   await cacheSetJson(cartKey(userId), next, CART_TTL_SEC);
 }

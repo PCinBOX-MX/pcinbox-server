@@ -27,7 +27,13 @@ import {
   normalizeQuoteNumber,
   readStoredQuoteLinesPayload,
 } from "../../services/quoteLines.service";
-import { readAdminQuoteCart } from "../../services/adminQuoteCart.service";
+import {
+  readAdminQuoteCart,
+  sliceQuoteCart,
+  forgetAdminQuoteImport,
+  listAdminImportedQuoteNumbers,
+  writeAdminQuoteCart,
+} from "../../services/adminQuoteCart.service";
 import {
   DICOTECH_PROVIDER_ID,
   TECHSMART_PROVIDER_ID,
@@ -1145,6 +1151,77 @@ export const markAdminQuoteImported = async (
     return res.status(500).json({
       ok: false,
       message: "No fue posible registrar la importación de la cotización.",
+    });
+  }
+};
+
+export const unlinkAdminQuoteImport = async (
+  req: CustomRequestI,
+  res: Response,
+) => {
+  try {
+    const quoteNumber = normalizeQuoteNumber(req.params.quoteNumber);
+    if (!QUOTE_NUMBER_PATTERN.test(quoteNumber)) {
+      return res.status(400).json({
+        ok: false,
+        message: "El número de cotización no es válido.",
+      });
+    }
+    const userId = Number(req.idUser);
+    if (!Number.isSafeInteger(userId) || userId <= 0) {
+      return res.status(401).json({ ok: false, message: "Debes iniciar sesión." });
+    }
+    const quote = await prisma.cotizaciones.findFirst({
+      where: { quoteNumber },
+      select: { idCotizacion: true, quoteNumber: true, linesJson: true },
+    });
+    if (!quote) {
+      return res.status(404).json({
+        ok: false,
+        message: "No se encontró esa cotización.",
+      });
+    }
+    const payload = readStoredQuoteLinesPayload(quote.linesJson);
+    if (!payload?.lines.length) {
+      return res.status(400).json({
+        ok: false,
+        message: "Esa cotización no tiene productos para quitar.",
+      });
+    }
+    const productIds = [
+      ...new Set(
+        payload.lines
+          .map((line) => Number(line.productId))
+          .filter((id) => Number.isSafeInteger(id) && id > 0),
+      ),
+    ];
+    const ids = new Set(productIds);
+    const current = await readAdminQuoteCart(userId);
+    const next = current.filter((line) => !ids.has(line.idProduct));
+    forgetAdminQuoteImport(userId, quote.quoteNumber);
+    await writeAdminQuoteCart(userId, next);
+    if (payload.importedAt) {
+      await prisma.cotizaciones.update({
+        where: { idCotizacion: quote.idCotizacion },
+        data: {
+          linesJson: { lines: payload.lines } as Prisma.InputJsonValue,
+        },
+      });
+    }
+    const page = Math.trunc(Number(req.body?.page));
+    return res.status(200).json({
+      ok: true,
+      quoteNumber: quote.quoteNumber,
+      removed: current.length - next.length,
+      productIds,
+      importedQuotes: listAdminImportedQuoteNumbers(userId),
+      ...sliceQuoteCart(next, Number.isInteger(page) && page > 0 ? page : 1),
+    });
+  } catch (error) {
+    console.error("[unlinkAdminQuoteImport]", error);
+    return res.status(500).json({
+      ok: false,
+      message: "No fue posible desvincular la cotización.",
     });
   }
 };

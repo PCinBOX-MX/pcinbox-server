@@ -3,10 +3,13 @@ import CustomRequestI from "../../interfaces/customrequest.interface";
 import {
   normalizeStoredQuoteLine,
   QUOTE_CART_MAX_LINES,
+  mergeQuoteCartLines,
   readAdminQuoteCart,
   removeQuoteCartLine,
   setQuoteCartQuantity,
   sliceQuoteCart,
+  stageAdminQuoteImport,
+  listAdminImportedQuoteNumbers,
   StoredQuoteLine,
   upsertQuoteCartLine,
   writeAdminQuoteCart,
@@ -25,12 +28,17 @@ function requestedPage(value: unknown): number {
 
 function sendCart(
   res: Response,
+  userId: number,
   lines: StoredQuoteLine[],
   page: number,
   viewAll = false,
 ) {
   const payload = sliceQuoteCart(lines, page, viewAll);
-  return res.status(200).json({ ok: true, ...payload });
+  return res.status(200).json({
+    ok: true,
+    ...payload,
+    importedQuotes: listAdminImportedQuoteNumbers(userId),
+  });
 }
 
 export const getAdminQuoteCart = async (req: CustomRequestI, res: Response) => {
@@ -40,7 +48,7 @@ export const getAdminQuoteCart = async (req: CustomRequestI, res: Response) => {
   }
   const lines = await readAdminQuoteCart(userId);
   const viewAll = String(req.query.view || "") === "all";
-  return sendCart(res, lines, requestedPage(req.query.page), viewAll);
+  return sendCart(res, userId, lines, requestedPage(req.query.page), viewAll);
 };
 
 export const replaceAdminQuoteCart = async (
@@ -65,7 +73,39 @@ export const replaceAdminQuoteCart = async (
     .map(normalizeStoredQuoteLine)
     .filter((line: StoredQuoteLine | null): line is StoredQuoteLine => Boolean(line));
   await writeAdminQuoteCart(userId, lines);
-  return sendCart(res, lines, requestedPage(req.body?.page));
+  return sendCart(res, userId, lines, requestedPage(req.body?.page));
+};
+
+export const mergeAdminQuoteCart = async (
+  req: CustomRequestI,
+  res: Response,
+) => {
+  const userId = userIdOf(req);
+  if (!userId) {
+    return res.status(401).json({ ok: false, message: "Debes iniciar sesión." });
+  }
+  const rawLines = Array.isArray(req.body?.lines) ? req.body.lines : null;
+  if (!rawLines) {
+    return res.status(400).json({ ok: false, message: "El carrito no es válido." });
+  }
+  const incoming = rawLines
+    .map(normalizeStoredQuoteLine)
+    .filter((line: StoredQuoteLine | null): line is StoredQuoteLine => Boolean(line));
+  const current = await readAdminQuoteCart(userId);
+  const merged = mergeQuoteCartLines(current, incoming);
+  if ("error" in merged) {
+    return res.status(400).json({
+      ok: false,
+      message: "El carrito admite como máximo 100 productos.",
+    });
+  }
+  stageAdminQuoteImport(
+    userId,
+    req.body?.quoteNumber,
+    incoming.map((line: StoredQuoteLine) => line.idProduct),
+  );
+  await writeAdminQuoteCart(userId, merged.lines);
+  return sendCart(res, userId, merged.lines, merged.page);
 };
 
 export const addAdminQuoteCartLine = async (
@@ -89,7 +129,7 @@ export const addAdminQuoteCartLine = async (
     });
   }
   await writeAdminQuoteCart(userId, result.lines);
-  return sendCart(res, result.lines, result.page);
+  return sendCart(res, userId, result.lines, result.page);
 };
 
 export const updateAdminQuoteCartQuantity = async (
@@ -121,7 +161,7 @@ export const updateAdminQuoteCartQuantity = async (
     return res.status(404).json({ ok: false, message: "El producto ya no está en el carrito." });
   }
   await writeAdminQuoteCart(userId, next);
-  return sendCart(res, next, requestedPage(req.body?.page));
+  return sendCart(res, userId, next, requestedPage(req.body?.page));
 };
 
 export const removeAdminQuoteCartLine = async (
@@ -138,7 +178,7 @@ export const removeAdminQuoteCartLine = async (
   }
   const next = removeQuoteCartLine(await readAdminQuoteCart(userId), idProduct);
   await writeAdminQuoteCart(userId, next);
-  return sendCart(res, next, requestedPage(req.query.page));
+  return sendCart(res, userId, next, requestedPage(req.query.page));
 };
 
 export const clearAdminQuoteCart = async (
@@ -150,5 +190,5 @@ export const clearAdminQuoteCart = async (
     return res.status(401).json({ ok: false, message: "Debes iniciar sesión." });
   }
   await writeAdminQuoteCart(userId, []);
-  return sendCart(res, [], 1);
+  return sendCart(res, userId, [], 1);
 };
