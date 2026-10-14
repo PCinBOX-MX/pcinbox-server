@@ -641,7 +641,10 @@ export function invalidatePosSearchCatalog() {
 }
 
 /** Hidrata productos por id con el mismo shape que search (stock por bodega). */
-export async function hydratePosProductsByIds(productIds: number[]) {
+export async function hydratePosProductsByIds(
+  productIds: number[],
+  options?: { includeInactive?: boolean },
+) {
   const ids = [
     ...new Set(
       productIds
@@ -669,9 +672,12 @@ export async function hydratePosProductsByIds(productIds: number[]) {
     providers: { select: { companyName: true } },
   } as const;
 
+  const productWhere = options?.includeInactive
+    ? { idProduct: { in: ids } }
+    : { active: 1, idProduct: { in: ids } };
   const products = hasSerialCols
     ? await prisma.products.findMany({
-        where: { active: 1, idProduct: { in: ids } },
+        where: productWhere,
         select: {
           ...lightSelect,
           requiresSerial: true,
@@ -680,7 +686,7 @@ export async function hydratePosProductsByIds(productIds: number[]) {
         },
       })
     : await prisma.products.findMany({
-        where: { active: 1, idProduct: { in: ids } },
+        where: productWhere,
         select: lightSelect,
       });
 

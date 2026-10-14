@@ -53,20 +53,22 @@ export function normalizeItemSerials(
   if (requiresSerial) {
     if (list.length !== quantity) {
       throw new Error(
-        `${productLabel}: requiere ${quantity} número(s) de serie`,
+        `${productLabel}: faltan series. Captura ${quantity} número(s), uno por cada pieza, y vuelve a cobrar. Si el campo no aparece, quita el folio, impórtalo de nuevo y, si sigue igual, reporta a soporte el folio y el nombre del producto.`,
       );
     }
   }
 
   if (list.length > 0 && list.length !== quantity) {
     throw new Error(
-      `${productLabel}: debes capturar exactamente ${quantity} serie(s) o ninguna`,
+      `${productLabel}: hay ${list.length} serie(s) para ${quantity} pieza(s). Captura una serie por pieza, o déjalas todas vacías si el producto no exige serie.`,
     );
   }
 
   const unique = new Set(list.map((s) => s.toUpperCase()));
   if (unique.size !== list.length) {
-    throw new Error(`${productLabel}: hay números de serie duplicados`);
+    throw new Error(
+      `${productLabel}: hay series repetidas. Cada pieza necesita una serie distinta. Corrige los campos y vuelve a cobrar.`,
+    );
   }
 
   return list;
@@ -86,7 +88,7 @@ export async function assertSerialsAvailable(
   for (const row of existing) {
     if (row.status === "sold" || row.status === "rma") {
       throw new Error(
-        `La serie ${row.serialNumber} ya está registrada como ${row.status}`,
+        `La serie ${row.serialNumber} ya está registrada como ${row.status === "sold" ? "vendida" : "RMA"}. Usa otra serie. Si crees que es un error, reporta a soporte esa serie y el folio de la venta.`,
       );
     }
   }
@@ -256,7 +258,9 @@ export async function registerAvailableSerial(params: {
   const serialNumber = String(params.serialNumber || "").trim();
   if (!serialNumber) throw new Error("Número de serie requerido");
   if (!Number.isSafeInteger(params.productId) || params.productId <= 0) {
-    throw new Error("Producto inválido");
+    throw new Error(
+      "No se pudo registrar la serie porque el producto no tiene un identificador válido. Si la línea viene de un folio, quita el folio e impórtalo de nuevo. Si se repite, reporta a soporte el folio y el nombre del producto.",
+    );
   }
   const product = await prisma.products.findFirst({
     where: { idProduct: params.productId, active: 1 },

@@ -50,10 +50,14 @@ export async function decrementPosStock(
         : null;
 
     if (!Number.isSafeInteger(productId) || productId <= 0) {
-      throw new Error("Producto inválido");
+      throw new Error(
+        "No se pudo descontar el stock porque un producto no tiene identificador válido. Quita esa línea y agrégala de nuevo. Si la venta viene de un folio, quita el folio e impórtalo otra vez. Si se repite, reporta a soporte el folio y la hora.",
+      );
     }
     if (!Number.isSafeInteger(quantity) || quantity <= 0) {
-      throw new Error("Cantidad inválida");
+      throw new Error(
+        "No se pudo descontar el stock porque una línea tiene una cantidad inválida. Revisa las cantidades del carrito y vuelve a cobrar. Si se repite, reporta a soporte el folio o el nombre del producto.",
+      );
     }
 
     const globalUpdated = await tx.products.updateMany({

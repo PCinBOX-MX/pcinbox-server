@@ -11,6 +11,7 @@ import {
   getPosCashSessionById,
   getPosCashStatus,
   getPosQuoteByNumber,
+  getPosSaleByFolio,
   getPosSaleById,
   getPosSaleTicket,
   getPosSaleWarrantySheet,
@@ -36,6 +37,7 @@ router.use(MiddleAuthRoute, MiddlePosRoute);
 router.get("/branches", listPosBranches);
 router.get("/products/search", searchPosProductsHandler);
 router.get("/quotes/:quoteNumber", getPosQuoteByNumber);
+router.get("/sales/folio/:folio", getPosSaleByFolio);
 router.post("/products/:productId/serial-config", updatePosProductSerialConfig);
 router.get("/customers/search", searchPosCustomers);
 router.post("/sales", createPosSale);

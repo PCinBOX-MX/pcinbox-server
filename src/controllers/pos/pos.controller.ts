@@ -61,7 +61,6 @@ import {
 } from "../../constants/pcinbox-branch-display";
 import {
   ensurePosManualLineProduct,
-  getPosManualPlaceholderIds,
   POS_MANUAL_PRODUCT_SKU,
   POS_MANUAL_SERVICE_SKU,
 } from "../../services/pos/posManualProduct.service";
@@ -488,6 +487,134 @@ export const searchPosProductsHandler = async (req: Request, res: Response) => {
   }
 };
 
+function normalizePosFolioQuery(raw: string): string[] {
+  const trimmed = String(raw || "")
+    .trim()
+    .replace(/^#/, "")
+    .replace(/^PV-/i, "");
+  if (!trimmed) return [];
+  const values = new Set<string>([trimmed, `PV-${trimmed}`]);
+  if (/^\d+$/.test(trimmed)) {
+    const numeric = String(Number(trimmed));
+    values.add(numeric);
+    values.add(`PV-${numeric}`);
+  }
+  return [...values];
+}
+
+/** Venta de este POS, por folio, para rellenar Cobrar (series vacías). */
+export const getPosSaleByFolio = async (req: Request, res: Response) => {
+  try {
+    const candidates = normalizePosFolioQuery(String(req.params.folio || ""));
+    if (!candidates.length) {
+      return res.status(400).json({
+        ok: false,
+        code: "FOLIO_INVALID",
+        message:
+          "El folio está vacío o no se puede leer. Escribe solo el número de la venta POS, por ejemplo 3414, y vuelve a importar. Si se repite, reporta a soporte el texto que escribiste y la hora.",
+      });
+    }
+
+    const sale = await prisma.pos_sales.findFirst({
+      where: { folio: { in: candidates } },
+      include: saleInclude,
+    });
+    if (!sale) {
+      return res.status(404).json({
+        ok: false,
+        code: "FOLIO_NOT_FOUND",
+        message:
+          "No hay una venta de este punto de venta con ese folio. Revisa el número en Historial del POS. No uses un pedido de la tienda en línea. Si el folio sí existe y no carga, reporta a soporte el folio y la hora.",
+      });
+    }
+
+    const serialized = serializeSale(sale);
+    const catalogIds = (sale.items || [])
+      .filter((item) => {
+        const sku = String(item.productSku || "");
+        return (
+          sku !== POS_MANUAL_PRODUCT_SKU && sku !== POS_MANUAL_SERVICE_SKU
+        );
+      })
+      .map((item) => Number(item.productId));
+    const hydrated = await hydratePosProductsByIds(catalogIds, {
+      includeInactive: true,
+    });
+    const byId = new Map(hydrated.map((product) => [product.idProduct, product]));
+
+    const items = (sale.items || []).map((item) => {
+      const sku = String(item.productSku || "");
+      const isService = sku === POS_MANUAL_SERVICE_SKU;
+      const isManual = isService || sku === POS_MANUAL_PRODUCT_SKU;
+      const product = byId.get(Number(item.productId));
+      const warrantySerial = (item.serials || [])[0];
+      return {
+        isManual,
+        manualKind: isService ? "service" : "product",
+        idProduct: Number(item.productId),
+        productId: Number(item.productId),
+        name: item.productName,
+        sku: isManual ? null : item.productSku,
+        upc: item.productUpc,
+        quantity: Number(item.quantity),
+        unitPrice: Number(item.unitPrice),
+        discountPct: Number(item.discountPct),
+        branchId: item.branchId != null ? Number(item.branchId) : null,
+        serviceIntake: item.serviceMetaJson ?? null,
+        requiresSerial: isManual ? false : Boolean(product?.requiresSerial),
+        warrantyMonths:
+          warrantySerial?.warrantyMonths != null
+            ? Number(warrantySerial.warrantyMonths)
+            : product?.warrantyMonths ?? null,
+        warrantyMode:
+          warrantySerial?.warrantyMode ||
+          product?.warrantyMode ||
+          (isManual ? "none" : null),
+        isPC: Boolean(product?.isPC),
+        providerId: product?.providerId ?? null,
+        stocksByBranch: product?.stocksByBranch || [],
+        suggestedBranchId:
+          item.branchId != null
+            ? Number(item.branchId)
+            : product?.suggestedBranchId ?? null,
+        price: product?.price ?? Number(item.unitPrice),
+        image_url: product?.image_url ?? null,
+        inactive: !isManual && !product,
+      };
+    });
+
+    return res.json({
+      ok: true,
+      data: {
+        folio: serialized.folio,
+        status: serialized.status,
+        customerName: serialized.customerName,
+        customerPhone: serialized.customerPhone,
+        customerUserId: serialized.customerUserId,
+        notes: serialized.notes,
+        requiredFactura: serialized.requiredFactura === 1,
+        payments: (serialized.payments || []).map((payment: {
+          method?: string;
+          amount?: number;
+          reference?: string | null;
+        }) => ({
+          method: payment.method,
+          amount: payment.amount,
+          reference: payment.reference || "",
+        })),
+        items,
+      },
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      message:
+        error?.message ||
+        "No se pudo consultar el folio. Espera un momento y vuelve a intentar. Si se repite, reporta a soporte el folio y la hora.",
+    });
+  }
+};
+
 /** Carga una cotización web por número para rellenar el carrito POS. */
 export const getPosQuoteByNumber = async (req: Request, res: Response) => {
   try {
@@ -777,6 +904,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       items,
       payments,
       quoteNumber: rawQuoteNumber,
+      sourceFolio: rawSourceFolio,
     } = req.body || {};
 
     const requiredFactura =
@@ -861,6 +989,42 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       );
     }
 
+    let folioBuckets: Array<{
+      productId: number;
+      unitPrice: number;
+      quantityLeft: number;
+    }> = [];
+    const sourceFolio = normalizePosFolioQuery(String(rawSourceFolio || ""))[0] || "";
+    if (String(rawSourceFolio || "").trim()) {
+      const candidates = normalizePosFolioQuery(String(rawSourceFolio));
+      const sourceSale = await prisma.pos_sales.findFirst({
+        where: { folio: { in: candidates } },
+        select: {
+          folio: true,
+          items: {
+            select: { productId: true, unitPrice: true, quantity: true, productSku: true },
+          },
+        },
+      });
+      if (!sourceSale) {
+        return res.status(404).json({
+          ok: false,
+          message:
+            "No hay una venta de este punto de venta con ese folio. Quita el folio, confirma el número en Historial e impórtalo otra vez. Si se repite, reporta a soporte el folio y la hora.",
+        });
+      }
+      folioBuckets = sourceSale.items
+        .filter((item) => {
+          const sku = String(item.productSku || "");
+          return sku !== POS_MANUAL_PRODUCT_SKU && sku !== POS_MANUAL_SERVICE_SKU;
+        })
+        .map((item) => ({
+          productId: Number(item.productId),
+          unitPrice: roundMoney(Number(item.unitPrice)),
+          quantityLeft: Number(item.quantity),
+        }));
+    }
+
     const normalizedItems: Array<{
       productId: number;
       branchId: number | null;
@@ -878,6 +1042,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       isManual: boolean;
       providerId: number | null;
       serviceMetaJson: PosServiceIntake | null;
+      skipStock: boolean;
     }> = [];
 
     let subtotal = 0;
@@ -887,7 +1052,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       productId: number;
       catalogPrice: number;
       unitPrice: number;
-      source?: "quote" | "admin";
+      source?: "quote" | "admin" | "folio";
     }> = [];
 
     for (const raw of items) {
@@ -1024,17 +1189,25 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
           isManual: true,
           providerId: null,
           serviceMetaJson,
+          skipStock: true,
         });
         continue;
       }
 
       const productId = Number(raw.productId);
       if (!Number.isSafeInteger(productId) || productId <= 0) {
-        return res.status(400).json({ ok: false, message: "Producto inválido" });
+        return res.status(400).json({
+          ok: false,
+          message: sourceFolio
+            ? `Una línea del folio ${sourceFolio} llegó sin identificador de producto. Pulsa «Quitar folio», impórtalo de nuevo y captura las series. Si vuelve a salir, reporta a soporte el folio y la hora.`
+            : "Hay un producto en el carrito sin identificador válido. Quita esa línea y agrégala otra vez desde el catálogo. Si se repite, reporta a soporte el nombre del producto y la hora.",
+        });
       }
 
       const product = await prisma.products.findFirst({
-        where: { idProduct: productId, active: 1 },
+        where: raw.useSourcePrice
+          ? { idProduct: productId }
+          : { idProduct: productId, active: 1 },
         select: {
           idProduct: true,
           name: true,
@@ -1048,8 +1221,39 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       if (!product) {
         return res.status(404).json({
           ok: false,
-          message: `Producto ${productId} no encontrado`,
+          message: sourceFolio
+            ? `El producto ${productId} del folio ${sourceFolio} ya no está en el catálogo y no se pudo cobrar. Reporta a soporte el folio, el id ${productId} y la hora.`
+            : `No se encontró el producto ${productId} en el catálogo activo. Quítalo del carrito y agrégalo de nuevo. Si se repite, reporta a soporte ese número y la hora.`,
         });
+      }
+
+      let skipStock = false;
+      let folioUnitPrice: number | null = null;
+      if (raw.useSourcePrice) {
+        if (!sourceFolio) {
+          return res.status(400).json({
+            ok: false,
+            message: `Hay precios tomados de un folio, pero el folio no llegó al cobro. Pulsa «Quitar folio», impórtalo de nuevo y cobra sin agregar productos del catálogo. Si se repite, reporta a soporte la hora.`,
+          });
+        }
+        const requested = money(raw.unitPrice);
+        const bucket = folioBuckets.find(
+          (row) =>
+            row.productId === productId &&
+            row.quantityLeft >= quantity &&
+            Number.isFinite(requested) &&
+            Math.abs(row.unitPrice - requested) <= 0.009,
+        );
+        if (!bucket) {
+          return res.status(400).json({
+            ok: false,
+            message: `«${product.name}» no coincide en cantidad o precio con el folio ${sourceFolio}. No cambies la cantidad ni el precio de las líneas importadas: quita el folio, impórtalo de nuevo y captura solo las series. Si ya lo hiciste y sigue igual, reporta a soporte el folio y el nombre del producto.`,
+          });
+        }
+        bucket.quantityLeft -= quantity;
+        folioUnitPrice = bucket.unitPrice;
+        // La venta original ya descontó el stock. Este cobro solo captura series.
+        skipStock = true;
       }
 
       const serialFlags = await getProductSerialFlags(productId);
@@ -1124,7 +1328,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
               ? Number(stockRow.stock)
               : // sin fila product_stock: no hay existencia por bodega
                 0;
-          if (available < quantity) {
+          if (!skipStock && available < quantity) {
             return res.status(400).json({
               ok: false,
               message: `Stock insuficiente en bodega para: ${product.name} (disp. ${available})`,
@@ -1134,7 +1338,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       } else {
         // Provider 1 / sin bodegas vendibles: stock global, sin branchId.
         resolvedBranchId = null;
-        if (tracksStock && Number(product.stock) < quantity) {
+        if (!skipStock && tracksStock && Number(product.stock) < quantity) {
           return res.status(400).json({
             ok: false,
             message: `Stock insuficiente para: ${product.name}`,
@@ -1149,10 +1353,14 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
           : catalogPrice;
       let unitPrice = catalogPrice;
       let priceOverride = false;
-      let overrideSource: "quote" | "admin" | undefined;
+      let overrideSource: "quote" | "admin" | "folio" | undefined;
       const quoteStoredPrice = quoteUnitPriceByProductId.get(productId);
       const wantsQuotePrice = Boolean(raw.useQuotePrice);
-      if (wantsQuotePrice) {
+      if (folioUnitPrice != null) {
+        unitPrice = folioUnitPrice;
+        priceOverride = Math.abs(folioUnitPrice - catalogPrice) > 0.009;
+        if (priceOverride) overrideSource = "folio";
+      } else if (wantsQuotePrice) {
         if (quoteStoredPrice == null || !Number.isFinite(quoteStoredPrice)) {
           return res.status(400).json({
             ok: false,
@@ -1229,6 +1437,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
         isManual: false,
         providerId: productProviderId,
         serviceMetaJson: null,
+        skipStock,
       });
     }
 
@@ -1236,7 +1445,8 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
     if (new Set(serialUpper).size !== serialUpper.length) {
       return res.status(400).json({
         ok: false,
-        message: "Hay números de serie duplicados entre líneas de la venta",
+        message:
+          "Hay series repetidas entre distintos productos de esta venta. Cada pieza necesita una serie distinta. Corrige los campos y vuelve a cobrar. Si se repite, reporta a soporte las series y el folio.",
       });
     }
 
@@ -1513,6 +1723,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
                   isAdmin,
                   posRole,
                   quoteNumber: quoteNumber || undefined,
+                  sourceFolio: sourceFolio || undefined,
                   priceOverrides:
                     priceOverrides.length > 0 ? priceOverrides : undefined,
                   cashAmount: cashAmount > 0 ? cashAmount : undefined,
@@ -1595,7 +1806,9 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
         const stockItems = normalizedItems
           .filter(
             (it) =>
-              !it.isManual && it.providerId === POS_STOCK_PROVIDER_ID,
+              !it.isManual &&
+              !it.skipStock &&
+              it.providerId === POS_STOCK_PROVIDER_ID,
           )
           .map((it) => ({
             productId: it.productId,
@@ -1853,16 +2066,24 @@ export const cancelPosSale = async (req: CustomRequestI, res: Response) => {
         throw new Error("No se pudo cancelar (estado ya cambió). Reintenta.");
       }
 
-      // Stock se reserva al crear (completed y pending OpenPay).
+      // Solo se devuelve el stock que esta venta sí descontó.
+      // Un folio importado no genera movimiento, así que cancelarlo no repone existencia.
       if (previousStatus === "completed" || previousStatus === "pending_payment") {
-        const manualIds = await getPosManualPlaceholderIds(tx);
-        const stockLines = sale.items
-          .filter((it) => !manualIds.includes(Number(it.productId)))
-          .map((it) => ({
-            productId: Number(it.productId),
-            quantity: Number(it.quantity),
-            branchId: it.branchId != null ? Number(it.branchId) : null,
-          }));
+        const taken = await tx.inventory_movements.findMany({
+          where: {
+            refType: "pos_sale",
+            refId: sale.folio,
+            reason: "pos_sale",
+            delta: { lt: 0 },
+          },
+          select: { productId: true, branchId: true, delta: true },
+        });
+        const stockLines = taken.map((movement) => ({
+          productId: Number(movement.productId),
+          quantity: Math.abs(Number(movement.delta)),
+          branchId:
+            movement.branchId != null ? Number(movement.branchId) : null,
+        }));
         if (stockLines.length > 0) {
           await restorePosStock(tx, stockLines, userId, sale.folio);
           invalidatePosSearchCatalog();
@@ -2497,7 +2718,11 @@ export const updatePosProductSerialConfig = async (
 
     const productId = Number(req.params.productId);
     if (!Number.isSafeInteger(productId) || productId <= 0) {
-      return res.status(400).json({ ok: false, message: "Producto inválido" });
+      return res.status(400).json({
+        ok: false,
+        message:
+          "No se pudo cambiar si el producto exige serie porque no tiene un identificador válido. Si la línea viene de un folio importado, pulsa «Quitar folio» e impórtalo de nuevo. Si se repite, reporta a soporte el folio y el nombre del producto.",
+      });
     }
 
     const hasCols = await productsHaveSerialColumns();
