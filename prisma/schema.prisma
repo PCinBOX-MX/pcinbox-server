@@ -528,6 +528,10 @@ model pos_sale_items {
   unitPrice      Decimal  @db.Decimal(12, 2)
   discountPct    Decimal  @default(0) @db.Decimal(5, 2)
   lineTotal      Decimal  @db.Decimal(12, 2)
+  /// Snapshot de la garantía cobrada (también si la línea no tiene serie).
+  warrantyMonths Int?
+  /// months | none | service_center
+  warrantyMode   String?  @db.VarChar(32)
   /// Intake de taller (servicio POS): equipos, falla, observaciones.
   serviceMetaJson Json?
   pos_sales      pos_sales @relation(fields: [posSaleId], references: [idPosSale], onDelete: Cascade, onUpdate: NoAction, map: "fk_pos_sale_items_posSaleId")
