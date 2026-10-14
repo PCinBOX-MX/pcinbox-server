@@ -1754,7 +1754,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       }
 
       const allSerialsFlat = normalizedItems.flatMap((it) => it.serials);
-      if (allSerialsFlat.length > 0) {
+      if (allSerialsFlat.length > 0 && !sourceFolio) {
         await assertSerialsAvailable(tx, allSerialsFlat);
       }
       if (status === "completed") {
@@ -1797,6 +1797,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
             customerName: displayName,
             warrantyMonths: norm.warrantyMonths,
             warrantyMode: norm.warrantyMode,
+            allowAlreadySold: Boolean(sourceFolio),
           });
         }
       }

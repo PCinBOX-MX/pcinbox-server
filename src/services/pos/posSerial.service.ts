@@ -107,6 +107,8 @@ export async function assignSerialsOnSale(
     warrantyMonths: number | null;
     warrantyMode?: string | null;
     soldAt?: Date;
+    /** Folio reimportado: la serie ya puede estar vendida en la venta anterior. */
+    allowAlreadySold?: boolean;
   },
 ) {
   if (params.serials.length === 0) return;
@@ -136,10 +138,14 @@ export async function assignSerialsOnSale(
           `La serie ${serialNumber} pertenece a otro producto`,
         );
       }
+      const claimable: Array<"available" | "returned" | "sold" | "rma"> =
+        params.allowAlreadySold
+          ? ["available", "returned", "sold", "rma"]
+          : ["available", "returned"];
       const claimed = await tx.product_serials.updateMany({
         where: {
           idProductSerial: existing.idProductSerial,
-          status: { in: ["available", "returned"] },
+          status: { in: claimable },
         },
         data: {
           status: "sold",
