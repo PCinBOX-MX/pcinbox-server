@@ -328,7 +328,7 @@ export const quotaResponse = (count: number, oldestCreatedAt: Date) => ({
 const saveUploadedQuote = async (
   req: CustomRequestI,
   res: Response,
-  source: "client" | "admin",
+  _source: "client" | "admin",
 ) => {
   const uploadedFile = req.file;
   const temporaryPath = uploadedFile?.path;
@@ -363,9 +363,7 @@ const saveUploadedQuote = async (
     const itemCount = Number(req.body.itemCount);
     const includeAssemblyService =
       String(req.body.includeAssemblyService).toLowerCase() === "true";
-    const capturedName =
-      sanitizeCapturedName(req.body.capturedName) ||
-      (source === "admin" ? "Venta público general" : null);
+    const capturedName = sanitizeCapturedName(req.body.capturedName);
     const capturedPhonePlain = sanitizeCapturedPhone(req.body.capturedPhone);
     let capturedPhone: string | null = null;
     if (capturedPhonePlain) {
