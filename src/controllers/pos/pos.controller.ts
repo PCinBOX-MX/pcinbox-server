@@ -547,7 +547,27 @@ export const getPosSaleByFolio = async (req: Request, res: Response) => {
       const isService = sku === POS_MANUAL_SERVICE_SKU;
       const isManual = isService || sku === POS_MANUAL_PRODUCT_SKU;
       const product = byId.get(Number(item.productId));
-      const warrantySerial = (item.serials || [])[0];
+      const serialRows = item.serials || [];
+      const capturedSerials = serialRows
+        .map((serial) => String(serial.serialNumber || "").trim())
+        .filter((serial) => serial && !serial.startsWith("POS-W-"));
+      const warrantySerial =
+        serialRows.find((serial) => serial.warrantyMode) || serialRows[0];
+      const storedMonths =
+        item.warrantyMonths != null
+          ? Number(item.warrantyMonths)
+          : warrantySerial?.warrantyMonths != null
+            ? Number(warrantySerial.warrantyMonths)
+            : product?.warrantyMonths ?? null;
+      const storedMode =
+        item.warrantyMode ||
+        warrantySerial?.warrantyMode ||
+        product?.warrantyMode ||
+        (storedMonths != null && storedMonths > 0
+          ? "months"
+          : isManual
+            ? "none"
+            : null);
       return {
         isManual,
         manualKind: isService ? "service" : "product",
@@ -561,15 +581,10 @@ export const getPosSaleByFolio = async (req: Request, res: Response) => {
         discountPct: Number(item.discountPct),
         branchId: item.branchId != null ? Number(item.branchId) : null,
         serviceIntake: item.serviceMetaJson ?? null,
+        serials: capturedSerials,
         requiresSerial: isManual ? false : Boolean(product?.requiresSerial),
-        warrantyMonths:
-          warrantySerial?.warrantyMonths != null
-            ? Number(warrantySerial.warrantyMonths)
-            : product?.warrantyMonths ?? null,
-        warrantyMode:
-          warrantySerial?.warrantyMode ||
-          product?.warrantyMode ||
-          (isManual ? "none" : null),
+        warrantyMonths: storedMonths,
+        warrantyMode: storedMode,
         isPC: Boolean(product?.isPC),
         providerId: product?.providerId ?? null,
         stocksByBranch: product?.stocksByBranch || [],
@@ -1698,6 +1713,8 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
               unitPrice: new Prisma.Decimal(it.unitPrice),
               discountPct: new Prisma.Decimal(it.discountPct),
               lineTotal: new Prisma.Decimal(it.lineTotal),
+              warrantyMonths: it.warrantyMonths,
+              warrantyMode: it.warrantyMode,
               serviceMetaJson: it.serviceMetaJson
                 ? (it.serviceMetaJson as unknown as Prisma.InputJsonValue)
                 : Prisma.JsonNull,
