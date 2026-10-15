@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  buildQuoteStocksByBranch,
   parseCheckoutContext,
   quotaResponse,
 } from "./cotizaciones.controller";
@@ -62,6 +63,59 @@ test("persiste unitPrice y no altera cartHash si solo cambia el precio", () => {
   assert.equal(withPrice.lines[0].unitPrice, 100);
   assert.equal(withPrice.lines[1].unitPrice, 1999.5);
   assert.equal(withoutPrice.lines[0].unitPrice, null);
+});
+
+const branch = (
+  id: number,
+  name: string,
+  providerId: number,
+) => ({
+  idBranche: BigInt(id),
+  name,
+  city: null,
+  providerId: BigInt(providerId),
+});
+
+test("DicoTech solo muestra Santa Fe y León con su nombre de tienda", () => {
+  const stocks = buildQuoteStocksByBranch(
+    3,
+    [
+      branch(10, "gdl", 2),
+      branch(11, "leon", 3),
+      branch(12, "leon2", 3),
+      branch(13, "santafe", 3),
+      branch(14, "otra", 3),
+    ],
+    new Map([
+      ["12", 4],
+      ["13", 0],
+      ["14", 9],
+    ]),
+  );
+  assert.deepEqual(stocks, [
+    { branchId: 13, label: "PCinBOX-SFD", stock: 0 },
+    { branchId: 12, label: "PCinBOX-León", stock: 4 },
+  ]);
+});
+
+test("TechSmart solo muestra GDL y CDMX con su nombre de tienda", () => {
+  const stocks = buildQuoteStocksByBranch(
+    2,
+    [
+      branch(20, "cdmx", 2),
+      branch(21, "gdl", 2),
+      branch(22, "santafe", 3),
+      branch(23, "leon2", 2),
+    ],
+    new Map([
+      ["20", 3],
+      ["21", 8],
+    ]),
+  );
+  assert.deepEqual(stocks, [
+    { branchId: 21, label: "PCinBOX-GDL", stock: 8 },
+    { branchId: 20, label: "PCinBOX-CDMX", stock: 3 },
+  ]);
 });
 
 test("la cuota llega a cero exactamente después de tres generaciones", () => {
