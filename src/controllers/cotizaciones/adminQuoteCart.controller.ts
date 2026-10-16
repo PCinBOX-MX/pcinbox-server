@@ -4,6 +4,8 @@ import {
   normalizeStoredQuoteLine,
   QUOTE_CART_MAX_LINES,
   mergeQuoteCartLines,
+  applyLiveQuoteUpdates,
+  normalizeLiveQuoteUpdates,
   readAdminQuoteCart,
   removeQuoteCartLine,
   setQuoteCartQuantity,
@@ -179,6 +181,28 @@ export const removeAdminQuoteCartLine = async (
   const next = removeQuoteCartLine(await readAdminQuoteCart(userId), idProduct);
   await writeAdminQuoteCart(userId, next);
   return sendCart(res, userId, next, requestedPage(req.query.page));
+};
+
+export const syncAdminQuoteCartLive = async (
+  req: CustomRequestI,
+  res: Response,
+) => {
+  const userId = userIdOf(req);
+  if (!userId) {
+    return res.status(401).json({ ok: false, message: "Debes iniciar sesión." });
+  }
+  const updates = normalizeLiveQuoteUpdates(req.body?.updates);
+  const current = await readAdminQuoteCart(userId);
+  const patched = applyLiveQuoteUpdates(current, updates);
+  if (patched.changed) {
+    await writeAdminQuoteCart(userId, patched.lines);
+  }
+  return res.status(200).json({
+    ok: true,
+    ...sliceQuoteCart(patched.lines, requestedPage(req.body?.page)),
+    importedQuotes: listAdminImportedQuoteNumbers(userId),
+    changed: patched.changed,
+  });
 };
 
 export const clearAdminQuoteCart = async (
