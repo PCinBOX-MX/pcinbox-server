@@ -19,6 +19,7 @@ import {
   removeAdminQuoteCartLine,
   replaceAdminQuoteCart,
   mergeAdminQuoteCart,
+  syncAdminQuoteCartLive,
   updateAdminQuoteCartQuantity,
 } from "../../controllers/cotizaciones/adminQuoteCart.controller";
 import {
@@ -121,6 +122,12 @@ router.post(
   MiddleAuthRoute,
   MiddleAdminRoute,
   mergeAdminQuoteCart,
+);
+router.post(
+  "/admin/cart/live",
+  MiddleAuthRoute,
+  MiddleAdminRoute,
+  syncAdminQuoteCartLive,
 );
 router.post(
   "/admin/cart/lines",

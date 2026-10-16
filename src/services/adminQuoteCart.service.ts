@@ -285,6 +285,144 @@ async function loadCart(userId: number): Promise<StoredCart> {
   return cloneCart(parsed);
 }
 
+export type LiveQuoteUpdate = {
+  idProduct: number;
+  price?: number;
+  stock?: number;
+  active?: 0 | 1;
+  branches?: Record<string, number>;
+};
+
+const DISPLAY_KEYS: Record<string, readonly string[]> = {
+  "pcinbox-gdl": ["gdl"],
+  "pcinbox-cdmx": ["cdmx"],
+  "pcinbox-sfd": ["santafe"],
+  "pcinbox-leon": ["leon2", "leon"],
+  "pcinbox-ag2d": ["dicoags2"],
+  "pcinbox-agd": ["arboledas"],
+};
+
+function liveNorm(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, "");
+}
+
+function matchLiveBranchStock(
+  label: string,
+  branchId: number,
+  branches: Record<string, number>,
+): number | null {
+  const labelKey = liveNorm(label);
+  const aliases = DISPLAY_KEYS[labelKey] ?? [];
+  const idKey = String(branchId);
+  for (const [rawKey, qty] of Object.entries(branches)) {
+    const key = liveNorm(rawKey);
+    if (!key) continue;
+    const hit =
+      key === labelKey ||
+      key === idKey ||
+      aliases.includes(key) ||
+      (key.length >= 3 && (labelKey.includes(key) || key.includes(labelKey)));
+    if (!hit) continue;
+    return Math.max(0, Number(qty) || 0);
+  }
+  return null;
+}
+
+export function normalizeLiveQuoteUpdates(raw: unknown): LiveQuoteUpdate[] {
+  if (!Array.isArray(raw)) return [];
+  const next: LiveQuoteUpdate[] = [];
+  for (const row of raw.slice(0, 400)) {
+    if (!row || typeof row !== "object") continue;
+    const item = row as Record<string, unknown>;
+    const idProduct = Number(item.idProduct);
+    if (!Number.isSafeInteger(idProduct) || idProduct <= 0) continue;
+    const price = item.price == null ? undefined : Number(item.price);
+    const stock = item.stock == null ? undefined : Number(item.stock);
+    const activeRaw = item.active == null ? undefined : Number(item.active);
+    let branches: Record<string, number> | undefined;
+    if (item.branches && typeof item.branches === "object" && !Array.isArray(item.branches)) {
+      branches = {};
+      for (const [key, value] of Object.entries(item.branches as Record<string, unknown>)) {
+        const qty = Number(value);
+        if (!key.trim() || !Number.isFinite(qty)) continue;
+        branches[key.slice(0, 80)] = Math.max(0, qty);
+      }
+    }
+    const update: LiveQuoteUpdate = { idProduct };
+    if (price != null && Number.isFinite(price) && price >= 0) update.price = price;
+    if (stock != null && Number.isFinite(stock)) update.stock = Math.max(0, stock);
+    if (activeRaw === 0 || activeRaw === 1) update.active = activeRaw;
+    if (branches && Object.keys(branches).length > 0) update.branches = branches;
+    next.push(update);
+  }
+  return next;
+}
+
+function patchStoredLiveLine(
+  line: StoredQuoteLine,
+  update: LiveQuoteUpdate,
+): StoredQuoteLine {
+  let price = line.price;
+  let stock = line.stock;
+  let active = line.active;
+  let stocksByBranch = line.stocksByBranch;
+  let touched = false;
+
+  if (update.price != null && update.price !== price) {
+    price = Math.round((update.price + Number.EPSILON) * 100) / 100;
+    touched = true;
+  }
+  if (update.active != null) {
+    const nextActive = update.active === 1;
+    if (nextActive !== active) {
+      active = nextActive;
+      touched = true;
+    }
+  }
+  if (update.branches && Object.keys(update.branches).length > 0 && stocksByBranch.length > 0) {
+    let branchChanged = false;
+    const nextBranches = stocksByBranch.map((branch) => {
+      const nextStock = matchLiveBranchStock(branch.label, branch.branchId, update.branches!);
+      if (nextStock == null || nextStock === branch.stock) return branch;
+      branchChanged = true;
+      return { ...branch, stock: nextStock };
+    });
+    if (branchChanged) {
+      stocksByBranch = nextBranches;
+      stock = nextBranches.reduce((sum, branch) => sum + branch.stock, 0);
+      touched = true;
+    }
+  } else if (update.stock != null && stocksByBranch.length === 0 && update.stock !== stock) {
+    stock = update.stock;
+    touched = true;
+  }
+
+  if (!touched) return line;
+  return { ...line, price, stock, active, stocksByBranch };
+}
+
+export function applyLiveQuoteUpdates(
+  lines: StoredQuoteLine[],
+  updates: LiveQuoteUpdate[],
+): { lines: StoredQuoteLine[]; changed: boolean } {
+  if (lines.length === 0 || updates.length === 0) return { lines, changed: false };
+  const byId = new Map(updates.map((update) => [update.idProduct, update]));
+  let changed = false;
+  const next = lines.map((line) => {
+    const update = byId.get(line.idProduct);
+    if (!update) return line;
+    const patched = patchStoredLiveLine(line, update);
+    if (patched !== line) changed = true;
+    return patched;
+  });
+  return { lines: changed ? next : lines, changed };
+}
+
 export async function readAdminQuoteCart(userId: number): Promise<StoredQuoteLine[]> {
   const cart = await loadCart(userId);
   return cart.lines;
