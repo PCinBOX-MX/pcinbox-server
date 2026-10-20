@@ -28,7 +28,10 @@ test("genera la misma firma aunque cambie el orden de las líneas", () => {
     2,
   );
   assert.ok(first);
-  assert.equal(first.cartHash, reversed?.cartHash);
+  assert.ok(reversed);
+  assert.equal(first.cartHash, reversed.cartHash);
+  assert.equal(first.lines[0]?.productId, "20");
+  assert.equal(reversed.lines[0]?.productId, "10");
 });
 
 test("cantidad, sucursal y modo producen configuraciones distintas", () => {
@@ -60,8 +63,8 @@ test("persiste unitPrice y no altera cartHash si solo cambia el precio", () => {
   );
   assert.ok(withoutPrice && withPrice);
   assert.equal(withoutPrice.cartHash, withPrice.cartHash);
-  assert.equal(withPrice.lines[0].unitPrice, 100);
-  assert.equal(withPrice.lines[1].unitPrice, 1999.5);
+  assert.equal(withPrice.lines[0].unitPrice, 1999.5);
+  assert.equal(withPrice.lines[1].unitPrice, 100);
   assert.equal(withoutPrice.lines[0].unitPrice, null);
 });
 

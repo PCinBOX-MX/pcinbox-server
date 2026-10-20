@@ -265,17 +265,19 @@ export const parseCheckoutContext = (
     ) {
       return null;
     }
-    lines.sort((a, b) =>
-      `${a.productId}:${a.storeId ?? "null"}:${a.quantity}`.localeCompare(
-        `${b.productId}:${b.storeId ?? "null"}:${b.quantity}`,
-      ),
-    );
-    // Hash sin unitPrice: la cuota no debe romper si el catálogo cambió de precio.
-    const hashLines = lines.map(({ productId, quantity, storeId }) => ({
-      productId,
-      quantity,
-      storeId,
-    }));
+    // El hash no depende del orden. Las líneas que se guardan sí: el PDF
+    // y la importación en admin deben seguir el orden en que se agregaron.
+    const hashLines = [...lines]
+      .sort((a, b) =>
+        `${a.productId}:${a.storeId ?? "null"}:${a.quantity}`.localeCompare(
+          `${b.productId}:${b.storeId ?? "null"}:${b.quantity}`,
+        ),
+      )
+      .map(({ productId, quantity, storeId }) => ({
+        productId,
+        quantity,
+        storeId,
+      }));
     const canonical = JSON.stringify({ mode: parsed.mode, lines: hashLines });
     return {
       mode: parsed.mode,
