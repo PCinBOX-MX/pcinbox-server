@@ -29,6 +29,7 @@ import {
   searchPosSerials,
   updatePosProductSerialConfig,
 } from "../../controllers/pos/pos.controller";
+import { getReservationForPos } from "../../controllers/reservas/reservas.controller";
 
 const router = Router();
 
@@ -37,6 +38,7 @@ router.use(MiddleAuthRoute, MiddlePosRoute);
 router.get("/branches", listPosBranches);
 router.get("/products/search", searchPosProductsHandler);
 router.get("/quotes/:quoteNumber", getPosQuoteByNumber);
+router.get("/reservations/:reference", getReservationForPos);
 router.get("/sales/folio/:folio", getPosSaleByFolio);
 router.post("/products/:productId/serial-config", updatePosProductSerialConfig);
 router.get("/customers/search", searchPosCustomers);
