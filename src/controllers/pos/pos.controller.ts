@@ -79,7 +79,10 @@ type PosServiceIntake = {
   equipment: PosServiceEquipmentRow[];
   failureOrRequestedService: string;
   technicalObservationsOnReceipt: string;
+  reservationReference?: string;
 };
+
+const RESERVATION_REF_PATTERN = /^PCX-\d{3,6}-(PC|LP)$/i;
 
 function parseServiceIntake(
   raw: unknown,
@@ -131,6 +134,13 @@ function parseServiceIntake(
     equipment,
     failureOrRequestedService,
     technicalObservationsOnReceipt,
+    ...(RESERVATION_REF_PATTERN.test(String(src.reservationReference || ""))
+      ? {
+          reservationReference: String(src.reservationReference)
+            .trim()
+            .toUpperCase(),
+        }
+      : {}),
   };
 }
 
@@ -920,7 +930,13 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       payments,
       quoteNumber: rawQuoteNumber,
       sourceFolio: rawSourceFolio,
+      reservationReference: rawReservationReference,
     } = req.body || {};
+    const reservationReference = RESERVATION_REF_PATTERN.test(
+      String(rawReservationReference || ""),
+    )
+      ? String(rawReservationReference).trim().toUpperCase()
+      : "";
 
     const requiredFactura =
       rawRequiredFactura === true ||
@@ -1178,6 +1194,12 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
               message:
                 "El servicio requiere datos del equipo (tabla) y la falla o servicio solicitado.",
             });
+          }
+          if (reservationReference) {
+            serviceMetaJson = {
+              ...serviceMetaJson,
+              reservationReference,
+            };
           }
         }
         normalizedItems.push({
