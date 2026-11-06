@@ -10,6 +10,7 @@ import {
   createPosSale,
   getPosCashSessionById,
   getPosCashStatus,
+  getPosProductCosts,
   getPosQuoteByNumber,
   getPosSaleByFolio,
   getPosSaleById,
@@ -37,6 +38,7 @@ router.use(MiddleAuthRoute, MiddlePosRoute);
 
 router.get("/branches", listPosBranches);
 router.get("/products/search", searchPosProductsHandler);
+router.get("/products/costs", getPosProductCosts);
 router.get("/quotes/:quoteNumber", getPosQuoteByNumber);
 router.get("/reservations/:reference", getReservationForPos);
 router.get("/sales/folio/:folio", getPosSaleByFolio);

@@ -65,6 +65,11 @@ import {
   POS_MANUAL_SERVICE_SKU,
 } from "../../services/pos/posManualProduct.service";
 import { buildPosSaleTicketHtml } from "../../services/pos/posTicketHtml.service";
+import {
+  isPosCostProvider,
+  loadPosUnitCostsByProductIds,
+  summarizePosCosts,
+} from "../../services/pos/posCost.service";
 import { verifyPassword } from "../../services/index.service";
 
 type PosServiceEquipmentRow = {
@@ -274,8 +279,23 @@ function firstProductImage(imageUrl: unknown): string | null {
   return null;
 }
 
+function decimalOrNull(value: unknown): number | null {
+  if (value == null) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
+
 function serializeSale(sale: any) {
+  const costLines = (sale.items || []).map((it: any) => ({
+    quantity: Number(it.quantity),
+    lineTotal: Number(it.lineTotal) || 0,
+    costUnit: decimalOrNull(it.costUnit),
+    profitMarginUnit: decimalOrNull(it.profitMarginUnit),
+    catalogPriceUnit: decimalOrNull(it.catalogPriceUnit),
+  }));
   return {
+    // Interno (inversión/margen). No usar en ticket ni hoja de garantía.
+    costSummary: summarizePosCosts(costLines),
     idPosSale: Number(sale.idPosSale),
     folio: sale.folio,
     branchId: Number(sale.branchId),
@@ -311,7 +331,10 @@ function serializeSale(sale: any) {
     quoteNumber: sale.quoteNumber || null,
     createdAt: sale.createdAt,
     updatedAt: sale.updatedAt,
-    items: (sale.items || []).map((it: any) => ({
+    items: (sale.items || []).map((it: any, idx: number) => ({
+      costUnit: costLines[idx].costUnit,
+      profitMarginUnit: costLines[idx].profitMarginUnit,
+      catalogPriceUnit: costLines[idx].catalogPriceUnit,
       idPosSaleItem: Number(it.idPosSaleItem),
       productId: Number(it.productId),
       branchId: it.branchId != null ? Number(it.branchId) : null,
@@ -405,6 +428,9 @@ const saleListInclude = {
       productUpc: true,
       branchId: true,
       serviceMetaJson: true,
+      costUnit: true,
+      profitMarginUnit: true,
+      catalogPriceUnit: true,
     },
   },
   payments: {
@@ -775,14 +801,54 @@ export const getPosQuoteByNumber = async (req: Request, res: Response) => {
               idProduct: { in: uniqueUnresolved },
               NOT: { active: 1 },
             },
-            select: { idProduct: true, name: true },
+            select: {
+              idProduct: true,
+              name: true,
+              sku: true,
+              upc: true,
+              price: true,
+            },
           })
         : [];
+    const inactiveHydrated =
+      inactiveRows.length > 0
+        ? await hydratePosProductsByIds(
+            inactiveRows.map((p) => Number(p.idProduct)),
+            { includeInactive: true },
+          )
+        : [];
+    const inactiveHydratedById = new Map(
+      inactiveHydrated.map((p) => [p.idProduct, p]),
+    );
 
-    const inactiveProducts = inactiveRows.map((p) => ({
-      idProduct: Number(p.idProduct),
-      name: String(p.name || `Producto #${p.idProduct}`),
-    }));
+    const quotedQtyById = new Map<number, number>();
+    for (const line of lines) {
+      const pid = Number(line.productId);
+      if (!Number.isSafeInteger(pid)) continue;
+      quotedQtyById.set(
+        pid,
+        (quotedQtyById.get(pid) || 0) + (Number(line.quantity) || 0),
+      );
+    }
+
+    const inactiveProducts = inactiveRows.map((p) => {
+      const pid = Number(p.idProduct);
+      const full = inactiveHydratedById.get(pid);
+      return {
+        idProduct: pid,
+        name: String(p.name || `Producto #${p.idProduct}`),
+        sku: p.sku ?? null,
+        upc: p.upc ?? null,
+        price: Number(p.price) || 0,
+        quantity: Math.max(1, Math.round(quotedQtyById.get(pid) || 1)),
+        quoteUnitPrice: quotePricesByProductId.get(pid) ?? null,
+        providerId: full?.providerId ?? null,
+        isPC: full?.isPC ?? false,
+        warrantyMonths: full?.warrantyMonths ?? null,
+        warrantyMode: full?.warrantyMode ?? null,
+        image_url: full?.image_url ?? null,
+      };
+    });
     const inactiveIdSet = new Set(inactiveProducts.map((p) => p.idProduct));
 
     const missingProductIds = unresolvedIdStr.filter((idStr) => {
@@ -814,6 +880,30 @@ export const getPosQuoteByNumber = async (req: Request, res: Response) => {
     return res.status(500).json({
       ok: false,
       message: error?.message || "Error al consultar la cotización",
+    });
+  }
+};
+
+/** Costos internos por producto (proveedores 2/3) para el resumen del carrito. */
+export const getPosProductCosts = async (req: Request, res: Response) => {
+  try {
+    const ids = String(req.query.ids || "")
+      .split(",")
+      .map((s) => Number(s.trim()))
+      .filter((n) => Number.isSafeInteger(n) && n > 0)
+      .slice(0, 200);
+    const costs = await loadPosUnitCostsByProductIds(ids);
+    return res.json({
+      ok: true,
+      data: [...costs.entries()].map(([productId, cost]) => ({
+        productId,
+        ...cost,
+      })),
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      message: error?.message || "Error al consultar costos",
     });
   }
 };
@@ -1074,6 +1164,8 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       providerId: number | null;
       serviceMetaJson: PosServiceIntake | null;
       skipStock: boolean;
+      /** Producto de catálogo (prov. 2/3) del que se toma el snapshot de costo. */
+      costSourceProductId: number | null;
     }> = [];
 
     let subtotal = 0;
@@ -1227,6 +1319,12 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
           providerId: null,
           serviceMetaJson,
           skipStock: true,
+          costSourceProductId:
+            manualKind === "product" &&
+            Number.isSafeInteger(Number(raw.sourceProductId)) &&
+            Number(raw.sourceProductId) > 0
+              ? Number(raw.sourceProductId)
+              : null,
         });
         continue;
       }
@@ -1475,6 +1573,9 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
         providerId: productProviderId,
         serviceMetaJson: null,
         skipStock,
+        costSourceProductId: isPosCostProvider(productProviderId)
+          ? productId
+          : null,
       });
     }
 
@@ -1488,6 +1589,12 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
     }
 
     const total = roundMoney(subtotal - discountTotal);
+
+    const unitCostsByProductId = await loadPosUnitCostsByProductIds(
+      normalizedItems
+        .map((it) => it.costSourceProductId)
+        .filter((id): id is number => id != null),
+    );
 
     const normalizedPayments: Array<{
       method: any;
@@ -1725,22 +1832,37 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
           quoteNumber,
           idempotencyKey: idempotencyKey || null,
           items: {
-            create: normalizedItems.map((it) => ({
-              productId: it.productId,
-              branchId: it.branchId,
-              productName: it.productName,
-              productSku: it.productSku,
-              productUpc: it.productUpc,
-              quantity: it.quantity,
-              unitPrice: new Prisma.Decimal(it.unitPrice),
-              discountPct: new Prisma.Decimal(it.discountPct),
-              lineTotal: new Prisma.Decimal(it.lineTotal),
-              warrantyMonths: it.warrantyMonths,
-              warrantyMode: it.warrantyMode,
-              serviceMetaJson: it.serviceMetaJson
-                ? (it.serviceMetaJson as unknown as Prisma.InputJsonValue)
-                : Prisma.JsonNull,
-            })),
+            create: normalizedItems.map((it) => {
+              const unitCost =
+                it.costSourceProductId != null
+                  ? unitCostsByProductId.get(it.costSourceProductId)
+                  : undefined;
+              return {
+                productId: it.productId,
+                branchId: it.branchId,
+                productName: it.productName,
+                productSku: it.productSku,
+                productUpc: it.productUpc,
+                quantity: it.quantity,
+                unitPrice: new Prisma.Decimal(it.unitPrice),
+                discountPct: new Prisma.Decimal(it.discountPct),
+                lineTotal: new Prisma.Decimal(it.lineTotal),
+                warrantyMonths: it.warrantyMonths,
+                warrantyMode: it.warrantyMode,
+                serviceMetaJson: it.serviceMetaJson
+                  ? (it.serviceMetaJson as unknown as Prisma.InputJsonValue)
+                  : Prisma.JsonNull,
+                costUnit: unitCost
+                  ? new Prisma.Decimal(unitCost.costUnit)
+                  : null,
+                profitMarginUnit: unitCost
+                  ? new Prisma.Decimal(unitCost.profitMarginUnit)
+                  : null,
+                catalogPriceUnit: unitCost
+                  ? new Prisma.Decimal(unitCost.catalogPriceUnit)
+                  : null,
+              };
+            }),
           },
           payments: {
             create: finalPayments.map((p) => ({
