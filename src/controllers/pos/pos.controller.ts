@@ -908,6 +908,53 @@ export const getPosProductCosts = async (req: Request, res: Response) => {
   }
 };
 
+/**
+ * Estado actual (activo, precio, stock por bodega) de productos del carrito,
+ * incluidos los inactivos. El POS lo consulta justo antes de cobrar.
+ */
+export const getPosProductsState = async (req: Request, res: Response) => {
+  try {
+    const ids = [
+      ...new Set(
+        String(req.query.ids || "")
+          .split(",")
+          .map((s) => Number(s.trim()))
+          .filter((n) => Number.isSafeInteger(n) && n > 0),
+      ),
+    ].slice(0, 200);
+    if (ids.length === 0) return res.json({ ok: true, data: [] });
+
+    const [hydrated, activeRows] = await Promise.all([
+      hydratePosProductsByIds(ids, { includeInactive: true }),
+      prisma.products.findMany({
+        where: { idProduct: { in: ids } },
+        select: { idProduct: true, active: true },
+      }),
+    ]);
+    const activeById = new Map(
+      activeRows.map((row) => [Number(row.idProduct), Number(row.active) === 1]),
+    );
+    return res.json({
+      ok: true,
+      data: hydrated.map((p) => ({
+        productId: p.idProduct,
+        active: activeById.get(p.idProduct) === true,
+        name: p.name,
+        price: p.price,
+        stockGlobal: p.stockGlobal,
+        stocksByBranch: p.stocksByBranch,
+        imageUrl: p.image_url ?? null,
+        providerId: p.providerId,
+      })),
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      message: error?.message || "Error al consultar el estado de los productos",
+    });
+  }
+};
+
 export const searchPosCustomers = async (req: Request, res: Response) => {
   try {
     const q = String(req.query.q || "").trim();
@@ -1354,11 +1401,13 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
         },
       });
       if (!product) {
+        const rawName = String(raw.name || "").trim();
         return res.status(404).json({
           ok: false,
+          code: sourceFolio ? undefined : "POS_PRODUCT_UNAVAILABLE",
           message: sourceFolio
             ? `El producto ${productId} del folio ${sourceFolio} ya no está en el catálogo y no se pudo cobrar. Reporta a soporte el folio, el id ${productId} y la hora.`
-            : `No se encontró el producto ${productId} en el catálogo activo. Quítalo del carrito y agrégalo de nuevo. Si se repite, reporta a soporte ese número y la hora.`,
+            : `«${rawName || `Producto ${productId}`}» ya no está activo en el catálogo. Pulsa «Cobrar» de nuevo para revisar el carrito: podrás quitarlo o agregarlo como captura manual.`,
         });
       }
 
@@ -1454,21 +1503,21 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
             message: `Bodega no válida para: ${product.name}`,
           });
         }
-        if (tracksStock) {
-          const stockRow = sellableStockRows.find(
-            (r) => Number(r.branchId) === resolvedBranchId,
-          );
-          const available =
-            stockRow != null
-              ? Number(stockRow.stock)
-              : // sin fila product_stock: no hay existencia por bodega
-                0;
-          if (!skipStock && available < quantity) {
-            return res.status(400).json({
-              ok: false,
-              message: `Stock insuficiente en bodega para: ${product.name} (disp. ${available})`,
-            });
-          }
+        // Todos los proveedores: el POS no vende más de lo que muestra en la bodega.
+        const stockRow = sellableStockRows.find(
+          (r) => Number(r.branchId) === resolvedBranchId,
+        );
+        const available =
+          stockRow != null
+            ? Number(stockRow.stock)
+            : // sin fila product_stock: no hay existencia por bodega
+              0;
+        if (!skipStock && available < quantity) {
+          return res.status(400).json({
+            ok: false,
+            code: "POS_STOCK_CHANGED",
+            message: `Stock insuficiente en bodega para: ${product.name} (disp. ${Math.max(0, available)}). Pulsa «Cobrar» de nuevo para revisar el carrito.`,
+          });
         }
       } else {
         // Provider 1 / sin bodegas vendibles: stock global, sin branchId.
@@ -1476,7 +1525,8 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
         if (!skipStock && tracksStock && Number(product.stock) < quantity) {
           return res.status(400).json({
             ok: false,
-            message: `Stock insuficiente para: ${product.name}`,
+            code: "POS_STOCK_CHANGED",
+            message: `Stock insuficiente para: ${product.name}. Pulsa «Cobrar» de nuevo para revisar el carrito.`,
           });
         }
       }
@@ -1521,8 +1571,12 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
         priceOverride = Math.abs(requestedPrice - catalogPrice) > 0.009;
         if (priceOverride) overrideSource = "admin";
       } else if (Math.abs(requestedPrice - catalogPrice) > 0.009) {
-        // Ignora precios manipulados desde el cliente.
-        unitPrice = catalogPrice;
+        // Cobrar otro precio en silencio descuadra el total que vio el cajero.
+        return res.status(409).json({
+          ok: false,
+          code: "POS_PRICE_CHANGED",
+          message: `El precio de «${product.name}» cambió: en el carrito ${requestedPrice.toFixed(2)}, ahora ${catalogPrice.toFixed(2)}. Pulsa «Cobrar» de nuevo para actualizar el carrito y revisar los pagos.`,
+        });
       }
       if (!Number.isFinite(unitPrice) || unitPrice < 0) {
         return res.status(400).json({ ok: false, message: "Precio inválido" });
