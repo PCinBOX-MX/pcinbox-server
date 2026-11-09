@@ -6,6 +6,9 @@ export const POS_COST_PROVIDER_IDS = [2, 3] as const;
 /** IVA que se suma al precio de proveedor para el costo de inversión. */
 const POS_COST_IVA_FACTOR = 1.16;
 
+/** Comisión de pagos en línea, sobre el importe cobrado de proveedores 2 y 3. */
+export const POS_ONLINE_PAYMENT_FEE_RATE = 0.03;
+
 export type PosUnitCost = {
   /** products_providers.price + 16% IVA */
   costUnit: number;
@@ -21,7 +24,7 @@ export type PosCostSummary = {
   units: number;
   /** Σ (products_providers.price + IVA) × cantidad */
   investment: number;
-  /** Ganancia real aprox.: totalCost − investment (puede ser negativa). */
+  /** Cobrado − 3% de comisión − investment (puede ser negativa). */
   profitMargin: number;
   /** Σ importe cobrado (lineTotal) de esas líneas */
   totalCost: number;
@@ -114,11 +117,12 @@ export function summarizePosCosts(
   if (count === 0) return null;
   const roundedInvestment = roundMoney(investment);
   const roundedTotal = roundMoney(totalCost);
+  const commission = roundMoney(roundedTotal * POS_ONLINE_PAYMENT_FEE_RATE);
   return {
     lines: count,
     units,
     investment: roundedInvestment,
-    profitMargin: roundMoney(roundedTotal - roundedInvestment),
+    profitMargin: roundMoney(roundedTotal - commission - roundedInvestment),
     totalCost: roundedTotal,
   };
 }
