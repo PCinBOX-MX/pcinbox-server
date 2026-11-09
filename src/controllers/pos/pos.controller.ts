@@ -43,11 +43,15 @@ import {
   assignSerialsOnSale,
   assertSerialsAvailable,
   getSerialByNumber,
+  loadSharedBarcodeKeys,
   markSerialRma,
+  mergeSharedBarcodeSerials,
   normalizeItemSerials,
+  readSharedSerialGroups,
   registerAvailableSerial,
   releaseSerialsOnCancel,
   searchSerials,
+  serialIsSharedBarcode,
 } from "../../services/pos/posSerial.service";
 import {
   fromCashierWarranty,
@@ -293,6 +297,10 @@ function serializeSale(sale: any) {
     profitMarginUnit: decimalOrNull(it.profitMarginUnit),
     catalogPriceUnit: decimalOrNull(it.catalogPriceUnit),
   }));
+  const items = mergeSharedBarcodeSerials(
+    sale.items || [],
+    readSharedSerialGroups(sale.events),
+  );
   return {
     // Interno (inversión/margen). No usar en ticket ni hoja de garantía.
     costSummary: summarizePosCosts(costLines),
@@ -331,7 +339,7 @@ function serializeSale(sale: any) {
     quoteNumber: sale.quoteNumber || null,
     createdAt: sale.createdAt,
     updatedAt: sale.updatedAt,
-    items: (sale.items || []).map((it: any, idx: number) => ({
+    items: items.map((it: any, idx: number) => ({
       costUnit: costLines[idx].costUnit,
       profitMarginUnit: costLines[idx].profitMarginUnit,
       catalogPriceUnit: costLines[idx].catalogPriceUnit,
@@ -1286,6 +1294,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
             requireSerialManual,
             raw.serials,
             manualName,
+            [raw.upc],
           );
         } catch (e: any) {
           return res.status(400).json({ ok: false, message: e.message });
@@ -1598,6 +1607,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
           Boolean(serialFlags.requiresSerial),
           raw.serials,
           product.name,
+          [product.upc],
         );
       } catch (e: any) {
         return res.status(400).json({ ok: false, message: e.message });
@@ -1860,6 +1870,27 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       const folio = await nextPosFolio(tx);
       const displayName =
         [guestName, guestLastname].filter(Boolean).join(" ").trim() || null;
+      const catalogShared = await loadSharedBarcodeKeys(
+        tx,
+        normalizedItems.flatMap((it) => it.serials),
+      );
+      const lineSerialIsShared = (serial: string, upc: string | null) =>
+        serialIsSharedBarcode(serial, upc, catalogShared);
+      const sharedSerials = normalizedItems.flatMap((it) => {
+        const serials = it.serials.filter((serial) =>
+          lineSerialIsShared(serial, it.productUpc),
+        );
+        if (serials.length === 0) return [];
+        return [
+          {
+            productId: it.productId,
+            productName: it.productName,
+            serials,
+            warrantyMonths: it.warrantyMonths ?? null,
+            warrantyMode: it.warrantyMode ?? null,
+          },
+        ];
+      });
 
       let cashSessionId: bigint | null = null;
       if (status === "completed" && cashAmount > 0) {
@@ -1951,6 +1982,8 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
                       ? settlement.changeDue
                       : undefined,
                   stockReservedOnCreate: true,
+                  sharedSerials:
+                    sharedSerials.length > 0 ? sharedSerials : undefined,
                 } as Prisma.InputJsonValue,
               },
             ],
@@ -1968,7 +2001,11 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
         });
       }
 
-      const allSerialsFlat = normalizedItems.flatMap((it) => it.serials);
+      const allSerialsFlat = normalizedItems.flatMap((it) =>
+        it.serials.filter(
+          (serial) => !lineSerialIsShared(serial, it.productUpc),
+        ),
+      );
       if (allSerialsFlat.length > 0 && !sourceFolio) {
         await assertSerialsAvailable(tx, allSerialsFlat);
       }
@@ -2002,17 +2039,22 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
             );
           }
           if (serialsToAssign.length === 0) continue;
+          const trackableSerials = serialsToAssign.filter(
+            (serial) => !lineSerialIsShared(serial, norm.productUpc),
+          );
+          if (trackableSerials.length === 0) continue;
           await assignSerialsOnSale(tx, {
             productId: norm.productId,
             branchId: norm.branchId ?? branch,
             posSaleId: created.idPosSale,
             posSaleItemId: itemRow.idPosSaleItem,
-            serials: serialsToAssign,
+            serials: trackableSerials,
             customerUserId: customerUser,
             customerName: displayName,
             warrantyMonths: norm.warrantyMonths,
             warrantyMode: norm.warrantyMode,
             allowAlreadySold: Boolean(sourceFolio),
+            productUpc: norm.productUpc,
           });
         }
       }

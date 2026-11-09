@@ -39,12 +39,140 @@ const serialInclude = {
   pos_sales: { select: { folio: true, status: true, createdAt: true } },
 };
 
+/** Misma clave para comparar una serie contra un UPC (espacios y guiones no cuentan). */
+export function serialKey(value: string | null | undefined): string {
+  return String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, "");
+}
+
+export function serialMatchesProductCode(
+  serial: string | null | undefined,
+  code: string | null | undefined,
+): boolean {
+  const left = serialKey(serial);
+  const right = serialKey(code);
+  return Boolean(left) && left === right;
+}
+
+export function isSharedBarcodeSerial(
+  serial: string,
+  codes: Array<string | null | undefined>,
+): boolean {
+  return codes.some((code) => serialMatchesProductCode(serial, code));
+}
+
+/** La serie es el UPC de esta línea o el UPC de algún producto del catálogo. */
+export function serialIsSharedBarcode(
+  serial: string,
+  productUpc: string | null | undefined,
+  catalogKeys: Set<string>,
+): boolean {
+  return (
+    isSharedBarcodeSerial(serial, [productUpc]) ||
+    catalogKeys.has(serialKey(serial))
+  );
+}
+
+export async function loadSharedBarcodeKeys(
+  tx: Prisma.TransactionClient,
+  serials: string[],
+): Promise<Set<string>> {
+  const list = [
+    ...new Set(serials.map((serial) => String(serial || "").trim()).filter(Boolean)),
+  ];
+  if (list.length === 0) return new Set();
+  const rows = await tx.products.findMany({
+    where: { upc: { in: list } },
+    select: { upc: true },
+  });
+  const keys = new Set<string>();
+  for (const serial of list) {
+    if (rows.some((row) => serialMatchesProductCode(serial, row.upc))) {
+      keys.add(serialKey(serial));
+    }
+  }
+  return keys;
+}
+
+export type SharedSerialGroup = {
+  productId: number;
+  productName: string;
+  serials: string[];
+  warrantyMonths: number | null;
+  warrantyMode: string | null;
+};
+
+export function readSharedSerialGroups(
+  events: Array<{ eventType?: string; payload?: unknown }> | null | undefined,
+): SharedSerialGroup[] {
+  const created = (events || []).find((event) => event.eventType === "created");
+  const payload = created?.payload as { sharedSerials?: unknown } | null;
+  if (!payload || !Array.isArray(payload.sharedSerials)) return [];
+  const groups: SharedSerialGroup[] = [];
+  for (const raw of payload.sharedSerials) {
+    if (!raw || typeof raw !== "object") continue;
+    const group = raw as Partial<SharedSerialGroup>;
+    const serials = Array.isArray(group.serials)
+      ? group.serials.map((serial) => String(serial || "").trim()).filter(Boolean)
+      : [];
+    if (!serials.length || !Number.isFinite(Number(group.productId))) continue;
+    groups.push({
+      productId: Number(group.productId),
+      productName: String(group.productName || ""),
+      serials,
+      warrantyMonths:
+        group.warrantyMonths != null && Number.isFinite(Number(group.warrantyMonths))
+          ? Number(group.warrantyMonths)
+          : null,
+      warrantyMode:
+        typeof group.warrantyMode === "string" ? group.warrantyMode : null,
+    });
+  }
+  return groups;
+}
+
+/** Agrega al ticket y a la garantía las series que son UPC y no viven en product_serials. */
+export function mergeSharedBarcodeSerials<
+  T extends {
+    productId: number | bigint;
+    productName?: string | null;
+    serials?: Array<Record<string, unknown>>;
+  },
+>(items: T[], groups: SharedSerialGroup[]): T[] {
+  if (!groups.length) return items;
+  const queues = new Map<string, SharedSerialGroup[]>();
+  for (const group of groups) {
+    const key = `${group.productId}|${group.productName}`;
+    const queue = queues.get(key) || [];
+    queue.push(group);
+    queues.set(key, queue);
+  }
+  let syntheticId = -1;
+  return items.map((item) => {
+    const key = `${Number(item.productId)}|${item.productName || ""}`;
+    const group = queues.get(key)?.shift();
+    if (!group) return item;
+    const extra = group.serials.map((serialNumber) => ({
+      idProductSerial: syntheticId--,
+      serialNumber,
+      status: "sold",
+      warrantyMonths: group.warrantyMonths,
+      warrantyMode: group.warrantyMode,
+      warrantyExpiresAt: null,
+    }));
+    return { ...item, serials: [...(item.serials || []), ...extra] };
+  });
+}
+
 /** Valida y normaliza series por línea de venta. */
 export function normalizeItemSerials(
   quantity: number,
   requiresSerial: boolean,
   rawSerials: unknown,
   productLabel: string,
+  productCodes: Array<string | null | undefined> = [],
 ): string[] {
   const list = Array.isArray(rawSerials)
     ? rawSerials.map((s) => String(s || "").trim()).filter(Boolean)
@@ -64,8 +192,14 @@ export function normalizeItemSerials(
     );
   }
 
-  const unique = new Set(list.map((s) => s.toUpperCase()));
-  if (unique.size !== list.length) {
+  const counts = new Map<string, number>();
+  for (const serial of list) {
+    const key = serialKey(serial);
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  for (const serial of list) {
+    if ((counts.get(serialKey(serial)) || 0) < 2) continue;
+    if (isSharedBarcodeSerial(serial, productCodes)) continue;
     throw new Error(
       `${productLabel}: hay series repetidas. Cada pieza necesita una serie distinta. Corrige los campos y vuelve a cobrar.`,
     );
@@ -77,11 +211,18 @@ export function normalizeItemSerials(
 export async function assertSerialsAvailable(
   tx: Prisma.TransactionClient,
   serials: string[],
+  productCodes: Array<string | null | undefined> = [],
 ) {
   if (serials.length === 0) return;
+  const catalogKeys = await loadSharedBarcodeKeys(tx, serials);
+  const trackable = serials.filter(
+    (serial) => !serialIsSharedBarcode(serial, null, catalogKeys) &&
+      !isSharedBarcodeSerial(serial, productCodes),
+  );
+  if (trackable.length === 0) return;
   const existing = await tx.product_serials.findMany({
     where: {
-      serialNumber: { in: serials },
+      serialNumber: { in: trackable },
     },
     select: { serialNumber: true, status: true },
   });
@@ -109,9 +250,17 @@ export async function assignSerialsOnSale(
     soldAt?: Date;
     /** Folio reimportado: la serie ya puede estar vendida en la venta anterior. */
     allowAlreadySold?: boolean;
+    /** UPC de la línea: si la serie es ese código, no se registra como serie única. */
+    productUpc?: string | null;
   },
 ) {
   if (params.serials.length === 0) return;
+  const catalogKeys = await loadSharedBarcodeKeys(tx, params.serials);
+  const serials = params.serials.filter(
+    (serial) =>
+      !serialIsSharedBarcode(serial, params.productUpc, catalogKeys),
+  );
+  if (serials.length === 0) return;
   const soldAt = params.soldAt || new Date();
   const months =
     params.warrantyMonths != null && params.warrantyMonths > 0
@@ -128,7 +277,7 @@ export async function assignSerialsOnSale(
   const warrantyExpiresAt =
     months != null ? addMonths(soldAt, months) : null;
 
-  for (const serialNumber of params.serials) {
+  for (const serialNumber of serials) {
     const existing = await tx.product_serials.findFirst({
       where: { serialNumber },
     });
