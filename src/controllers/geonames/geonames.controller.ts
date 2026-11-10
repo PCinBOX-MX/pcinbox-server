@@ -2,6 +2,7 @@ import axios from "axios";
 import { Request, Response } from "express";
 import { prisma } from "../../db/prismaClient";
 import "../../config/loadEnv";
+import { getSharedJson } from "../../services/shared-response.service";
 
 const apiGeoNames = axios.create({
   baseURL: `http://api.geonames.org`,
@@ -18,18 +19,26 @@ export const getAddressWithPostalCode = async (req: Request, res: Response) => {
       return res.status(400).json({ ok: false, message: "Faltan campos" });
     }
 
-    const response = await apiGeoNames.get(
-      `/postalCodeLookupJSON?postalcode=${postalCode}&country=MX`,
+    const code = String(postalCode).trim();
+    const data = await getSharedJson(
+      `geonames:cp:${code}`,
+      async () => {
+        const response = await apiGeoNames.get(
+          `/postalCodeLookupJSON?postalcode=${encodeURIComponent(code)}&country=MX`,
+        );
+        if (response.status !== 200) {
+          throw new Error("No se pudo consultar el código postal");
+        }
+        return response.data;
+      },
+      60 * 60 * 24,
     );
 
-    if (response.status == 200) {
-      const data = await response.data;
-      return res.status(200).json({
-        ok: true,
-        message: "OK!",
-        data: data,
-      });
-    }
+    return res.status(200).json({
+      ok: true,
+      message: "OK!",
+      data,
+    });
   } catch (error: any) {
     return res.status(500).json({
       ok: true,

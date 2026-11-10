@@ -22,6 +22,8 @@ import {
   ensureQuoteStorage,
   getQuoteStorageRoot,
 } from "./services/quoteStorage.service";
+import { startCatalogInvalidationSubscriber } from "./infra/redis/catalog-invalidate.pubsub";
+import { invalidatePosCatalogIndex } from "./services/catalog-search/pos-catalog-index.service";
 import {
   applySecurityBaseline,
   authPathRateLimiter,
@@ -128,6 +130,9 @@ const startServer = async () => {
   console.log(
     `[pcinbox-server] Redis: ${redisOk ? "conectado" : "no disponible (fallback memoria)"}`,
   );
+  await startCatalogInvalidationSubscriber(() => {
+    invalidatePosCatalogIndex();
+  });
   server.listen(Number(process.env.PORT) || 8000, () => {
     console.log(`Server running in the por ${process.env.SERVER_PORT || 8000}`);
     console.log(`Access front end ${allowedOrigins}`);

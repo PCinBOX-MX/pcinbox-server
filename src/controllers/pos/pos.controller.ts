@@ -13,6 +13,7 @@ import {
   searchPosProducts,
 } from "../../services/pos/pos.service";
 import { productsHaveSerialColumns } from "../../services/pos/posSerialFlags.service";
+import { invalidatePosCatalogIndex } from "../../services/catalog-search/pos-catalog-index.service";
 import {
   decrementPosStock,
   POS_STOCK_PROVIDER_ID,
@@ -2985,7 +2986,7 @@ export const updatePosProductSerialConfig = async (
       },
     });
 
-    invalidatePosSearchCatalog();
+    invalidatePosCatalogIndex();
 
     return res.json({
       ok: true,

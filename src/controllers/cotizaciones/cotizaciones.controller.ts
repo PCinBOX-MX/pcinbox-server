@@ -6,6 +6,8 @@ import { Prisma } from "@prisma/client";
 import { Response } from "express";
 import CustomRequestI from "../../interfaces/customrequest.interface";
 import { prisma } from "../../db/prismaClient";
+import { getPosCatalogIndex } from "../../services/catalog-search/pos-catalog-index.service";
+import { searchInvertedIndex } from "../../services/catalog-search/inverted-index.service";
 import {
   commitTemporaryQuote,
   removeFileIfPresent,
@@ -822,15 +824,6 @@ export const searchAdminQuoteProducts = async (
     }
 
     const numericId = /^\d+$/.test(q) ? Number(q) : null;
-    const idMatch =
-      numericId && Number.isSafeInteger(numericId) && numericId > 0
-        ? [{ idProduct: BigInt(numericId) }]
-        : [];
-    const tokens = q.split(/\s+/).filter((token) => token.length >= 2);
-    const nameTokens =
-      tokens.length >= 2
-        ? [{ AND: tokens.map((token) => ({ name: { contains: token } })) }]
-        : [];
     const select = {
       idProduct: true,
       name: true,
@@ -845,54 +838,43 @@ export const searchAdminQuoteProducts = async (
       providerId: true,
       isPC: true,
     } as const;
-    const [components, pcs] = await Promise.all([
-      prisma.products.findMany({
-        where: {
-          AND: [
-            { OR: [{ isPC: null }, { isPC: { not: 1 } }] },
-            {
-              OR: [
-                { name: { contains: q } },
-                { sku: { startsWith: q } },
-                { upc: { startsWith: q } },
-                { idProductExt: { startsWith: q } },
-                ...idMatch,
-                ...nameTokens,
-              ],
-            },
-          ],
-        },
-        select,
-        orderBy: { name: "asc" },
-        take: 10,
-      }),
-      prisma.products.findMany({
-        where: {
-          isPC: 1,
-          OR: [
-            { name: { contains: q } },
-            { description: { contains: q } },
-            { sku: { startsWith: q } },
-            { upc: { startsWith: q } },
-            { idProductExt: { startsWith: q } },
-            { caracteristicas: { string_contains: q } },
-            ...idMatch,
-            ...nameTokens,
-            ...quotePcTipoNeedles(q).map((needle) => ({
-              caracteristicas: { string_contains: needle },
-            })),
-          ],
-        },
-        select,
-        orderBy: { name: "asc" },
-        take: 8,
-      }),
-    ]);
-    const seen = new Set(components.map((product) => String(product.idProduct)));
-    const products = [
-      ...components,
-      ...pcs.filter((product) => !seen.has(String(product.idProduct))),
-    ];
+    const catalogIndex = await getPosCatalogIndex();
+    const indexedIds = searchInvertedIndex(catalogIndex, q, 18).map(
+      (row) => row.idProduct,
+    );
+    const idMatch =
+      numericId && Number.isSafeInteger(numericId) && numericId > 0
+        ? [numericId]
+        : [];
+    const needles = quotePcTipoNeedles(q);
+    const tipoIds =
+      needles.length === 0
+        ? []
+        : (
+            await prisma.products.findMany({
+              where: {
+                active: 1,
+                isPC: 1,
+                OR: needles.map((needle) => ({
+                  caracteristicas: { string_contains: needle },
+                })),
+              },
+              select: { idProduct: true },
+              take: 8,
+            })
+          ).map((product) => Number(product.idProduct));
+    const orderedIds = [...new Set([...idMatch, ...indexedIds, ...tipoIds])];
+    const found =
+      orderedIds.length === 0
+        ? []
+        : await prisma.products.findMany({
+            where: { idProduct: { in: orderedIds } },
+            select,
+          });
+    const byId = new Map(found.map((product) => [Number(product.idProduct), product]));
+    const products = orderedIds
+      .map((id) => byId.get(id))
+      .filter((product) => product != null);
 
     const snapshots = await loadQuoteStockSnapshots(products);
 

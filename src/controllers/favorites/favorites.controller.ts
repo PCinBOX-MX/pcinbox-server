@@ -50,7 +50,7 @@ export const getFavoritosUser = async (req: CustomRequestI, res: Response) => {
       include: {
         products: {
           include: {
-            reviews: true,
+            reviews: { select: { rating: true } },
             product_stock: {
               include: {
                 branches: true,
