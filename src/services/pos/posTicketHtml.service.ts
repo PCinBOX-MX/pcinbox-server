@@ -40,6 +40,14 @@ type TicketSale = {
   subtotal: number;
   discountTotal: number;
   total: number;
+  deliveryAddresses?: Array<{
+    postalCode?: string | null;
+    shippingCost?: number | null;
+  }> | null;
+  deliveryAddress?: {
+    postalCode?: string | null;
+    shippingCost?: number | null;
+  } | null;
   items: Array<{
     productId: number;
     productName: string;
@@ -270,6 +278,24 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
     })
     .join("");
 
+  const deliveryStops =
+    Array.isArray(data.deliveryAddresses) && data.deliveryAddresses.length > 0
+      ? data.deliveryAddresses
+      : data.deliveryAddress
+        ? [data.deliveryAddress]
+        : [];
+  const deliveryHtml = deliveryStops
+    .map(
+      (stop) =>
+        `<div class="row"><span>Envío:</span><span>${formatMoney(
+          Number(stop.shippingCost) || 0,
+        )}</span></div>
+      <div class="row"><span>CP:</span><span>${escapeHtml(
+        String(stop.postalCode || ""),
+      )}</span></div>`,
+    )
+    .join("");
+
   return `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -358,6 +384,7 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
     <div class="sep">*** PRODUCTOS ***</div>
     ${itemsHtml}
     <div class="totals">
+      ${deliveryHtml}
       <div class="row"><span>Total:</span><span>${formatMoney(data.total)}</span></div>
       <div class="row"><span>Pago:</span><span>${formatMoney(pago)}</span></div>
       <div class="row"><span>Cambio:</span><span>${formatMoney(cambio)}</span></div>

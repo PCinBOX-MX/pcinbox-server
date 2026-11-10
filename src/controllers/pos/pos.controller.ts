@@ -283,6 +283,155 @@ function firstProductImage(imageUrl: unknown): string | null {
   return null;
 }
 
+/** `null` = sin envío. Objeto = dirección de usuario para domicilio. */
+function parsePosDeliveryAddressInput(
+  raw: unknown,
+):
+  | {
+      ok: true;
+      value: {
+        street: string;
+        noExt: string;
+        noInt: string | null;
+        postalCode: string;
+        cologne: string;
+        city: string;
+        state: string;
+        country: string;
+        shippingCost: number;
+      } | null;
+    }
+  | { ok: false; message: string } {
+  if (raw == null) return { ok: true, value: null };
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    return { ok: false, message: "La dirección de envío no es válida" };
+  }
+  const row = raw as Record<string, unknown>;
+  const street = String(row.street || "").trim();
+  const noExt = String(row.noExt || "").trim();
+  const noInt = String(row.noInt || "").trim();
+  const postalCode = String(row.postalCode || "").trim();
+  const cologne = String(row.cologne || "").trim();
+  const city = String(row.city || "").trim();
+  const state = String(row.state || "").trim();
+  const country = String(row.country || "").trim() || "México";
+  const shippingRaw = String(row.shippingCost ?? "")
+    .trim()
+    .replace(/[$,\s]/g, "")
+    .replace(",", ".");
+  const shippingCost =
+    shippingRaw === "" ? 0 : roundMoney(Number(shippingRaw));
+  if (
+    !street ||
+    street.length > 255 ||
+    !noExt ||
+    noExt.length > 10 ||
+    noInt.length > 10 ||
+    !/^\d{5}$/.test(postalCode) ||
+    !cologne ||
+    cologne.length > 100 ||
+    !city ||
+    city.length > 100 ||
+    !state ||
+    state.length > 100 ||
+    !country ||
+    country.length > 100 ||
+    !Number.isFinite(shippingCost) ||
+    shippingCost < 0 ||
+    shippingCost > 999999.99
+  ) {
+    return {
+      ok: false,
+      message:
+        "Completa la dirección de envío a domicilio antes de cobrar",
+    };
+  }
+  return {
+    ok: true,
+    value: {
+      street,
+      noExt,
+      noInt: noInt || null,
+      postalCode,
+      cologne,
+      city,
+      state,
+      country,
+      shippingCost,
+    },
+  };
+}
+
+function readStoredDeliveryAddresses(
+  events: Array<{ payload?: unknown }> | undefined,
+) {
+  if (!Array.isArray(events)) return [];
+  for (const event of events) {
+    const payload =
+      event?.payload && typeof event.payload === "object"
+        ? (event.payload as Record<string, unknown>)
+        : null;
+    if (!payload) continue;
+    if (payload.deliveryAddresses != null) {
+      const parsed = parsePosDeliveryAddressesInput(payload.deliveryAddresses);
+      if (parsed.ok && parsed.value && parsed.value.length > 0) {
+        return parsed.value;
+      }
+    }
+    if (payload.deliveryAddress != null) {
+      const parsed = parsePosDeliveryAddressInput(payload.deliveryAddress);
+      if (parsed.ok && parsed.value) return [parsed.value];
+    }
+  }
+  return [];
+}
+
+function parsePosDeliveryAddressesInput(raw: unknown):
+  | {
+      ok: true;
+      value: Array<{
+        street: string;
+        noExt: string;
+        noInt: string | null;
+        postalCode: string;
+        cologne: string;
+        city: string;
+        state: string;
+        country: string;
+        shippingCost: number;
+      }> | null;
+    }
+  | { ok: false; message: string } {
+  if (raw == null) return { ok: true, value: null };
+  const rows = Array.isArray(raw) ? raw : [raw];
+  if (rows.length === 0) return { ok: true, value: null };
+  if (rows.length > 10) {
+    return { ok: false, message: "Máximo 10 domicilios por venta" };
+  }
+  const value: Array<{
+    street: string;
+    noExt: string;
+    noInt: string | null;
+    postalCode: string;
+    cologne: string;
+    city: string;
+    state: string;
+    country: string;
+    shippingCost: number;
+  }> = [];
+  for (let index = 0; index < rows.length; index += 1) {
+    const parsed = parsePosDeliveryAddressInput(rows[index]);
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        message: `Domicilio ${index + 1}: ${parsed.message}`,
+      };
+    }
+    if (parsed.value) value.push(parsed.value);
+  }
+  return { ok: true, value: value.length > 0 ? value : null };
+}
+
 function decimalOrNull(value: unknown): number | null {
   if (value == null) return null;
   const n = Number(value);
@@ -301,6 +450,7 @@ function serializeSale(sale: any) {
     sale.items || [],
     readSharedSerialGroups(sale.events),
   );
+  const deliveryAddresses = readStoredDeliveryAddresses(sale.events);
   return {
     // Interno (inversión/margen). No usar en ticket ni hoja de garantía.
     costSummary: summarizePosCosts(costLines),
@@ -326,6 +476,8 @@ function serializeSale(sale: any) {
     total: Number(sale.total),
     notes: sale.notes,
     requiredFactura: Number(sale.requiredFactura) === 1 ? 1 : 0,
+    deliveryAddresses,
+    deliveryAddress: deliveryAddresses[0] || null,
     cancelReason: sale.cancelReason,
     cancelledAt: sale.cancelledAt,
     customerEmail: sale.customerEmail || null,
@@ -652,6 +804,8 @@ export const getPosSaleByFolio = async (req: Request, res: Response) => {
         customerUserId: serialized.customerUserId,
         notes: serialized.notes,
         requiredFactura: serialized.requiredFactura === 1,
+        deliveryAddresses: serialized.deliveryAddresses || [],
+        deliveryAddress: serialized.deliveryAddress || null,
         payments: (serialized.payments || []).map((payment: {
           method?: string;
           amount?: number;
@@ -1089,6 +1243,17 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       rawRequiredFactura === "1"
         ? 1
         : 0;
+
+    const parsedDelivery = parsePosDeliveryAddressesInput(
+      req.body?.deliveryAddresses ?? req.body?.deliveryAddress,
+    );
+    if (!parsedDelivery.ok) {
+      return res.status(400).json({
+        ok: false,
+        message: parsedDelivery.message,
+      });
+    }
+    const deliveryAddresses = parsedDelivery.value;
 
     const quoteNumberNormalized = String(rawQuoteNumber || "")
       .trim()
@@ -1652,7 +1817,13 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       });
     }
 
-    const total = roundMoney(subtotal - discountTotal);
+    const shippingCost = roundMoney(
+      (deliveryAddresses || []).reduce(
+        (sum, address) => sum + address.shippingCost,
+        0,
+      ),
+    );
+    const total = roundMoney(subtotal - discountTotal + shippingCost);
 
     const unitCostsByProductId = await loadPosUnitCostsByProductIds(
       normalizedItems
@@ -1969,6 +2140,8 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
                   isAdmin,
                   posRole,
                   quoteNumber: quoteNumber || undefined,
+                  deliveryAddresses: deliveryAddresses || undefined,
+                  deliveryAddress: deliveryAddresses?.[0] || undefined,
                   sourceFolio: sourceFolio || undefined,
                   priceOverrides:
                     priceOverrides.length > 0 ? priceOverrides : undefined,
