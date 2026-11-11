@@ -47,7 +47,6 @@ import {
   markSerialRma,
   mergeSharedBarcodeSerials,
   normalizeItemSerials,
-  findCrossProductSerial,
   parkAlreadySoldSerials,
   readSharedSerialGroups,
   registerAvailableSerial,
@@ -1807,14 +1806,6 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       });
     }
 
-    const repeatedOnAnotherProduct = findCrossProductSerial(normalizedItems);
-    if (repeatedOnAnotherProduct) {
-      return res.status(400).json({
-        ok: false,
-        message: `La serie ${repeatedOnAnotherProduct} está en productos distintos. En el mismo producto se puede repetir; corrige el otro producto y vuelve a cobrar.`,
-      });
-    }
-
     const shippingCost = roundMoney(
       (deliveryAddresses || []).reduce(
         (sum, address) => sum + address.shippingCost,
@@ -2053,15 +2044,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
             where: { serialNumber: { in: trackable } },
             select: { serialNumber: true, productId: true, status: true },
           });
-          const soldOnAnotherProduct = parkAlreadySoldSerials(
-            preparedItems,
-            existingSerials,
-          );
-          if (soldOnAnotherProduct) {
-            throw new Error(
-              `La serie ${soldOnAnotherProduct} pertenece a otro producto. Usa otra serie. Si crees que es un error, reporta a soporte esa serie y el folio.`,
-            );
-          }
+          parkAlreadySoldSerials(preparedItems, existingSerials);
         }
       }
       const sharedSerials = preparedItems.map((it) => ({

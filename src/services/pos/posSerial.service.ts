@@ -204,82 +204,26 @@ export type PosSerialLineRef = {
   serials: string[];
 };
 
-/** Identidad de la línea: el catálogo por id; la captura manual por nombre. */
-export function serialOwnerKey(line: {
-  productId: number;
-  productName: string;
-  isManual?: boolean;
-}): string {
-  if (line.isManual) {
-    return `manual:${String(line.productName || "").trim().toUpperCase()}`;
-  }
-  return `product:${line.productId}`;
-}
-
-/** Serie capturada en dos productos distintos de la misma venta. Null si no hay conflicto. */
-export function findCrossProductSerial(
-  lines: Array<
-    Pick<PosSerialLineRef, "productId" | "productName" | "isManual" | "serials">
-  >,
-): string | null {
-  const ownersByKey = new Map<string, { owners: Set<string>; sample: string }>();
-  for (const line of lines) {
-    const owner = serialOwnerKey(line);
-    const seenOnLine = new Set<string>();
-    for (const serial of line.serials) {
-      const key = serialKey(serial);
-      if (!key || seenOnLine.has(key)) continue;
-      seenOnLine.add(key);
-      const entry = ownersByKey.get(key) || {
-        owners: new Set<string>(),
-        sample: serial,
-      };
-      entry.owners.add(owner);
-      ownersByKey.set(key, entry);
-    }
-  }
-  for (const entry of ownersByKey.values()) {
-    if (entry.owners.size > 1) return entry.sample;
-  }
-  return null;
-}
-
 /**
- * La primera copia de una serie real va a inventario.
- * Las copias extra y los UPC se guardan en la venta para ticket y garantía.
+ * La primera copia de una serie nueva va a inventario.
+ * UPC, repetidas y las que ya existen se guardan en la venta.
+ * Ningún texto capturado frena el cobro.
  */
 export function splitRepeatedSerials<T extends PosSerialLineRef>(
   lines: T[],
   catalogKeys: Set<string>,
 ): Array<T & { trackableSerials: string[]; sharedSerials: string[] }> {
-  const counts = new Map<string, Map<string, number>>();
-  for (const line of lines) {
-    const owner = serialOwnerKey(line);
-    const map = counts.get(owner) || new Map<string, number>();
-    for (const serial of line.serials) {
-      const key = serialKey(serial);
-      if (!key) continue;
-      map.set(key, (map.get(key) || 0) + 1);
-    }
-    counts.set(owner, map);
-  }
-
-  const taken = new Map<string, Set<string>>();
+  const seen = new Set<string>();
   return lines.map((line) => {
-    const owner = serialOwnerKey(line);
-    const map = counts.get(owner) || new Map<string, number>();
-    const seen = taken.get(owner) || new Set<string>();
-    taken.set(owner, seen);
     const trackableSerials: string[] = [];
     const sharedSerials: string[] = [];
     for (const serial of line.serials) {
       const key = serialKey(serial);
       if (!key) continue;
-      if (serialIsSharedBarcode(serial, line.productUpc, catalogKeys)) {
-        sharedSerials.push(serial);
-        continue;
-      }
-      if ((map.get(key) || 0) > 1 && seen.has(key)) {
+      if (
+        serialIsSharedBarcode(serial, line.productUpc, catalogKeys) ||
+        seen.has(key)
+      ) {
         sharedSerials.push(serial);
         continue;
       }
@@ -291,8 +235,8 @@ export function splitRepeatedSerials<T extends PosSerialLineRef>(
 }
 
 /**
- * Una serie ya vendida o en RMA del mismo producto no vuelve a insertarse.
- * Se anota en la venta. Si pertenece a otro producto, el cobro se detiene.
+ * Si la serie ya está en inventario y no se puede reclamar, se anota en la venta.
+ * No rechaza el cobro: otro producto, vendida o RMA siguen siendo válidos.
  */
 export function parkAlreadySoldSerials<
   T extends {
@@ -307,7 +251,7 @@ export function parkAlreadySoldSerials<
     productId: number | bigint;
     status: string;
   }>,
-): string | null {
+) {
   const byKey = new Map<string, typeof existing>();
   for (const row of existing) {
     const key = serialKey(row.serialNumber);
@@ -319,14 +263,12 @@ export function parkAlreadySoldSerials<
     const next: string[] = [];
     for (const serial of line.trackableSerials) {
       const matches = byKey.get(serialKey(serial)) || [];
-      const other = matches.find(
-        (row) => Number(row.productId) !== Number(line.productId),
-      );
-      if (other) return serial;
-      const used = matches.find(
-        (row) => row.status === "sold" || row.status === "rma",
-      );
-      if (used) {
+      const blocking = matches.some((row) => {
+        const sameProduct = Number(row.productId) === Number(line.productId);
+        if (!sameProduct) return true;
+        return row.status === "sold" || row.status === "rma";
+      });
+      if (blocking) {
         line.sharedSerials.push(serial);
         continue;
       }
@@ -334,34 +276,15 @@ export function parkAlreadySoldSerials<
     }
     line.trackableSerials = next;
   }
-  return null;
 }
 
+/** El texto de la serie ya no impide cobrar. Se conserva la firma para los llamadores. */
 export async function assertSerialsAvailable(
-  tx: Prisma.TransactionClient,
-  serials: string[],
-  productCodes: Array<string | null | undefined> = [],
+  _tx: Prisma.TransactionClient,
+  _serials: string[],
+  _productCodes: Array<string | null | undefined> = [],
 ) {
-  if (serials.length === 0) return;
-  const catalogKeys = await loadSharedBarcodeKeys(tx, serials);
-  const trackable = serials.filter(
-    (serial) => !serialIsSharedBarcode(serial, null, catalogKeys) &&
-      !isSharedBarcodeSerial(serial, productCodes),
-  );
-  if (trackable.length === 0) return;
-  const existing = await tx.product_serials.findMany({
-    where: {
-      serialNumber: { in: trackable },
-    },
-    select: { serialNumber: true, status: true },
-  });
-  for (const row of existing) {
-    if (row.status === "sold" || row.status === "rma") {
-      throw new Error(
-        `La serie ${row.serialNumber} ya está registrada como ${row.status === "sold" ? "vendida" : "RMA"}. Usa otra serie. Si crees que es un error, reporta a soporte esa serie y el folio de la venta.`,
-      );
-    }
-  }
+  return;
 }
 
 export async function assignSerialsOnSale(
@@ -415,16 +338,12 @@ export async function assignSerialsOnSale(
       where: { serialNumber },
     });
     if (existing) {
-      if (Number(existing.productId) !== params.productId) {
-        throw new Error(
-          `La serie ${serialNumber} pertenece a otro producto`,
-        );
-      }
+      if (Number(existing.productId) !== params.productId) continue;
       const claimable: Array<"available" | "returned" | "sold" | "rma"> =
         params.allowAlreadySold
           ? ["available", "returned", "sold", "rma"]
           : ["available", "returned"];
-      const claimed = await tx.product_serials.updateMany({
+      await tx.product_serials.updateMany({
         where: {
           idProductSerial: existing.idProductSerial,
           status: { in: claimable },
@@ -442,26 +361,31 @@ export async function assignSerialsOnSale(
           warrantyExpiresAt,
         },
       });
-      if (claimed.count === 0) {
-        throw new Error(`La serie ${serialNumber} no está disponible`);
-      }
     } else {
-      await tx.product_serials.create({
-        data: {
-          productId: params.productId,
-          serialNumber,
-          branchId: params.branchId,
-          status: "sold",
-          posSaleId: params.posSaleId,
-          posSaleItemId: params.posSaleItemId,
-          customerUserId: params.customerUserId,
-          customerName: params.customerName,
-          soldAt,
-          warrantyMonths: months,
-          warrantyMode,
-          warrantyExpiresAt,
-        },
-      });
+      try {
+        await tx.product_serials.create({
+          data: {
+            productId: params.productId,
+            serialNumber,
+            branchId: params.branchId,
+            status: "sold",
+            posSaleId: params.posSaleId,
+            posSaleItemId: params.posSaleItemId,
+            customerUserId: params.customerUserId,
+            customerName: params.customerName,
+            soldAt,
+            warrantyMonths: months,
+            warrantyMode,
+            warrantyExpiresAt,
+          },
+        });
+      } catch (error) {
+        const code =
+          error && typeof error === "object" && "code" in error
+            ? String((error as { code?: unknown }).code || "")
+            : "";
+        if (code !== "P2002") throw error;
+      }
     }
   }
 }

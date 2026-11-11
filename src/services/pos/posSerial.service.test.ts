@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Prisma } from "@prisma/client";
 import {
-  findCrossProductSerial,
   loadSharedBarcodeKeys,
   mergeSharedBarcodeSerials,
   normalizeItemSerials,
@@ -42,44 +41,27 @@ test("varias piezas del mismo producto pueden repetir la serie o el UPC", () => 
   assert.deepEqual(repeated, ["SN-1", "SN-1"]);
 });
 
-test("la misma serie se puede repetir en un producto y no en otro", () => {
-  assert.equal(
-    findCrossProductSerial([
-      { productId: 9, productName: "Gabinete", serials: ["SN-1", "SN-1"] },
-    ]),
-    null,
-  );
-  assert.equal(
-    findCrossProductSerial([
-      { productId: 9, productName: "Gabinete", serials: ["SN-1"] },
-      { productId: 9, productName: "Gabinete", serials: ["SN-1"] },
-    ]),
-    null,
-  );
-  assert.equal(
-    findCrossProductSerial([
-      { productId: 9, productName: "Gabinete", serials: ["SN-1"] },
-      { productId: 4, productName: "Monitor", serials: ["sn-1"] },
-    ]),
-    "SN-1",
-  );
-  assert.equal(
-    findCrossProductSerial([
+test("la misma serie en otro producto no bloquea el cobro", () => {
+  const lines = splitRepeatedSerials(
+    [
       {
-        productId: 1,
-        productName: "Cable",
-        isManual: true,
-        serials: ["X"],
+        productId: 9,
+        productName: "Gabinete",
+        productUpc: null,
+        serials: ["SN-1"],
       },
       {
-        productId: 1,
-        productName: "Mouse",
-        isManual: true,
-        serials: ["X"],
+        productId: 4,
+        productName: "Monitor",
+        productUpc: null,
+        serials: ["sn-1"],
       },
-    ]),
-    "X",
+    ],
+    new Set<string>(),
   );
+  assert.deepEqual(lines[0]?.trackableSerials, ["SN-1"]);
+  assert.deepEqual(lines[1]?.trackableSerials, []);
+  assert.deepEqual(lines[1]?.sharedSerials, ["sn-1"]);
 });
 
 test("las copias extra quedan en la venta y la primera en inventario", () => {
@@ -123,7 +105,7 @@ test("las copias extra quedan en la venta y la primera en inventario", () => {
   ]);
 });
 
-test("una serie ya vendida del mismo producto se anota en la venta", () => {
+test("una serie ya registrada se anota en la venta sin rechazar el cobro", () => {
   const lines = [
     {
       productId: 9,
@@ -131,12 +113,9 @@ test("una serie ya vendida del mismo producto se anota en la venta", () => {
       sharedSerials: [] as string[],
     },
   ];
-  assert.equal(
-    parkAlreadySoldSerials(lines, [
-      { serialNumber: "SN-1", productId: 9, status: "sold" },
-    ]),
-    null,
-  );
+  parkAlreadySoldSerials(lines, [
+    { serialNumber: "SN-1", productId: 9, status: "sold" },
+  ]);
   assert.deepEqual(lines[0]?.trackableSerials, []);
   assert.deepEqual(lines[0]?.sharedSerials, ["SN-1"]);
 
@@ -147,12 +126,11 @@ test("una serie ya vendida del mismo producto se anota en la venta", () => {
       sharedSerials: [] as string[],
     },
   ];
-  assert.equal(
-    parkAlreadySoldSerials(other, [
-      { serialNumber: "SN-1", productId: 9, status: "sold" },
-    ]),
-    "SN-1",
-  );
+  parkAlreadySoldSerials(other, [
+    { serialNumber: "SN-1", productId: 9, status: "sold" },
+  ]);
+  assert.deepEqual(other[0]?.trackableSerials, []);
+  assert.deepEqual(other[0]?.sharedSerials, ["SN-1"]);
 });
 
 test("un UPC ya vendido no se trata como serie única", async () => {
