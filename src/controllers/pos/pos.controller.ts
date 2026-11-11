@@ -33,11 +33,16 @@ import {
 import {
   readQuotePdfClientIdentity,
   readQuotePdfLinePrices,
+  readQuotePdfSaleExtras,
   resolvePosCustomerFromPdf,
 } from "../../services/quotePdfClient.service";
 import {
   parseStoredQuoteLines,
+  quotePublicShippingLabel,
+  readStoredQuoteLinesPayload,
   QUOTE_NUMBER_PATTERN as POS_QUOTE_NUMBER_PATTERN,
+  type StoredQuoteDelivery,
+  type StoredQuoteLine,
 } from "../../services/quoteLines.service";
 import {
   assignSerialsOnSale,
@@ -71,6 +76,7 @@ import {
 import { buildPosSaleTicketHtml } from "../../services/pos/posTicketHtml.service";
 import {
   isPosCostProvider,
+  loadPosCostProviderProductIds,
   loadPosUnitCostsByProductIds,
   summarizePosCosts,
 } from "../../services/pos/posCost.service";
@@ -828,6 +834,180 @@ export const getPosSaleByFolio = async (req: Request, res: Response) => {
   }
 };
 
+const POS_IMPORT_QTY_MAX = 1000;
+
+type PreparedPosQuote =
+  | {
+      ok: true;
+      scaledByIndex: number[];
+      manualItems: Array<{
+        name: string;
+        upc: string | null;
+        quantity: number;
+        unitPrice: number;
+      }>;
+      assembly: { unitPrice: number; quantity: number } | null;
+      deliveries: StoredQuoteDelivery[];
+    }
+  | { ok: false; status: number; message: string };
+
+/**
+ * Cruza líneas guardadas con los precios del PDF.
+ * Si hay productos sin catálogo, ensamble o varios equipos, no deja pasar
+ * un total distinto al que se guardó en la cotización.
+ */
+function preparePosQuoteImport(input: {
+  lines: StoredQuoteLine[];
+  equipos: number;
+  assemblyPrice: number | null;
+  deliveries: StoredQuoteDelivery[];
+  totalAmount: number;
+  catalogPrices: Map<number, number>;
+  pdfExtras: {
+    manualById: Map<
+      string,
+      { quantity: number; unitPrice: number; name: string; upc: string | null }
+    >;
+    assemblyPrice: number | null;
+    shipping: Array<{ shippingCost: number; label: string }>;
+  };
+}): PreparedPosQuote {
+  const equipos = input.equipos;
+  const storedDeliveries = input.deliveries;
+  const pdfShipping = input.pdfExtras.shipping;
+  const hasShipping = storedDeliveries.length > 0 || pdfShipping.length > 0;
+  const strict =
+    input.lines.some((line) => line.manual) ||
+    input.assemblyPrice != null ||
+    input.pdfExtras.assemblyPrice != null ||
+    hasShipping ||
+    equipos > 1;
+  const scaledByIndex: number[] = [];
+  const manualItems: Array<{
+    name: string;
+    upc: string | null;
+    quantity: number;
+    unitPrice: number;
+  }> = [];
+  let onePcRaw = 0;
+
+  const refuse = (message: string, status = 409): PreparedPosQuote => ({
+    ok: false,
+    status,
+    message,
+  });
+
+  const storedAssembly = input.assemblyPrice;
+  const pdfAssembly = input.pdfExtras.assemblyPrice;
+  if (storedAssembly != null || pdfAssembly != null) {
+    if (
+      storedAssembly == null ||
+      pdfAssembly == null ||
+      Math.abs(storedAssembly - pdfAssembly) > 0.009
+    ) {
+      return refuse(
+        "El precio de ensamble de la cotización no coincide con el PDF. Genera la cotización de nuevo.",
+      );
+    }
+  }
+  const assembly = storedAssembly;
+
+  if (hasShipping) {
+    if (storedDeliveries.length !== pdfShipping.length) {
+      return refuse(
+        "Los envíos de la cotización no coinciden con el PDF. Genera la cotización de nuevo.",
+      );
+    }
+    for (let index = 0; index < storedDeliveries.length; index += 1) {
+      const stored = storedDeliveries[index];
+      const pdf = pdfShipping[index];
+      if (
+        !stored ||
+        !pdf ||
+        Math.abs(stored.shippingCost - pdf.shippingCost) > 0.009 ||
+        quotePublicShippingLabel(stored) !== pdf.label
+      ) {
+        return refuse(
+          "Un envío de la cotización no coincide con el PDF. Genera la cotización de nuevo.",
+        );
+      }
+    }
+  }
+  const shippingSum = roundMoney(
+    storedDeliveries.reduce((sum, row) => sum + row.shippingCost, 0),
+  );
+
+  for (const line of input.lines) {
+    const scaled = line.quantity * equipos;
+    if (!Number.isInteger(scaled) || scaled < 1 || scaled > POS_IMPORT_QTY_MAX) {
+      return refuse(
+        `«${line.name || "Un producto"}» quedaría en ${scaled} piezas y el punto de venta permite hasta ${POS_IMPORT_QTY_MAX} por línea. Baja la cantidad o el número de equipos.`,
+        400,
+      );
+    }
+    scaledByIndex.push(scaled);
+
+    if (line.manual) {
+      const pdf = input.pdfExtras.manualById.get(line.productId);
+      const storedName = String(line.name || "").trim();
+      const storedUpc = line.upc || null;
+      if (
+        !pdf ||
+        pdf.quantity !== line.quantity ||
+        pdf.name !== storedName ||
+        (pdf.upc || null) !== storedUpc
+      ) {
+        return refuse(
+          `El producto sin catálogo «${storedName || "sin nombre"}» no coincide con el PDF. Genera la cotización de nuevo.`,
+        );
+      }
+      if (pdf.unitPrice <= 0) {
+        return refuse(
+          `«${storedName}» está en $0 y el punto de venta no puede cobrarlo. Ponle precio y genera la cotización de nuevo.`,
+          400,
+        );
+      }
+      onePcRaw += pdf.unitPrice * line.quantity;
+      manualItems.push({
+        name: storedName,
+        upc: storedUpc,
+        quantity: scaled,
+        unitPrice: pdf.unitPrice,
+      });
+      continue;
+    }
+
+    const price = input.catalogPrices.get(Number(line.productId));
+    if (strict && (price == null || !Number.isFinite(price))) {
+      return refuse(
+        "Falta el precio cotizado de un producto de catálogo. Genera la cotización de nuevo.",
+      );
+    }
+    if (price != null && Number.isFinite(price)) {
+      onePcRaw += price * line.quantity;
+    }
+  }
+
+  if (assembly != null) onePcRaw += assembly;
+  if (strict) {
+    const expected = roundMoney(roundMoney(onePcRaw) * equipos + shippingSum);
+    if (!Number.isFinite(input.totalAmount) || Math.abs(expected - input.totalAmount) > 0.009) {
+      return refuse(
+        "El total de la cotización no cuadra con sus productos, el ensamble y los envíos. Genera la cotización de nuevo.",
+      );
+    }
+  }
+
+  return {
+    ok: true,
+    scaledByIndex,
+    manualItems,
+    assembly:
+      assembly != null ? { unitPrice: assembly, quantity: equipos } : null,
+    deliveries: storedDeliveries,
+  };
+}
+
 /** Carga una cotización web por número para rellenar el carrito POS. */
 export const getPosQuoteByNumber = async (req: Request, res: Response) => {
   try {
@@ -896,8 +1076,9 @@ export const getPosQuoteByNumber = async (req: Request, res: Response) => {
     const hasRawLines =
       quote.linesJson != null &&
       !(Array.isArray(quote.linesJson) && quote.linesJson.length === 0);
-    const lines = parseStoredQuoteLines(quote.linesJson);
-    if (!lines) {
+    const stored = readStoredQuoteLinesPayload(quote.linesJson);
+    const lines = stored?.lines ?? null;
+    if (!lines || !stored) {
       return res.status(400).json({
         ok: false,
         code: "QUOTE_NO_LINES",
@@ -907,13 +1088,32 @@ export const getPosQuoteByNumber = async (req: Request, res: Response) => {
       });
     }
 
-    const productIds = lines.map((l) => Number(l.productId));
+    const equipos = stored.equipmentCount;
+    const catalogLines = lines.filter((line) => !line.manual);
+    const productIds = catalogLines.map((line) => Number(line.productId));
     const hydrated = await hydratePosProductsByIds(productIds);
     const byId = new Map(hydrated.map((p) => [p.idProduct, p]));
     // Precios cotizados: Keywords del PDF (no linesJson / DB).
-    const quotePricesByProductId = await readQuotePdfLinePrices(
-      quote.storageKey,
-    );
+    const [quotePricesByProductId, pdfExtras] = await Promise.all([
+      readQuotePdfLinePrices(quote.storageKey),
+      readQuotePdfSaleExtras(quote.storageKey),
+    ]);
+    const prepared = preparePosQuoteImport({
+      lines,
+      equipos,
+      assemblyPrice: stored.assemblyPrice,
+      deliveries: stored.deliveries,
+      totalAmount: Number(quote.totalAmount),
+      catalogPrices: quotePricesByProductId,
+      pdfExtras,
+    });
+    if (!prepared.ok) {
+      return res.status(prepared.status).json({
+        ok: false,
+        code: "QUOTE_MISMATCH",
+        message: prepared.message,
+      });
+    }
 
     const items: Array<
       (typeof hydrated)[number] & {
@@ -925,7 +1125,9 @@ export const getPosQuoteByNumber = async (req: Request, res: Response) => {
     const unresolvedIds: number[] = [];
     const unresolvedIdStr: string[] = [];
 
-    for (const line of lines) {
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      if (!line || line.manual) continue;
       const pid = Number(line.productId);
       const product = byId.get(pid);
       if (!product || !Number.isSafeInteger(pid)) {
@@ -949,7 +1151,7 @@ export const getPosQuoteByNumber = async (req: Request, res: Response) => {
       items.push({
         ...product,
         suggestedBranchId,
-        quantity: line.quantity,
+        quantity: prepared.scaledByIndex[index] ?? line.quantity,
         quoteStoreId: line.storeId,
         quoteUnitPrice: quotePricesByProductId.get(pid) ?? null,
       });
@@ -984,12 +1186,14 @@ export const getPosQuoteByNumber = async (req: Request, res: Response) => {
     );
 
     const quotedQtyById = new Map<number, number>();
-    for (const line of lines) {
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
+      if (!line || line.manual) continue;
       const pid = Number(line.productId);
       if (!Number.isSafeInteger(pid)) continue;
       quotedQtyById.set(
         pid,
-        (quotedQtyById.get(pid) || 0) + (Number(line.quantity) || 0),
+        (quotedQtyById.get(pid) || 0) + (prepared.scaledByIndex[index] || 0),
       );
     }
 
@@ -1017,6 +1221,19 @@ export const getPosQuoteByNumber = async (req: Request, res: Response) => {
       const n = Number(idStr);
       return !(Number.isSafeInteger(n) && inactiveIdSet.has(n));
     });
+    const mustMatchQuote =
+      prepared.manualItems.length > 0 ||
+      prepared.assembly != null ||
+      prepared.deliveries.length > 0 ||
+      equipos > 1;
+    if (mustMatchQuote && missingProductIds.length > 0) {
+      return res.status(409).json({
+        ok: false,
+        code: "QUOTE_MISMATCH",
+        message:
+          "Un producto de catálogo de esta cotización ya no existe. No se importó nada para no descuadrar el total. Genera la cotización de nuevo.",
+      });
+    }
 
     // Cliente del POS: solo lo capturado en el PDF (sin rellenar con users.phone).
     const pdfClient = await readQuotePdfClientIdentity(quote.storageKey);
@@ -1029,11 +1246,15 @@ export const getPosQuoteByNumber = async (req: Request, res: Response) => {
         totalAmount: Number(quote.totalAmount),
         itemCount: quote.itemCount,
         includeAssemblyService: quote.includeAssemblyService,
+        equipmentCount: equipos,
         expired: false,
         expiresAt: quote.expiresAt,
         createdAt: quote.createdAt,
         customer,
         items,
+        manualItems: prepared.manualItems,
+        assembly: prepared.assembly,
+        deliveries: prepared.deliveries,
         missingProductIds,
         inactiveProducts,
       },
@@ -1054,13 +1275,19 @@ export const getPosProductCosts = async (req: Request, res: Response) => {
       .map((s) => Number(s.trim()))
       .filter((n) => Number.isSafeInteger(n) && n > 0)
       .slice(0, 200);
-    const costs = await loadPosUnitCostsByProductIds(ids);
+    const [costs, providerIds] = await Promise.all([
+      loadPosUnitCostsByProductIds(ids),
+      loadPosCostProviderProductIds(ids),
+    ]);
     return res.json({
       ok: true,
       data: [...costs.entries()].map(([productId, cost]) => ({
         productId,
         ...cost,
       })),
+      missingProductIds: ids.filter(
+        (id) => providerIds.has(id) && !costs.has(id),
+      ),
     });
   } catch (error: any) {
     return res.status(500).json({
