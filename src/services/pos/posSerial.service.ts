@@ -117,7 +117,7 @@ export function readSharedSerialGroups(
     const serials = Array.isArray(group.serials)
       ? group.serials.map((serial) => String(serial || "").trim()).filter(Boolean)
       : [];
-    if (!serials.length || !Number.isFinite(Number(group.productId))) continue;
+    if (!Number.isFinite(Number(group.productId))) continue;
     groups.push({
       productId: Number(group.productId),
       productName: String(group.productName || ""),
@@ -172,7 +172,7 @@ export function normalizeItemSerials(
   requiresSerial: boolean,
   rawSerials: unknown,
   productLabel: string,
-  productCodes: Array<string | null | undefined> = [],
+  _productCodes: Array<string | null | undefined> = [],
 ): string[] {
   const list = Array.isArray(rawSerials)
     ? rawSerials.map((s) => String(s || "").trim()).filter(Boolean)
@@ -192,20 +192,149 @@ export function normalizeItemSerials(
     );
   }
 
-  const counts = new Map<string, number>();
-  for (const serial of list) {
-    const key = serialKey(serial);
-    counts.set(key, (counts.get(key) || 0) + 1);
+  // Repetir la serie en el mismo producto es válido. Otro producto se valida aparte.
+  return list;
+}
+
+export type PosSerialLineRef = {
+  productId: number;
+  productName: string;
+  productUpc?: string | null;
+  isManual?: boolean;
+  serials: string[];
+};
+
+/** Identidad de la línea: el catálogo por id; la captura manual por nombre. */
+export function serialOwnerKey(line: {
+  productId: number;
+  productName: string;
+  isManual?: boolean;
+}): string {
+  if (line.isManual) {
+    return `manual:${String(line.productName || "").trim().toUpperCase()}`;
   }
-  for (const serial of list) {
-    if ((counts.get(serialKey(serial)) || 0) < 2) continue;
-    if (isSharedBarcodeSerial(serial, productCodes)) continue;
-    throw new Error(
-      `${productLabel}: hay series repetidas. Cada pieza necesita una serie distinta. Corrige los campos y vuelve a cobrar.`,
-    );
+  return `product:${line.productId}`;
+}
+
+/** Serie capturada en dos productos distintos de la misma venta. Null si no hay conflicto. */
+export function findCrossProductSerial(
+  lines: Array<
+    Pick<PosSerialLineRef, "productId" | "productName" | "isManual" | "serials">
+  >,
+): string | null {
+  const ownersByKey = new Map<string, { owners: Set<string>; sample: string }>();
+  for (const line of lines) {
+    const owner = serialOwnerKey(line);
+    const seenOnLine = new Set<string>();
+    for (const serial of line.serials) {
+      const key = serialKey(serial);
+      if (!key || seenOnLine.has(key)) continue;
+      seenOnLine.add(key);
+      const entry = ownersByKey.get(key) || {
+        owners: new Set<string>(),
+        sample: serial,
+      };
+      entry.owners.add(owner);
+      ownersByKey.set(key, entry);
+    }
+  }
+  for (const entry of ownersByKey.values()) {
+    if (entry.owners.size > 1) return entry.sample;
+  }
+  return null;
+}
+
+/**
+ * La primera copia de una serie real va a inventario.
+ * Las copias extra y los UPC se guardan en la venta para ticket y garantía.
+ */
+export function splitRepeatedSerials<T extends PosSerialLineRef>(
+  lines: T[],
+  catalogKeys: Set<string>,
+): Array<T & { trackableSerials: string[]; sharedSerials: string[] }> {
+  const counts = new Map<string, Map<string, number>>();
+  for (const line of lines) {
+    const owner = serialOwnerKey(line);
+    const map = counts.get(owner) || new Map<string, number>();
+    for (const serial of line.serials) {
+      const key = serialKey(serial);
+      if (!key) continue;
+      map.set(key, (map.get(key) || 0) + 1);
+    }
+    counts.set(owner, map);
   }
 
-  return list;
+  const taken = new Map<string, Set<string>>();
+  return lines.map((line) => {
+    const owner = serialOwnerKey(line);
+    const map = counts.get(owner) || new Map<string, number>();
+    const seen = taken.get(owner) || new Set<string>();
+    taken.set(owner, seen);
+    const trackableSerials: string[] = [];
+    const sharedSerials: string[] = [];
+    for (const serial of line.serials) {
+      const key = serialKey(serial);
+      if (!key) continue;
+      if (serialIsSharedBarcode(serial, line.productUpc, catalogKeys)) {
+        sharedSerials.push(serial);
+        continue;
+      }
+      if ((map.get(key) || 0) > 1 && seen.has(key)) {
+        sharedSerials.push(serial);
+        continue;
+      }
+      trackableSerials.push(serial);
+      seen.add(key);
+    }
+    return { ...line, trackableSerials, sharedSerials };
+  });
+}
+
+/**
+ * Una serie ya vendida o en RMA del mismo producto no vuelve a insertarse.
+ * Se anota en la venta. Si pertenece a otro producto, el cobro se detiene.
+ */
+export function parkAlreadySoldSerials<
+  T extends {
+    productId: number;
+    trackableSerials: string[];
+    sharedSerials: string[];
+  },
+>(
+  lines: T[],
+  existing: Array<{
+    serialNumber: string;
+    productId: number | bigint;
+    status: string;
+  }>,
+): string | null {
+  const byKey = new Map<string, typeof existing>();
+  for (const row of existing) {
+    const key = serialKey(row.serialNumber);
+    const list = byKey.get(key) || [];
+    list.push(row);
+    byKey.set(key, list);
+  }
+  for (const line of lines) {
+    const next: string[] = [];
+    for (const serial of line.trackableSerials) {
+      const matches = byKey.get(serialKey(serial)) || [];
+      const other = matches.find(
+        (row) => Number(row.productId) !== Number(line.productId),
+      );
+      if (other) return serial;
+      const used = matches.find(
+        (row) => row.status === "sold" || row.status === "rma",
+      );
+      if (used) {
+        line.sharedSerials.push(serial);
+        continue;
+      }
+      next.push(serial);
+    }
+    line.trackableSerials = next;
+  }
+  return null;
 }
 
 export async function assertSerialsAvailable(
@@ -277,7 +406,11 @@ export async function assignSerialsOnSale(
   const warrantyExpiresAt =
     months != null ? addMonths(soldAt, months) : null;
 
+  const seen = new Set<string>();
   for (const serialNumber of serials) {
+    const key = serialKey(serialNumber);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
     const existing = await tx.product_serials.findFirst({
       where: { serialNumber },
     });

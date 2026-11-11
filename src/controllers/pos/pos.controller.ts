@@ -47,11 +47,13 @@ import {
   markSerialRma,
   mergeSharedBarcodeSerials,
   normalizeItemSerials,
+  findCrossProductSerial,
+  parkAlreadySoldSerials,
   readSharedSerialGroups,
   registerAvailableSerial,
   releaseSerialsOnCancel,
   searchSerials,
-  serialIsSharedBarcode,
+  splitRepeatedSerials,
 } from "../../services/pos/posSerial.service";
 import {
   fromCashierWarranty,
@@ -1390,7 +1392,6 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
 
     let subtotal = 0;
     let discountTotal = 0;
-    const allSerials: string[] = [];
     const priceOverrides: Array<{
       productId: number;
       catalogPrice: number;
@@ -1493,7 +1494,6 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
         const lineTotal = computeLineTotal(unitPrice, quantity, discountPct);
         subtotal = roundMoney(subtotal + lineBase);
         discountTotal = roundMoney(discountTotal + (lineBase - lineTotal));
-        allSerials.push(...serials);
         const skuFromClient = String(raw.sku || "").trim().slice(0, 255);
         let serviceMetaJson: PosServiceIntake | null = null;
         if (manualKind === "service") {
@@ -1777,7 +1777,6 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       } catch (e: any) {
         return res.status(400).json({ ok: false, message: e.message });
       }
-      allSerials.push(...serials);
 
       const lineBase = roundMoney(unitPrice * quantity);
       const lineTotal = computeLineTotal(unitPrice, quantity, discountPct);
@@ -1808,12 +1807,11 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
       });
     }
 
-    const serialUpper = allSerials.map((s) => s.toUpperCase());
-    if (new Set(serialUpper).size !== serialUpper.length) {
+    const repeatedOnAnotherProduct = findCrossProductSerial(normalizedItems);
+    if (repeatedOnAnotherProduct) {
       return res.status(400).json({
         ok: false,
-        message:
-          "Hay series repetidas entre distintos productos de esta venta. Cada pieza necesita una serie distinta. Corrige los campos y vuelve a cobrar. Si se repite, reporta a soporte las series y el folio.",
+        message: `La serie ${repeatedOnAnotherProduct} está en productos distintos. En el mismo producto se puede repetir; corrige el otro producto y vuelve a cobrar.`,
       });
     }
 
@@ -2045,23 +2043,35 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
         tx,
         normalizedItems.flatMap((it) => it.serials),
       );
-      const lineSerialIsShared = (serial: string, upc: string | null) =>
-        serialIsSharedBarcode(serial, upc, catalogShared);
-      const sharedSerials = normalizedItems.flatMap((it) => {
-        const serials = it.serials.filter((serial) =>
-          lineSerialIsShared(serial, it.productUpc),
-        );
-        if (serials.length === 0) return [];
-        return [
-          {
-            productId: it.productId,
-            productName: it.productName,
-            serials,
-            warrantyMonths: it.warrantyMonths ?? null,
-            warrantyMode: it.warrantyMode ?? null,
-          },
+      const preparedItems = splitRepeatedSerials(normalizedItems, catalogShared);
+      if (!sourceFolio) {
+        const trackable = [
+          ...new Set(preparedItems.flatMap((it) => it.trackableSerials)),
         ];
-      });
+        if (trackable.length > 0) {
+          const existingSerials = await tx.product_serials.findMany({
+            where: { serialNumber: { in: trackable } },
+            select: { serialNumber: true, productId: true, status: true },
+          });
+          const soldOnAnotherProduct = parkAlreadySoldSerials(
+            preparedItems,
+            existingSerials,
+          );
+          if (soldOnAnotherProduct) {
+            throw new Error(
+              `La serie ${soldOnAnotherProduct} pertenece a otro producto. Usa otra serie. Si crees que es un error, reporta a soporte esa serie y el folio.`,
+            );
+          }
+        }
+      }
+      const sharedSerials = preparedItems.map((it) => ({
+        productId: it.productId,
+        productName: it.productName,
+        serials: it.sharedSerials,
+        warrantyMonths: it.warrantyMonths ?? null,
+        warrantyMode: it.warrantyMode ?? null,
+      }));
+      const hasSharedSerials = sharedSerials.some((group) => group.serials.length > 0);
 
       let cashSessionId: bigint | null = null;
       if (status === "completed" && cashAmount > 0) {
@@ -2155,8 +2165,7 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
                       ? settlement.changeDue
                       : undefined,
                   stockReservedOnCreate: true,
-                  sharedSerials:
-                    sharedSerials.length > 0 ? sharedSerials : undefined,
+                  sharedSerials: hasSharedSerials ? sharedSerials : undefined,
                 } as Prisma.InputJsonValue,
               },
             ],
@@ -2174,17 +2183,13 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
         });
       }
 
-      const allSerialsFlat = normalizedItems.flatMap((it) =>
-        it.serials.filter(
-          (serial) => !lineSerialIsShared(serial, it.productUpc),
-        ),
-      );
+      const allSerialsFlat = preparedItems.flatMap((it) => it.trackableSerials);
       if (allSerialsFlat.length > 0 && !sourceFolio) {
         await assertSerialsAvailable(tx, allSerialsFlat);
       }
       if (status === "completed") {
         const usedItemIds = new Set<number>();
-        for (const norm of normalizedItems) {
+        for (const norm of preparedItems) {
           const itemRow = created.items.find((i) => {
             const id = Number(i.idPosSaleItem);
             if (usedItemIds.has(id)) return false;
@@ -2197,31 +2202,32 @@ export const createPosSale = async (req: CustomRequestI, res: Response) => {
           if (!itemRow) continue;
           usedItemIds.add(Number(itemRow.idPosSaleItem));
 
-          let serialsToAssign = [...(norm.serials || [])].filter((s) =>
+          const capturedSerials = (norm.serials || []).filter((s) =>
             String(s || "").trim(),
           );
+          let serialsToAssign = [...norm.trackableSerials];
           const hasWarranty =
             norm.warrantyMode === "none" ||
             norm.warrantyMode === "service_center" ||
             norm.warrantyMode === "months" ||
             (norm.warrantyMonths != null && Number(norm.warrantyMonths) > 0);
-          if (serialsToAssign.length === 0 && hasWarranty && norm.isManual) {
+          if (
+            capturedSerials.length === 0 &&
+            hasWarranty &&
+            norm.isManual
+          ) {
             const qty = Math.max(1, Number(norm.quantity) || 1);
             serialsToAssign = Array.from({ length: qty }, (_, i) =>
               `POS-W-${created.idPosSale}-${itemRow.idPosSaleItem}-${i + 1}`,
             );
           }
           if (serialsToAssign.length === 0) continue;
-          const trackableSerials = serialsToAssign.filter(
-            (serial) => !lineSerialIsShared(serial, norm.productUpc),
-          );
-          if (trackableSerials.length === 0) continue;
           await assignSerialsOnSale(tx, {
             productId: norm.productId,
             branchId: norm.branchId ?? branch,
             posSaleId: created.idPosSale,
             posSaleItemId: itemRow.idPosSaleItem,
-            serials: trackableSerials,
+            serials: serialsToAssign,
             customerUserId: customerUser,
             customerName: displayName,
             warrantyMonths: norm.warrantyMonths,

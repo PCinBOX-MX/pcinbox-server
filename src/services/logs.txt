@@ -80,3 +80,8 @@
 [22/10/2026, 6:39:13 p.m.] Sin foto en ImageKit para idUser 57 (local: /users/local/57)
 [22/10/2026, 6:39:14 p.m.] Sin foto en ImageKit para idUser 57 (local: /users/local/57)
 [22/10/2026, 6:39:15 p.m.] Sin foto en ImageKit para idUser 57 (local: /users/local/57)
+[10/11/2026, 6:07:28 p.m.] Sin foto en ImageKit para idUser 57 (local: /users/local/57)
+[10/11/2026, 6:07:29 p.m.] Sin foto en ImageKit para idUser 57 (local: /users/local/57)
+[10/11/2026, 6:19:39 p.m.] Sin foto en ImageKit para idUser 57 (local: /users/local/57)
+[10/11/2026, 6:19:40 p.m.] Sin foto en ImageKit para idUser 57 (local: /users/local/57)
+[10/11/2026, 6:19:41 p.m.] Sin foto en ImageKit para idUser 57 (local: /users/local/57)

@@ -2,12 +2,15 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Prisma } from "@prisma/client";
 import {
+  findCrossProductSerial,
   loadSharedBarcodeKeys,
   mergeSharedBarcodeSerials,
   normalizeItemSerials,
+  parkAlreadySoldSerials,
   readSharedSerialGroups,
   serialIsSharedBarcode,
   serialMatchesProductCode,
+  splitRepeatedSerials,
 } from "./posSerial.service";
 
 test("la serie que es el UPC coincide aunque tenga espacios o guiones", () => {
@@ -19,7 +22,7 @@ test("la serie que es el UPC coincide aunque tenga espacios o guiones", () => {
   assert.equal(serialMatchesProductCode("SN-REAL-1", "7503053078178"), false);
 });
 
-test("varias piezas pueden usar el mismo UPC y una serie real no se repite", () => {
+test("varias piezas del mismo producto pueden repetir la serie o el UPC", () => {
   const upc = normalizeItemSerials(
     2,
     true,
@@ -29,12 +32,126 @@ test("varias piezas pueden usar el mismo UPC y una serie real no se repite", () 
   );
   assert.deepEqual(upc, ["7503053078178", "7503 0530 78178"]);
 
-  assert.throws(
-    () =>
-      normalizeItemSerials(2, true, ["SN-1", "SN-1"], "Monitor", [
-        "7503053078178",
-      ]),
-    /series repetidas/,
+  const repeated = normalizeItemSerials(
+    2,
+    true,
+    ["SN-1", "SN-1"],
+    "Gabinete",
+    ["7503053078420"],
+  );
+  assert.deepEqual(repeated, ["SN-1", "SN-1"]);
+});
+
+test("la misma serie se puede repetir en un producto y no en otro", () => {
+  assert.equal(
+    findCrossProductSerial([
+      { productId: 9, productName: "Gabinete", serials: ["SN-1", "SN-1"] },
+    ]),
+    null,
+  );
+  assert.equal(
+    findCrossProductSerial([
+      { productId: 9, productName: "Gabinete", serials: ["SN-1"] },
+      { productId: 9, productName: "Gabinete", serials: ["SN-1"] },
+    ]),
+    null,
+  );
+  assert.equal(
+    findCrossProductSerial([
+      { productId: 9, productName: "Gabinete", serials: ["SN-1"] },
+      { productId: 4, productName: "Monitor", serials: ["sn-1"] },
+    ]),
+    "SN-1",
+  );
+  assert.equal(
+    findCrossProductSerial([
+      {
+        productId: 1,
+        productName: "Cable",
+        isManual: true,
+        serials: ["X"],
+      },
+      {
+        productId: 1,
+        productName: "Mouse",
+        isManual: true,
+        serials: ["X"],
+      },
+    ]),
+    "X",
+  );
+});
+
+test("las copias extra quedan en la venta y la primera en inventario", () => {
+  const lines = splitRepeatedSerials(
+    [
+      {
+        productId: 9,
+        productName: "Gabinete",
+        productUpc: "7503053078420",
+        serials: ["SN-1", "SN-1"],
+      },
+      {
+        productId: 9,
+        productName: "Gabinete",
+        productUpc: "7503053078420",
+        serials: ["SN-2"],
+      },
+    ],
+    new Set<string>(),
+  );
+  assert.deepEqual(lines[0]?.trackableSerials, ["SN-1"]);
+  assert.deepEqual(lines[0]?.sharedSerials, ["SN-1"]);
+  assert.deepEqual(lines[1]?.trackableSerials, ["SN-2"]);
+  assert.deepEqual(lines[1]?.sharedSerials, []);
+
+  const upcLines = splitRepeatedSerials(
+    [
+      {
+        productId: 9,
+        productName: "Gabinete",
+        productUpc: "7503053078420",
+        serials: ["7503053078420", "7503053078420"],
+      },
+    ],
+    new Set<string>(),
+  );
+  assert.deepEqual(upcLines[0]?.trackableSerials, []);
+  assert.deepEqual(upcLines[0]?.sharedSerials, [
+    "7503053078420",
+    "7503053078420",
+  ]);
+});
+
+test("una serie ya vendida del mismo producto se anota en la venta", () => {
+  const lines = [
+    {
+      productId: 9,
+      trackableSerials: ["SN-1"],
+      sharedSerials: [] as string[],
+    },
+  ];
+  assert.equal(
+    parkAlreadySoldSerials(lines, [
+      { serialNumber: "SN-1", productId: 9, status: "sold" },
+    ]),
+    null,
+  );
+  assert.deepEqual(lines[0]?.trackableSerials, []);
+  assert.deepEqual(lines[0]?.sharedSerials, ["SN-1"]);
+
+  const other = [
+    {
+      productId: 4,
+      trackableSerials: ["SN-1"],
+      sharedSerials: [] as string[],
+    },
+  ];
+  assert.equal(
+    parkAlreadySoldSerials(other, [
+      { serialNumber: "SN-1", productId: 9, status: "sold" },
+    ]),
+    "SN-1",
   );
 });
 
@@ -83,5 +200,50 @@ test("el UPC guardado en la venta se muestra junto con las series únicas", () =
   assert.deepEqual(
     item.serials?.map((serial) => serial.serialNumber),
     ["SN-REAL", "7503053078178"],
+  );
+});
+
+test("la copia repetida se muestra en la línea que la capturó", () => {
+  const groups = readSharedSerialGroups([
+    {
+      eventType: "created",
+      payload: {
+        sharedSerials: [
+          {
+            productId: 9,
+            productName: "Gabinete",
+            serials: [],
+            warrantyMonths: null,
+            warrantyMode: null,
+          },
+          {
+            productId: 9,
+            productName: "Gabinete",
+            serials: ["SN-1"],
+            warrantyMonths: 12,
+            warrantyMode: "months",
+          },
+        ],
+      },
+    },
+  ]);
+  const items = mergeSharedBarcodeSerials(
+    [
+      {
+        productId: 9,
+        productName: "Gabinete",
+        serials: [{ idProductSerial: 1, serialNumber: "SN-1" }],
+      },
+      { productId: 9, productName: "Gabinete", serials: [] },
+    ],
+    groups,
+  );
+  assert.deepEqual(
+    items[0]?.serials?.map((serial) => serial.serialNumber),
+    ["SN-1"],
+  );
+  assert.deepEqual(
+    items[1]?.serials?.map((serial) => serial.serialNumber),
+    ["SN-1"],
   );
 });
