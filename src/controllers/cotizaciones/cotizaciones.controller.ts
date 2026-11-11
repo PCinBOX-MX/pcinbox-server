@@ -24,8 +24,11 @@ import {
 } from "../../services/quotePhoneCrypto.service";
 import {
   buildImportedLinesJson,
+  normalizeEquipmentCount,
   normalizeQuoteNumber,
+  parseQuoteDeliveries,
   readStoredQuoteLinesPayload,
+  type StoredQuoteDelivery,
 } from "../../services/quoteLines.service";
 import {
   readAdminQuoteCart,
@@ -34,6 +37,11 @@ import {
   listAdminImportedQuoteNumbers,
   writeAdminQuoteCart,
 } from "../../services/adminQuoteCart.service";
+import {
+  loadPosCostProviderProductIds,
+  loadPosUnitCostsByProductIds,
+  summarizePosCosts,
+} from "../../services/pos/posCost.service";
 import {
   DICOTECH_PROVIDER_ID,
   TECHSMART_PROVIDER_ID,
@@ -55,6 +63,9 @@ type CheckoutLine = {
   storeId: number | null;
   /** Opcional en request; no se persiste (precios van en Keywords del PDF). */
   unitPrice: number | null;
+  manual?: boolean;
+  name?: string;
+  upc?: string | null;
 };
 
 class QuoteLimitError extends Error {
@@ -199,11 +210,21 @@ const serializeQuoteWithPdfCustomer = async (quote: QuoteRecord) => {
 export const parseCheckoutContext = (
   raw: unknown,
   itemCount: number,
-): { mode: CheckoutMode; lines: CheckoutLine[]; cartHash: string } | null => {
+): {
+  mode: CheckoutMode;
+  lines: CheckoutLine[];
+  cartHash: string;
+  equipmentCount: number;
+  assemblyPrice: number | null;
+  deliveries: StoredQuoteDelivery[];
+} | null => {
   try {
     const parsed = JSON.parse(String(raw || "")) as {
       mode?: unknown;
       lines?: unknown;
+      equipmentCount?: unknown;
+      assemblyPrice?: unknown;
+      deliveries?: unknown;
     };
     if (
       (parsed.mode !== "cart" && parsed.mode !== "buy_now") ||
@@ -243,6 +264,12 @@ export const parseCheckoutContext = (
           : Number.isFinite(unitPriceRaw) && unitPriceRaw >= 0
             ? Math.round((unitPriceRaw + Number.EPSILON) * 100) / 100
             : NaN;
+      const manual = line.manual === true;
+      const name = String(line.name ?? "").trim().slice(0, 180);
+      const upc = String(line.upc ?? "")
+        .trim()
+        .replace(/\s+/g, "")
+        .slice(0, 32);
       if (
         !productId ||
         productId.length > 64 ||
@@ -251,12 +278,36 @@ export const parseCheckoutContext = (
         quantity > 1_000 ||
         (storeId !== null &&
           (!Number.isSafeInteger(storeId) || storeId < 0)) ||
-        (unitPrice !== null && !Number.isFinite(unitPrice))
+        (unitPrice !== null && !Number.isFinite(unitPrice)) ||
+        (manual && name.length < 2)
       ) {
         throw new Error("L?nea inv?lida");
       }
-      return { productId, quantity, storeId, unitPrice };
+      return {
+        productId,
+        quantity,
+        storeId,
+        unitPrice,
+        ...(manual ? { manual: true, name, upc: upc || null } : {}),
+      };
     });
+    const assemblyRaw = parsed.assemblyPrice;
+    let assemblyPrice: number | null = null;
+    if (assemblyRaw != null && assemblyRaw !== "") {
+      const amount = Number(assemblyRaw);
+      if (!Number.isFinite(amount) || amount <= 0 || amount > 999999.99) {
+        throw new Error("Precio de ensamble inv?lido");
+      }
+      assemblyPrice = Math.round((amount + Number.EPSILON) * 100) / 100;
+    }
+    const deliveries = parseQuoteDeliveries(
+      Object.prototype.hasOwnProperty.call(parsed, "deliveries")
+        ? parsed.deliveries
+        : null,
+    );
+    if (!deliveries) {
+      throw new Error("Domicilio de envío inválido");
+    }
 
     if (
       !Number.isFinite(expectedItemCount) ||
@@ -273,16 +324,25 @@ export const parseCheckoutContext = (
           `${b.productId}:${b.storeId ?? "null"}:${b.quantity}`,
         ),
       )
-      .map(({ productId, quantity, storeId }) => ({
+      .map(({ productId, quantity, storeId, manual, name, upc }) => ({
         productId,
         quantity,
         storeId,
+        ...(manual ? { manual: true, name, upc: upc || "" } : {}),
       }));
-    const canonical = JSON.stringify({ mode: parsed.mode, lines: hashLines });
+    const canonical = JSON.stringify({
+      mode: parsed.mode,
+      lines: hashLines,
+      ...(assemblyPrice ? { assemblyPrice } : {}),
+      ...(deliveries.length ? { deliveries } : {}),
+    });
     return {
       mode: parsed.mode,
       lines,
       cartHash: createHash("sha256").update(canonical).digest("hex"),
+      equipmentCount: normalizeEquipmentCount(parsed.equipmentCount),
+      assemblyPrice,
+      deliveries,
     };
   } catch {
     return null;
@@ -400,10 +460,11 @@ const saveUploadedQuote = async (
 
     // Solo identidad/qty/bodega en DB; precios cotizados viven en Keywords del PDF.
     const linesForStorage = checkout.lines.map(
-      ({ productId, quantity, storeId }) => ({
+      ({ productId, quantity, storeId, manual, name, upc }) => ({
         productId,
         quantity,
         storeId,
+        ...(manual ? { manual: true, name, upc: upc || null } : {}),
       }),
     );
 
@@ -518,7 +579,18 @@ const saveUploadedQuote = async (
                 totalAmount: new Prisma.Decimal(totalAmount.toFixed(2)),
                 itemCount,
                 includeAssemblyService,
-                linesJson: linesForStorage as unknown as Prisma.InputJsonValue,
+                linesJson: {
+                  lines: linesForStorage,
+                  ...(checkout.equipmentCount > 1
+                    ? { equipmentCount: checkout.equipmentCount }
+                    : {}),
+                  ...(checkout.assemblyPrice
+                    ? { assemblyPrice: checkout.assemblyPrice }
+                    : {}),
+                  ...(checkout.deliveries.length
+                    ? { deliveries: checkout.deliveries }
+                    : {}),
+                } as Prisma.InputJsonValue,
                 capturedName,
                 capturedPhone,
                 createdAt,
@@ -1141,6 +1213,9 @@ export const markAdminQuoteImported = async (
           linesJson: buildImportedLinesJson(
             payload.lines,
             Number.isSafeInteger(userId) && userId > 0 ? userId : 0,
+            payload.equipmentCount,
+            payload.assemblyPrice,
+            payload.deliveries,
           ),
         },
       });
@@ -1204,7 +1279,18 @@ export const unlinkAdminQuoteImport = async (
       await prisma.cotizaciones.update({
         where: { idCotizacion: quote.idCotizacion },
         data: {
-          linesJson: { lines: payload.lines } as Prisma.InputJsonValue,
+          linesJson: {
+            lines: payload.lines,
+            ...(payload.equipmentCount > 1
+              ? { equipmentCount: payload.equipmentCount }
+              : {}),
+            ...(payload.assemblyPrice
+              ? { assemblyPrice: payload.assemblyPrice }
+              : {}),
+            ...(payload.deliveries.length
+              ? { deliveries: payload.deliveries }
+              : {}),
+          } as Prisma.InputJsonValue,
         },
       });
     }
@@ -1397,6 +1483,90 @@ export const listAdminQuotes = async (
     return res.status(500).json({
       ok: false,
       message: "No fue posible consultar las cotizaciones",
+    });
+  }
+};
+
+/** Inversión, margen y costo cobrado. No se imprime en el PDF. */
+export const getAdminQuoteCostSummary = async (
+  req: CustomRequestI,
+  res: Response,
+) => {
+  try {
+    const idCotizacion = parsePositiveId(req.params.id);
+    if (!idCotizacion) {
+      return res.status(400).json({
+        ok: false,
+        message: "La cotización no es válida.",
+      });
+    }
+    const quote = await prisma.cotizaciones.findFirst({
+      where: { idCotizacion, active: 1 },
+      select: { linesJson: true, storageKey: true },
+    });
+    if (!quote) {
+      return res.status(404).json({
+        ok: false,
+        message: "No se encontró esa cotización.",
+      });
+    }
+
+    const payload = readStoredQuoteLinesPayload(quote.linesJson);
+    const equipmentCount = payload?.equipmentCount ?? 1;
+    const storedLines = payload?.lines ?? [];
+    const ids = [
+      ...new Set(
+        storedLines
+          .map((line) => Number(line.productId))
+          .filter((id) => Number.isSafeInteger(id) && id > 0),
+      ),
+    ].slice(0, 200);
+    const [costs, providerIds, prices] = await Promise.all([
+      loadPosUnitCostsByProductIds(ids),
+      loadPosCostProviderProductIds(ids),
+      readQuotePdfLinePrices(quote.storageKey),
+    ]);
+
+    let missingCount = 0;
+    const charged: Array<{
+      quantity: number;
+      costUnit: number | null;
+      profitMarginUnit: number | null;
+      lineTotal: number;
+    }> = [];
+    for (const line of storedLines) {
+      if (line.manual) continue;
+      const productId = Number(line.productId);
+      if (!providerIds.has(productId)) continue;
+      const cost = costs.get(productId);
+      const unitPrice = prices.get(productId);
+      if (!cost || unitPrice == null || !Number.isFinite(unitPrice)) {
+        missingCount += 1;
+        continue;
+      }
+      const quantity = line.quantity * equipmentCount;
+      charged.push({
+        quantity,
+        costUnit: cost.costUnit,
+        profitMarginUnit: cost.profitMarginUnit,
+        lineTotal:
+          Math.round((unitPrice * quantity + Number.EPSILON) * 100) / 100,
+      });
+    }
+
+    return res.json({
+      ok: true,
+      data: {
+        summary: summarizePosCosts(charged),
+        missingCount,
+        equipmentCount,
+      },
+    });
+  } catch (error) {
+    console.error("[getAdminQuoteCostSummary]", error);
+    return res.status(500).json({
+      ok: false,
+      message: "No fue posible calcular la inversión de la cotización.",
     });
   }
 };
