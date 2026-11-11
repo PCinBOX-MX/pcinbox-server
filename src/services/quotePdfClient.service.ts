@@ -4,6 +4,9 @@ import { resolveQuotePath } from "./quoteStorage.service";
 
 const META_PREFIX = "pcinbox-client-v1";
 const LINES_META_PREFIX = "pcinbox-lines-v1";
+const MANUAL_META_PREFIX = "pcinbox-manual-v1";
+const ASSEMBLY_META_PREFIX = "pcinbox-assembly-v1";
+const SHIPPING_META_PREFIX = "pcinbox-shipping-v1";
 
 export type QuotePdfClientIdentity = {
   name: string | null;
@@ -17,6 +20,25 @@ export type QuotePdfLinePrice = {
   productId: string;
   quantity: number;
   unitPrice: number;
+};
+
+export type QuotePdfManualLine = {
+  productId: string;
+  quantity: number;
+  unitPrice: number;
+  name: string;
+  upc: string | null;
+};
+
+export type QuotePdfShipping = {
+  shippingCost: number;
+  label: string;
+};
+
+export type QuotePdfSaleExtras = {
+  manualById: Map<string, QuotePdfManualLine>;
+  assemblyPrice: number | null;
+  shipping: QuotePdfShipping[];
 };
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/i;
@@ -289,6 +311,119 @@ export const parseLinesKeywordsString = (
   return lines.length > 0 ? lines : null;
 };
 
+const decodeKeywordText = (token: string): string | null => {
+  const cleaned = token.trim();
+  if (!cleaned) return "";
+  if (!/^[A-Za-z0-9_-]+$/.test(cleaned)) return null;
+  try {
+    const text = Buffer.from(cleaned, "base64url").toString("utf8").trim();
+    if (text.includes("\u0000")) return null;
+    return text;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Productos sin catálogo: pcinbox-manual-v1|id:qty:price:nombreB64:upcB64
+ * El nombre y el UPC van en base64url para no romper el separador.
+ */
+export const parseManualKeywordsString = (
+  keywords: string | null | undefined,
+): QuotePdfManualLine[] => {
+  if (!keywords || !keywords.includes(MANUAL_META_PREFIX)) return [];
+  const match = keywords.match(
+    /pcinbox-manual-v1\|([A-Za-z0-9:;.\-_]+?)(?=\|pcinbox-|$|\)|\bendobj\b|obj<<|<<)/i,
+  );
+  const payload = (match?.[1] || "").trim();
+  if (!payload) return [];
+
+  const lines: QuotePdfManualLine[] = [];
+  for (const rawPart of payload.split(";")) {
+    const part = rawPart.trim();
+    if (!part) continue;
+    const [productIdRaw, qtyRaw, priceRaw, nameRaw, upcRaw] = part.split(":");
+    const productId = String(productIdRaw || "").trim();
+    const quantity = Math.round(Number(qtyRaw));
+    const unitPrice = Number(priceRaw);
+    const name = decodeKeywordText(String(nameRaw || ""));
+    const upc = decodeKeywordText(String(upcRaw || ""));
+    if (
+      !productId ||
+      productId.length > 64 ||
+      !Number.isInteger(quantity) ||
+      quantity < 1 ||
+      quantity > 1_000 ||
+      !Number.isFinite(unitPrice) ||
+      unitPrice < 0 ||
+      unitPrice > 999999.99 ||
+      name == null ||
+      name.length < 2 ||
+      name.length > 180 ||
+      upc == null ||
+      upc.length > 32
+    ) {
+      continue;
+    }
+    lines.push({
+      productId,
+      quantity,
+      unitPrice: Math.round((unitPrice + Number.EPSILON) * 100) / 100,
+      name,
+      upc: upc || null,
+    });
+  }
+  return lines;
+};
+
+/** Precio de ensamble de un equipo: pcinbox-assembly-v1|50.00 */
+export const parseAssemblyKeywordString = (
+  keywords: string | null | undefined,
+): number | null => {
+  if (!keywords || !keywords.includes(ASSEMBLY_META_PREFIX)) return null;
+  const match = keywords.match(
+    /pcinbox-assembly-v1\|(\d+(?:\.\d{1,2})?)(?=\|pcinbox-|$|\)|\bendobj\b|obj<<|<<)/i,
+  );
+  const amount = Number(match?.[1]);
+  if (!Number.isFinite(amount) || amount <= 0 || amount > 999999.99) return null;
+  return Math.round((amount + Number.EPSILON) * 100) / 100;
+};
+
+/** Envíos: pcinbox-shipping-v1|costo:etiquetaB64;costo:etiquetaB64 */
+export const parseShippingKeywordString = (
+  keywords: string | null | undefined,
+): QuotePdfShipping[] => {
+  if (!keywords || !keywords.includes(SHIPPING_META_PREFIX)) return [];
+  const match = keywords.match(
+    /pcinbox-shipping-v1\|([0-9A-Za-z:;.\-_]+?)(?=\|pcinbox-|$|\)|\bendobj\b|obj<<|<<)/i,
+  );
+  const payload = (match?.[1] || "").trim();
+  if (!payload) return [];
+  const rows: QuotePdfShipping[] = [];
+  for (const rawPart of payload.split(";")) {
+    const part = rawPart.trim();
+    const sep = part.indexOf(":");
+    if (sep < 1) continue;
+    const shippingCost = Number(part.slice(0, sep));
+    const label = decodeKeywordText(part.slice(sep + 1));
+    if (
+      !Number.isFinite(shippingCost) ||
+      shippingCost < 0 ||
+      shippingCost > 999999.99 ||
+      label == null ||
+      label.length < 2 ||
+      label.length > 80
+    ) {
+      continue;
+    }
+    rows.push({
+      shippingCost: Math.round((shippingCost + Number.EPSILON) * 100) / 100,
+      label,
+    });
+  }
+  return rows;
+};
+
 /** Lee Keywords del Info dict del PDF (metadatos embebidos al generar). */
 export const parseClientFromPdfKeywords = (
   pdfBytes: Buffer,
@@ -328,6 +463,37 @@ export const readQuotePdfLinePrices = async (
     /* PDF ausente o ilegible */
   }
   return map;
+};
+
+const readQuoteKeywords = async (
+  storageKey: string,
+): Promise<string | null> => {
+  const pdfPath = resolveQuotePath(storageKey);
+  const bytes = await readFile(pdfPath);
+  return (
+    extractPdfKeywordsString(bytes) ||
+    (await extractInfoKeywordsWithPdfParse(bytes))
+  );
+};
+
+/** Precios de productos sin catálogo y de ensamble, leídos del PDF. */
+export const readQuotePdfSaleExtras = async (
+  storageKey: string,
+): Promise<QuotePdfSaleExtras> => {
+  const manualById = new Map<string, QuotePdfManualLine>();
+  try {
+    const keywords = await readQuoteKeywords(storageKey);
+    for (const line of parseManualKeywordsString(keywords)) {
+      if (!manualById.has(line.productId)) manualById.set(line.productId, line);
+    }
+    return {
+      manualById,
+      assemblyPrice: parseAssemblyKeywordString(keywords),
+      shipping: parseShippingKeywordString(keywords),
+    };
+  } catch {
+    return { manualById, assemblyPrice: null, shipping: [] };
+  }
 };
 
 export const parseQuotePdfClientFromText = (
