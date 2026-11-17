@@ -13,17 +13,23 @@ export declare function completePendingPosSale(params: {
 }): Promise<{
     sale: {
         items: {
+            warrantyMonths: number | null;
+            warrantyMode: string | null;
             productId: bigint;
             quantity: number;
             branchId: bigint | null;
+            unitPrice: Prisma.Decimal;
             productName: string;
             idPosSaleItem: bigint;
             posSaleId: bigint;
             productSku: string | null;
             productUpc: string | null;
-            unitPrice: Prisma.Decimal;
             discountPct: Prisma.Decimal;
             lineTotal: Prisma.Decimal;
+            serviceMetaJson: Prisma.JsonValue | null;
+            costUnit: Prisma.Decimal | null;
+            profitMarginUnit: Prisma.Decimal | null;
+            catalogPriceUnit: Prisma.Decimal | null;
         }[];
         events: {
             createdAt: Date;
@@ -39,19 +45,19 @@ export declare function completePendingPosSale(params: {
         status: import("@prisma/client").$Enums.pos_sales_status;
         branchId: bigint;
         total: Prisma.Decimal;
+        quoteNumber: string | null;
+        idempotencyKey: string | null;
         updatedAt: Date;
         cancelReason: string | null;
         requiredFactura: number;
         customerName: string | null;
-        quoteNumber: string | null;
-        idempotencyKey: string | null;
-        customerUserId: bigint | null;
-        notes: string | null;
         idPosSale: bigint;
         folio: string;
         cashierUserId: bigint;
+        customerUserId: bigint | null;
         subtotal: Prisma.Decimal;
         discountTotal: Prisma.Decimal;
+        notes: string | null;
         cancelledAt: Date | null;
         cancelledByUserId: bigint | null;
         customerEmail: string | null;
@@ -91,17 +97,23 @@ export declare function completePendingPosSale(params: {
                 warrantyExpiresAt: Date | null;
             }[];
         } & {
+            warrantyMonths: number | null;
+            warrantyMode: string | null;
             productId: bigint;
             quantity: number;
             branchId: bigint | null;
+            unitPrice: Prisma.Decimal;
             productName: string;
             idPosSaleItem: bigint;
             posSaleId: bigint;
             productSku: string | null;
             productUpc: string | null;
-            unitPrice: Prisma.Decimal;
             discountPct: Prisma.Decimal;
             lineTotal: Prisma.Decimal;
+            serviceMetaJson: Prisma.JsonValue | null;
+            costUnit: Prisma.Decimal | null;
+            profitMarginUnit: Prisma.Decimal | null;
+            catalogPriceUnit: Prisma.Decimal | null;
         })[];
         payments: {
             createdAt: Date;
@@ -125,19 +137,19 @@ export declare function completePendingPosSale(params: {
         status: import("@prisma/client").$Enums.pos_sales_status;
         branchId: bigint;
         total: Prisma.Decimal;
+        quoteNumber: string | null;
+        idempotencyKey: string | null;
         updatedAt: Date;
         cancelReason: string | null;
         requiredFactura: number;
         customerName: string | null;
-        quoteNumber: string | null;
-        idempotencyKey: string | null;
-        customerUserId: bigint | null;
-        notes: string | null;
         idPosSale: bigint;
         folio: string;
         cashierUserId: bigint;
+        customerUserId: bigint | null;
         subtotal: Prisma.Decimal;
         discountTotal: Prisma.Decimal;
+        notes: string | null;
         cancelledAt: Date | null;
         cancelledByUserId: bigint | null;
         customerEmail: string | null;

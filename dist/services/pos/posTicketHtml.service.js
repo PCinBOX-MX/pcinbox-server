@@ -11,7 +11,7 @@ const DISCLAIMER_PARAGRAPHS = [
     "Es responsabilidad del cliente revisar lo que se entrega y hacer reclamo u observación en su momento.",
     "No hay devolución ni cambios de productos. Cualquier devolución justificada genera el 20% de comisión.",
 ];
-const TERMS_LINE = "Acepto términos y condiciones de pcinbox en mantenimiento preventivo y correctivo";
+const TERMS_LINE = "Al dejar su equipo, el cliente acepta nuestros Términos y Condiciones de Servicio Técnico. Consúltelos en pcinbox.com.mx/servicio-tecnico";
 function isMeaningfulCode(value) {
     const v = String(value || "").trim();
     if (!v)
@@ -74,7 +74,7 @@ function parsePagoCambio(sale) {
     const pago = hasCashReceived || sum > 0 ? sum : Number(sale.total) || 0;
     return { pago, cambio };
 }
-function truncateTicketName(name, max = 220) {
+function truncateProductName(name, max = 160) {
     const s = String(name || "").trim();
     if (s.length <= max)
         return s;
@@ -99,28 +99,66 @@ function buildPosSaleTicketHtml(data) {
         const qtyLine = qty > 1
             ? `<div>Cant: ${qty} x ${formatMoney(unit)}</div>`
             : `<div>Cantidad: ${qty || 1}</div>`;
-        const bodega = Number(it.providerId) === 1
-            ? (0, pcinbox_branch_display_1.formatPcinboxBranchDisplayName)(it.branchName) ||
-                (0, pcinbox_branch_display_1.formatPcinboxBranchDisplayName)(String(it.branchLabel || "")
-                    .split(/[·—-]/)[0]
-                    ?.trim()) ||
-                "PCinBOX-León"
-            : (0, pcinbox_branch_display_1.formatPcinboxBranchDisplayName)(it.branchName) ||
-                (0, pcinbox_branch_display_1.formatPcinboxBranchDisplayName)(String(it.branchLabel || "")
-                    .split(/[·—-]/)[0]
-                    ?.trim()) ||
-                (0, pcinbox_branch_display_1.formatPcinboxBranchDisplayName)(data.branchName);
-        const bodegaLine = bodega
-            ? `<div>Bodega: ${escapeHtml(bodega)}</div>`
-            : "";
+        const intake = it.serviceIntake;
+        const isServiceLine = Boolean(intake &&
+            ((Array.isArray(intake.equipment) && intake.equipment.length > 0) ||
+                String(intake.serviceType || "").trim() ||
+                String(intake.failureOrRequestedService || "").trim()));
+        const bodega = isServiceLine
+            ? pcinbox_branch_display_1.POS_TICKET_BRANCH_FALLBACK
+            : (0, pcinbox_branch_display_1.resolveTicketBranchLabel)({
+                itemBranchName: it.branchName ||
+                    String(it.branchLabel || "")
+                        .split(/[·—-]/)[0]
+                        ?.trim() ||
+                    null,
+                saleBranchName: data.branchName,
+            });
+        // Si el formateo dejó "PCinBOX" genérico, forzar León.
+        const bodegaShown = !bodega || /^pcinbox$/i.test(bodega.trim())
+            ? pcinbox_branch_display_1.POS_TICKET_BRANCH_FALLBACK
+            : bodega;
+        const bodegaLine = `<div>Bodega: ${escapeHtml(bodegaShown)}</div>`;
         const serialLine = it.serials && it.serials.length
             ? `<div class="muted">S/N: ${it.serials
                 .map((s) => escapeHtml(s.serialNumber))
                 .join(", ")}</div>`
             : "";
+        let serviceBlock = "";
+        if (intake && Array.isArray(intake.equipment) && intake.equipment.length) {
+            const equipLines = intake.equipment
+                .map((eq) => {
+                const qty = Number(eq.quantity) || 1;
+                const desc = escapeHtml(String(eq.description || "").trim() || "—");
+                const sn = String(eq.serialNumber || "").trim();
+                return `
+            <div class="equip-item">
+              <div class="equip-item-title">${desc}${qty > 1 ? ` (×${qty})` : ""}</div>
+              ${sn ? `<div class="muted">Nº serie: ${escapeHtml(sn)}</div>` : ""}
+            </div>`;
+            })
+                .join("");
+            const failure = String(intake.failureOrRequestedService || "").trim();
+            const obs = String(intake.technicalObservationsOnReceipt || "").trim();
+            serviceBlock = `
+        <div class="service-intake">
+          <div class="service-title">Datos del Equipo y/o componente</div>
+          ${equipLines}
+          ${failure
+                ? `<div class="equip-note"><strong>Falla o Servicio solicitado:</strong> ${escapeHtml(failure)}</div>`
+                : ""}
+          ${obs
+                ? `<div class="equip-note"><strong>Observaciones Técnicas al Recibir:</strong> ${escapeHtml(obs)}</div>`
+                : ""}
+        </div>`;
+        }
+        const serviceLabel = String(intake?.serviceType || it.productName || "").trim();
+        const nameHtml = isServiceLine
+            ? `Servicio: ${escapeHtml(truncateProductName(serviceLabel || it.productName))}`
+            : escapeHtml(truncateProductName(it.productName));
         return `
       <div class="item">
-        <div class="item-name">${escapeHtml(truncateTicketName(it.productName))}</div>
+        <div class="item-name">${nameHtml}</div>
         ${isMeaningfulCode(it.productSku) ? `<div>Clave: ${escapeHtml(String(it.productSku))}</div>` : ""}
         ${isMeaningfulCode(it.productUpc) ? `<div>UPC: ${escapeHtml(String(it.productUpc))}</div>` : ""}
         ${bodegaLine}
@@ -130,6 +168,7 @@ function buildPosSaleTicketHtml(data) {
           <span>${formatMoney(lineTotal)}</span>
         </div>
         ${serialLine}
+        ${serviceBlock}
       </div>`;
     })
         .join("");
@@ -161,6 +200,15 @@ function buildPosSaleTicketHtml(data) {
         return `<div class="pay-line"><span>${label}${sub}</span><strong>${formatMoney(amount)}</strong></div>`;
     })
         .join("");
+    const deliveryStops = Array.isArray(data.deliveryAddresses) && data.deliveryAddresses.length > 0
+        ? data.deliveryAddresses
+        : data.deliveryAddress
+            ? [data.deliveryAddress]
+            : [];
+    const deliveryHtml = deliveryStops
+        .map((stop) => `<div class="row"><span>Envío:</span><span>${formatMoney(Number(stop.shippingCost) || 0)}</span></div>
+      <div class="row"><span>CP:</span><span>${escapeHtml(String(stop.postalCode || ""))}</span></div>`)
+        .join("");
     return `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -172,7 +220,7 @@ function buildPosSaleTicketHtml(data) {
     body { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #111; background: #f3f4f6; padding: 24px; }
     .ticket { max-width: 360px; margin: 0 auto; background: #fff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 20px 16px; }
     .brand { text-align: center; margin-bottom: 10px; }
-    .brand img { width: 72px; height: 72px; object-fit: contain; display: block; margin: 0 auto 6px; }
+    .brand img { width: auto; height: 72px; max-width: 120px; object-fit: contain; display: block; margin: 0 auto 6px; }
     .brand h1 { font-size: 22px; letter-spacing: -0.02em; color: #bb3d4b; }
     .brand .title { font-size: 13px; font-weight: 700; margin-top: 4px; }
     .brand .branch { font-size: 12px; margin-top: 2px; }
@@ -180,8 +228,14 @@ function buildPosSaleTicketHtml(data) {
     .meta { font-size: 12px; margin: 12px 0; line-height: 1.55; }
     .sep { text-align: center; font-size: 11px; font-weight: 700; letter-spacing: 0.04em; margin: 12px 0 8px; color: #374151; }
     .item { font-size: 12px; line-height: 1.45; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px dashed #e5e7eb; }
-    .item-name { font-weight: 700; margin-bottom: 2px; word-break: break-word; overflow-wrap: anywhere; }
+    .item-name { font-weight: 700; margin-bottom: 2px; white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere; }
     .item-prices { display: flex; justify-content: space-between; margin-top: 4px; font-weight: 600; gap: 8px; }
+    .service-intake { margin-top: 8px; padding: 8px; background: #f9fafb; border-radius: 8px; font-size: 11px; line-height: 1.45; }
+    .service-title { font-weight: 700; margin-bottom: 8px; color: #374151; }
+    .equip-item { margin-bottom: 8px; padding-bottom: 6px; border-bottom: 1px dashed #e5e7eb; }
+    .equip-item:last-of-type { margin-bottom: 6px; }
+    .equip-item-title { font-weight: 700; margin-bottom: 2px; color: #111; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .equip-note { margin-top: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
     .totals { margin-top: 8px; font-size: 13px; }
     .totals .row { display: flex; justify-content: space-between; margin: 4px 0; }
     .count { text-align: center; font-size: 16px; font-weight: 800; margin: 14px 0 8px; }
@@ -231,14 +285,13 @@ function buildPosSaleTicketHtml(data) {
         : ""}
       <div>Fecha: ${new Date(data.createdAt).toLocaleString("es-MX")}</div>
       <div>Vendedor: ${escapeHtml(SELLER)}</div>
-      <div>Cliente: ${escapeHtml(data.customerName || "Público general")}</div>
-      ${String(data.customerPhone || "").trim()
-        ? `<div>Teléfono: ${escapeHtml(String(data.customerPhone).trim())}</div>`
-        : ""}
+      <div>Cliente: ${escapeHtml(String(data.customerName || "").trim())}</div>
+      <div>Teléfono: ${escapeHtml(String(data.customerPhone || "").trim())}</div>
     </div>
     <div class="sep">*** PRODUCTOS ***</div>
     ${itemsHtml}
     <div class="totals">
+      ${deliveryHtml}
       <div class="row"><span>Total:</span><span>${formatMoney(data.total)}</span></div>
       <div class="row"><span>Pago:</span><span>${formatMoney(pago)}</span></div>
       <div class="row"><span>Cambio:</span><span>${formatMoney(cambio)}</span></div>
@@ -260,7 +313,7 @@ function buildPosSaleTicketHtml(data) {
         ? `<p class="muted" style="margin-top:12px;text-align:left">Cancelación: ${escapeHtml(data.cancelReason)}</p>`
         : ""}
     <div class="actions">
-      <button type="button" onclick="window.print()">Imprimir</button>
+      <button type="button" onclick="window.print()">Imprimir / Guardar PDF</button>
     </div>
   </div>
 </body>

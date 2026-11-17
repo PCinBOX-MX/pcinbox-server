@@ -34,6 +34,7 @@ export declare function searchPosProducts(q: string, limit?: number): Promise<{
     warrantyMonths: number | null;
     warrantyMode: string | null;
     isPC: boolean;
+    pcLabel: string | null;
     providerId: number;
     providerName: any;
     stocksByBranch: PosBranchStock[];
@@ -43,7 +44,9 @@ export declare function searchPosProducts(q: string, limit?: number): Promise<{
 }[]>;
 export declare function invalidatePosSearchCatalog(): void;
 /** Hidrata productos por id con el mismo shape que search (stock por bodega). */
-export declare function hydratePosProductsByIds(productIds: number[]): Promise<{
+export declare function hydratePosProductsByIds(productIds: number[], options?: {
+    includeInactive?: boolean;
+}): Promise<{
     idProduct: number;
     idProductExt: any;
     name: any;

@@ -43,6 +43,10 @@ function formatPcinboxBranchDisplayName(rawName) {
     if (key === "leon2" || key === "león" || key === "leon") {
         return "PCinBOX-León";
     }
+    // Nombre genérico de sucursal / marca → punto León (caja POS).
+    if (key === "pcinbox" || key === "pcinboxleon" || key === "pcinboxleón") {
+        return "PCinBOX-León";
+    }
     if (key === "santafe" || key === "santafe.") {
         return "PCinBOX-SFD";
     }

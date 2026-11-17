@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.updateReservationStatus = exports.getAdminReservations = exports.getReservationByRef = exports.getReservationByReference = exports.checkAvailability = exports.getUserReservations = exports.rescheduleReservation = exports.cancelReservation = exports.createReservation = void 0;
+exports.updateReservationStatus = exports.getAdminReservations = exports.getReservationForPos = exports.getReservationByRef = exports.getReservationByReference = exports.checkAvailability = exports.getUserReservations = exports.rescheduleReservation = exports.cancelReservation = exports.createReservation = void 0;
 const prismaClient_1 = require("../../db/prismaClient");
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const dotenv_1 = __importDefault(require("dotenv"));
@@ -535,6 +535,124 @@ const getReservationByRef = async (req, res) => {
     }
 };
 exports.getReservationByRef = getReservationByRef;
+const RESERVATION_FOLIO_PATTERN = /^PCX-\d{3,6}-(PC|LP)$/i;
+/** Folio de reserva web (con o sin sesión) para rellenar el punto de venta. */
+const getReservationForPos = async (req, res) => {
+    try {
+        const reference = String(req.params.reference || "")
+            .trim()
+            .replace(/^#/, "")
+            .toUpperCase();
+        if (!RESERVATION_FOLIO_PATTERN.test(reference)) {
+            return res.status(400).json({
+                ok: false,
+                code: "RESERVATION_FOLIO_INVALID",
+                message: "El folio de reserva no es válido. Usa el folio de la cita, por ejemplo PCX-4821-LP.",
+            });
+        }
+        const reservation = await prismaClient_1.prisma.reservas.findUnique({
+            where: { reference },
+        });
+        if (!reservation) {
+            return res.status(404).json({
+                ok: false,
+                code: "RESERVATION_NOT_FOUND",
+                message: "No hay una reserva con ese folio. Revisa el folio en Reservas. Sirve igual si el cliente agendó con sesión o sin iniciar sesión.",
+            });
+        }
+        const status = String(reservation.status || "").toLowerCase();
+        const cancelReason = String(reservation.cancelReason || "").trim();
+        if (status === "cancelled") {
+            const byClient = cancelReason === "Cancelada por el cliente";
+            return res.status(409).json({
+                ok: false,
+                code: "RESERVATION_CANCELLED",
+                message: byClient
+                    ? `La reserva ${reference} fue cancelada por el cliente. No se importa al punto de venta.`
+                    : cancelReason
+                        ? `La reserva ${reference} fue cancelada: ${cancelReason}. No se importa al punto de venta.`
+                        : `La reserva ${reference} está cancelada. No se importa al punto de venta.`,
+            });
+        }
+        const contactName = String(reservation.contactName || "").trim();
+        const service = String(reservation.service || "").trim();
+        if (!contactName || !service) {
+            return res.status(422).json({
+                ok: false,
+                code: "RESERVATION_INCOMPLETE",
+                message: `La reserva ${reference} no tiene cliente o servicio. No se puede armar la venta.`,
+            });
+        }
+        const existingSale = await prismaClient_1.prisma.pos_sales.findFirst({
+            where: {
+                status: { in: ["completed", "pending_payment"] },
+                OR: [
+                    { notes: { contains: `Folio de reserva ${reference}` } },
+                    {
+                        items: {
+                            some: {
+                                serviceMetaJson: {
+                                    path: "$.reservationReference",
+                                    equals: reference,
+                                },
+                            },
+                        },
+                    },
+                ],
+            },
+            select: { folio: true },
+        });
+        if (existingSale) {
+            return res.status(409).json({
+                ok: false,
+                code: "RESERVATION_ALREADY_SOLD",
+                message: `La reserva ${reference} ya está en la venta ${existingSale.folio}. No se vuelve a importar. Si esa venta se canceló, se puede cargar de nuevo.`,
+            });
+        }
+        const parsed = (0, index_service_1.parseBigInts)(reservation);
+        const userId = parsed.userId != null && Number(parsed.userId) > 0
+            ? Number(parsed.userId)
+            : null;
+        const dateValue = reservation.date ? new Date(reservation.date) : null;
+        const date = dateValue && !Number.isNaN(dateValue.getTime())
+            ? `${dateValue.getUTCFullYear()}-${String(dateValue.getUTCMonth() + 1).padStart(2, "0")}-${String(dateValue.getUTCDate()).padStart(2, "0")}`
+            : "";
+        const todayMx = new Intl.DateTimeFormat("en-CA", {
+            timeZone: "America/Mexico_City",
+        }).format(new Date());
+        return res.status(200).json({
+            ok: true,
+            message: "Reserva lista para el punto de venta",
+            data: {
+                reference: parsed.reference,
+                service: parsed.service,
+                deviceType: parsed.deviceType,
+                brand: parsed.brand,
+                model: parsed.model || "",
+                description: parsed.description,
+                date,
+                time: parsed.time,
+                status: parsed.status,
+                cancelReason: parsed.cancelReason || "",
+                contactName: parsed.contactName,
+                contactEmail: parsed.contactEmail,
+                contactPhone: parsed.contactPhone,
+                customerUserId: userId,
+                hasSession: Boolean(userId),
+                createdAt: parsed.createdAt || null,
+                appointmentPassed: Boolean(date) && date < todayMx,
+            },
+        });
+    }
+    catch (error) {
+        return res.status(500).json({
+            ok: false,
+            message: error?.message ||
+                "No se pudo consultar la reserva. Espera un momento y vuelve a intentar.",
+        });
+    }
+};
+exports.getReservationForPos = getReservationForPos;
 const getAdminReservations = async (req, res) => {
     try {
         const adminUser = await prismaClient_1.prisma.users.findUnique({
