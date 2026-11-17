@@ -1349,6 +1349,7 @@ export const importFromQuote = async (
           payload.equipmentCount,
           payload.assemblyPrice,
           payload.deliveries,
+          payload.comments,
         ),
       },
     });

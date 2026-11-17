@@ -3,13 +3,14 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.changeQuantity = exports.changeSucursal = exports.generateCotizacion = exports.removeAllCart = exports.removeProduct = exports.addProductFromStorage = exports.addProduct = exports.getCart = void 0;
+exports.importFromQuote = exports.changeQuantity = exports.changeSucursal = exports.generateCotizacion = exports.removeAllCart = exports.removeProduct = exports.addProductFromStorage = exports.addProduct = exports.getCart = void 0;
 require("../../config/loadEnv");
 const prismaClient_1 = require("../../db/prismaClient");
 const luxon_1 = require("luxon");
 const index_service_1 = require("../../services/index.service");
 const cart_service_1 = require("../../services/cart.service");
 const techsmart_branches_1 = require("../../constants/techsmart-branches");
+const quoteLines_service_1 = require("../../services/quoteLines.service");
 const ejs_1 = __importDefault(require("ejs"));
 const path_1 = __importDefault(require("path"));
 const fs_1 = __importDefault(require("fs"));
@@ -508,4 +509,243 @@ const changeQuantity = async (req, res) => {
     return (0, exports.addProduct)(req, res);
 };
 exports.changeQuantity = changeQuantity;
+/**
+ * Importa líneas de una cotización web al carrito del usuario autenticado (merge).
+ * Disponible para cualquier usuario logueado.
+ * Tras un import exitoso marca linesJson.importedAt (sin columnas nuevas).
+ */
+const importFromQuote = async (req, res) => {
+    try {
+        const userId = Number(req?.idUser.toString());
+        const quoteNumber = (0, quoteLines_service_1.normalizeQuoteNumber)(req.body?.quoteNumber);
+        if (!quoteNumber || !quoteLines_service_1.QUOTE_NUMBER_PATTERN.test(quoteNumber)) {
+            return res.status(400).json({
+                ok: false,
+                code: "QUOTE_INVALID",
+                message: "Número de cotización inválido",
+            });
+        }
+        const quote = await prismaClient_1.prisma.cotizaciones.findFirst({
+            where: { quoteNumber },
+            select: {
+                idCotizacion: true,
+                quoteNumber: true,
+                expiresAt: true,
+                active: true,
+                linesJson: true,
+                createdAt: true,
+            },
+        });
+        if (!quote) {
+            return res.status(404).json({
+                ok: false,
+                code: "QUOTE_NOT_FOUND",
+                message: "No se encontró esa cotización. Verifica el número o genera una nueva (vigencia 5 días).",
+            });
+        }
+        const expired = quote.expiresAt.getTime() < Date.now();
+        const archived = quote.active !== 1;
+        if (archived || expired) {
+            return res.status(410).json({
+                ok: false,
+                code: "QUOTE_EXPIRED",
+                message: "Esta cotización ya venció o fue archivada. Genera una cotización nueva desde la tienda.",
+                data: {
+                    quoteNumber: quote.quoteNumber,
+                    createdAt: quote.createdAt,
+                    expiresAt: quote.expiresAt,
+                    archived,
+                    expired,
+                },
+            });
+        }
+        const hasRawLines = quote.linesJson != null &&
+            !(Array.isArray(quote.linesJson) && quote.linesJson.length === 0);
+        const payload = (0, quoteLines_service_1.readStoredQuoteLinesPayload)(quote.linesJson);
+        if (!payload) {
+            return res.status(400).json({
+                ok: false,
+                code: "QUOTE_NO_LINES",
+                message: hasRawLines
+                    ? "Esta cotización tiene líneas en un formato que no se puede importar. Genera una cotización nueva."
+                    : "Esta cotización no tiene productos guardados para importar. Genera una cotización nueva desde la tienda.",
+            });
+        }
+        if (payload.importedAt) {
+            return res.status(409).json({
+                ok: false,
+                code: "QUOTE_ALREADY_IMPORTED",
+                message: "Esta cotización ya fue importada al carrito. No se puede volver a importar el mismo número.",
+                data: {
+                    quoteNumber: quote.quoteNumber,
+                    importedAt: payload.importedAt,
+                },
+            });
+        }
+        const lines = payload.lines;
+        const cart = await (0, cart_service_1.getOrCreateActiveCart)(userId);
+        await (0, cart_service_1.consolidateActiveCartItems)(userId, cart.idCart);
+        const existingCount = await prismaClient_1.prisma.cartItems.count({
+            where: { carId: cart.idCart, active: 1 },
+        });
+        const mergedWithExisting = existingCount > 0;
+        const skippedInactive = [];
+        const skippedNoStock = [];
+        const skippedMissing = [];
+        const skippedBranch = [];
+        const adjusted = [];
+        const warnings = [];
+        let touchedLines = 0;
+        let importedUnits = 0;
+        for (const line of lines) {
+            const productId = Number(line.productId);
+            const qtyWanted = Math.max(1, Math.round(Number(line.quantity) || 1));
+            const storeId = (0, cart_service_1.normalizeStoreId)(line.storeId);
+            if (!Number.isSafeInteger(productId) || productId <= 0) {
+                skippedMissing.push(`Producto inválido (${line.productId})`);
+                continue;
+            }
+            const product = await prismaClient_1.prisma.products.findFirst({
+                where: { idProduct: BigInt(productId) },
+                select: {
+                    idProduct: true,
+                    name: true,
+                    active: true,
+                    providerId: true,
+                },
+            });
+            const productName = product?.name?.trim() || `Producto #${productId}`;
+            if (!product) {
+                skippedMissing.push(productName);
+                continue;
+            }
+            if (product.active !== 1) {
+                skippedInactive.push(productName);
+                continue;
+            }
+            const techSmartBranchError = await (0, techsmart_branches_1.getTechSmartBranchValidationError)(product.providerId != null ? Number(product.providerId) : null, storeId);
+            if (techSmartBranchError) {
+                skippedBranch.push(`${productName}: ${techSmartBranchError}`);
+                continue;
+            }
+            await (0, cart_service_1.mergeDuplicateCartLines)(cart.idCart, productId, storeId);
+            const existingItem = await (0, cart_service_1.findActiveCartItem)(cart.idCart, productId, storeId);
+            const previousQuantity = existingItem
+                ? Number(existingItem.quantity ?? 0)
+                : 0;
+            const stockInfo = await (0, cart_service_1.resolveAvailableStock)(productId, storeId);
+            if (!stockInfo.found) {
+                skippedMissing.push(productName);
+                continue;
+            }
+            if (stockInfo.stock <= 0) {
+                skippedNoStock.push(storeId != null
+                    ? `${productName} (bodega ${storeId})`
+                    : productName);
+                continue;
+            }
+            const desired = previousQuantity + qtyWanted;
+            let nextQuantity = desired;
+            if (nextQuantity > stockInfo.stock) {
+                nextQuantity = stockInfo.stock;
+                if (previousQuantity >= stockInfo.stock) {
+                    skippedNoStock.push(`${productName}: ya tienes ${previousQuantity} en carrito y no hay stock extra`);
+                    continue;
+                }
+                adjusted.push(previousQuantity > 0
+                    ? `${productName}: en carrito ${previousQuantity} + cotizado ${qtyWanted} → se limitó a stock ${stockInfo.stock}`
+                    : `${productName}: cotizado ${qtyWanted} → disponible ${stockInfo.stock}`);
+            }
+            const quantityAdded = nextQuantity - previousQuantity;
+            if (quantityAdded <= 0) {
+                skippedNoStock.push(`${productName}: ya tienes ${previousQuantity} en carrito y no hay stock extra`);
+                continue;
+            }
+            if (existingItem) {
+                await prismaClient_1.prisma.cartItems.update({
+                    where: { idCartItem: Number(existingItem.idCartItem) },
+                    data: {
+                        storeId,
+                        quantity: nextQuantity,
+                    },
+                });
+            }
+            else {
+                await prismaClient_1.prisma.cartItems.create({
+                    data: {
+                        carId: Number(cart.idCart),
+                        productId,
+                        quantity: nextQuantity,
+                        storeId,
+                        active: 1,
+                    },
+                });
+            }
+            importedUnits += quantityAdded;
+            touchedLines += 1;
+        }
+        warnings.push(...skippedInactive.map((n) => `Inactivo: ${n}`), ...skippedMissing.map((n) => `No disponible en catálogo: ${n}`), ...skippedNoStock.map((n) => `Sin stock: ${n}`), ...skippedBranch.map((n) => `Bodega: ${n}`), ...adjusted.map((n) => `Cantidad ajustada: ${n}`));
+        if (touchedLines === 0 && importedUnits === 0) {
+            return res.status(200).json({
+                ok: true,
+                code: "QUOTE_NOTHING_IMPORTED",
+                message: mergedWithExisting
+                    ? "No se pudo agregar nada de la cotización (inactivos, sin stock o sin cupo extra). Se conservó tu carrito."
+                    : "Ningún producto de la cotización pudo importarse (inactivos, sin stock o fuera de catálogo).",
+                data: {
+                    quoteNumber: quote.quoteNumber,
+                    mergedWithExisting,
+                    touchedLines: 0,
+                    importedUnits: 0,
+                    skipped: {
+                        inactive: skippedInactive,
+                        noStock: skippedNoStock,
+                        missing: skippedMissing,
+                        branch: skippedBranch,
+                    },
+                    adjusted,
+                    warnings,
+                },
+            });
+        }
+        // Persiste el flag dentro de linesJson (compatible con POS: lee `.lines`).
+        await prismaClient_1.prisma.cotizaciones.update({
+            where: { idCotizacion: quote.idCotizacion },
+            data: {
+                linesJson: (0, quoteLines_service_1.buildImportedLinesJson)(lines, userId, payload.equipmentCount, payload.assemblyPrice, payload.deliveries, payload.comments),
+            },
+        });
+        return res.status(200).json({
+            ok: true,
+            message: warnings.length > 0
+                ? mergedWithExisting
+                    ? "Cotización fusionada con avisos"
+                    : "Cotización importada con avisos"
+                : mergedWithExisting
+                    ? "Cotización fusionada con el carrito"
+                    : "Cotización importada al carrito",
+            data: {
+                quoteNumber: quote.quoteNumber,
+                mergedWithExisting,
+                touchedLines,
+                importedUnits,
+                skipped: {
+                    inactive: skippedInactive,
+                    noStock: skippedNoStock,
+                    missing: skippedMissing,
+                    branch: skippedBranch,
+                },
+                adjusted,
+                warnings,
+            },
+        });
+    }
+    catch (error) {
+        return res.status(500).json({
+            ok: false,
+            message: error?.message || "Error al importar la cotización",
+        });
+    }
+};
+exports.importFromQuote = importFromQuote;
 //# sourceMappingURL=cart.controller.js.map

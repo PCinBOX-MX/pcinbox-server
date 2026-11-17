@@ -16,6 +16,7 @@ import {
   readQuotePdfClientIdentity,
   readQuotePdfClientIdentityLight,
   readQuotePdfLinePrices,
+  readQuotePdfSaleExtras,
   resolvePosCustomerFromPdf,
 } from "../../services/quotePdfClient.service";
 import {
@@ -26,6 +27,7 @@ import {
   buildImportedLinesJson,
   normalizeEquipmentCount,
   normalizeQuoteNumber,
+  parseQuoteComments,
   parseQuoteDeliveries,
   readStoredQuoteLinesPayload,
   type StoredQuoteDelivery,
@@ -217,6 +219,7 @@ export const parseCheckoutContext = (
   equipmentCount: number;
   assemblyPrice: number | null;
   deliveries: StoredQuoteDelivery[];
+  comments: string;
 } | null => {
   try {
     const parsed = JSON.parse(String(raw || "")) as {
@@ -225,6 +228,7 @@ export const parseCheckoutContext = (
       equipmentCount?: unknown;
       assemblyPrice?: unknown;
       deliveries?: unknown;
+      comments?: unknown;
     };
     if (
       (parsed.mode !== "cart" && parsed.mode !== "buy_now") ||
@@ -308,6 +312,14 @@ export const parseCheckoutContext = (
     if (!deliveries) {
       throw new Error("Domicilio de envío inválido");
     }
+    const comments = parseQuoteComments(
+      Object.prototype.hasOwnProperty.call(parsed, "comments")
+        ? parsed.comments
+        : null,
+    );
+    if (comments == null) {
+      throw new Error("Comentarios inválidos");
+    }
 
     if (
       !Number.isFinite(expectedItemCount) ||
@@ -318,6 +330,7 @@ export const parseCheckoutContext = (
     }
     // El hash no depende del orden. Las líneas que se guardan sí: el PDF
     // y la importación en admin deben seguir el orden en que se agregaron.
+    // Los comentarios no entran al hash: no deben gastar cupo de cuota.
     const hashLines = [...lines]
       .sort((a, b) =>
         `${a.productId}:${a.storeId ?? "null"}:${a.quantity}`.localeCompare(
@@ -343,6 +356,7 @@ export const parseCheckoutContext = (
       equipmentCount: normalizeEquipmentCount(parsed.equipmentCount),
       assemblyPrice,
       deliveries,
+      comments,
     };
   } catch {
     return null;
@@ -589,6 +603,9 @@ const saveUploadedQuote = async (
                     : {}),
                   ...(checkout.deliveries.length
                     ? { deliveries: checkout.deliveries }
+                    : {}),
+                  ...(checkout.comments
+                    ? { comments: checkout.comments }
                     : {}),
                 } as Prisma.InputJsonValue,
                 capturedName,
@@ -1062,10 +1079,12 @@ export const getAdminQuoteImport = async (
     }
 
     const storedLines = payload.lines;
+    const catalogStored = storedLines.filter((line) => line.manual !== true);
+    const manualStored = storedLines.filter((line) => line.manual === true);
 
     const productIds = [
       ...new Set(
-        storedLines
+        catalogStored
           .map((line) => Number(line.productId))
           .filter((id) => Number.isSafeInteger(id) && id > 0),
       ),
@@ -1089,11 +1108,14 @@ export const getAdminQuoteImport = async (
         })
       : [];
     const snapshots = await loadQuoteStockSnapshots(products);
-    const quotedPrices = await readQuotePdfLinePrices(quote.storageKey);
+    const [quotedPrices, pdfExtras] = await Promise.all([
+      readQuotePdfLinePrices(quote.storageKey),
+      readQuotePdfSaleExtras(quote.storageKey),
+    ]);
     const byId = new Map(products.map((product) => [Number(product.idProduct), product]));
 
     let missing = 0;
-    const lines = storedLines.flatMap((line) => {
+    const catalogLines = catalogStored.flatMap((line) => {
       const idProduct = Number(line.productId);
       if (!Number.isSafeInteger(idProduct) || idProduct <= 0) return [];
       const quantity = Math.min(999, Math.max(1, Math.round(line.quantity)));
@@ -1115,6 +1137,7 @@ export const getAdminQuoteImport = async (
             stock: 0,
             stocksByBranch: [] as { branchId: number; label: string; stock: number }[],
             quantity,
+            manual: false,
           },
         ];
       }
@@ -1133,9 +1156,50 @@ export const getAdminQuoteImport = async (
           stock: snapshot?.stock ?? Number(product.stock ?? 0),
           stocksByBranch: snapshot?.stocksByBranch ?? [],
           quantity,
+          manual: false,
         },
       ];
     });
+
+    const usedIds = new Set(catalogLines.map((line) => line.idProduct));
+    const manualLines = manualStored.flatMap((line, index) => {
+      const pdf = pdfExtras.manualById.get(line.productId);
+      const name = String(line.name || pdf?.name || "").trim().slice(0, 180);
+      if (name.length < 2) return [];
+      const quantity = Math.min(
+        999,
+        Math.max(1, Math.round(pdf?.quantity || line.quantity || 1)),
+      );
+      const unitPrice =
+        pdf?.unitPrice != null && Number.isFinite(pdf.unitPrice)
+          ? pdf.unitPrice
+          : 0;
+      let idProduct = Number(line.productId);
+      if (!Number.isSafeInteger(idProduct) || idProduct <= 0 || usedIds.has(idProduct)) {
+        idProduct = Date.now() + index;
+        while (usedIds.has(idProduct)) idProduct += 1;
+      }
+      usedIds.add(idProduct);
+      return [
+        {
+          idProduct,
+          name,
+          description: null as string | null,
+          caracteristicas: null as unknown,
+          price: unitPrice,
+          image_url: "/producto-sin-foto.jpg",
+          upc: line.upc || pdf?.upc || null,
+          sku: null as string | null,
+          active: true,
+          stock: 0,
+          stocksByBranch: [] as { branchId: number; label: string; stock: number }[],
+          quantity,
+          manual: true,
+        },
+      ];
+    });
+
+    const lines = [...catalogLines, ...manualLines];
 
     if (lines.length === 0) {
       return res.status(400).json({
@@ -1156,13 +1220,24 @@ export const getAdminQuoteImport = async (
     const customerName =
       capturedName.toLowerCase() === "venta público general" ? "" : capturedName;
 
+    const assemblyPrice =
+      payload.assemblyPrice ?? pdfExtras.assemblyPrice ?? null;
+    const deliveries = payload.deliveries || [];
+    const comments = payload.comments || "";
+
     return res.status(200).json({
       ok: true,
       data: {
         quoteNumber: quote.quoteNumber,
         customerName,
         customerPhone,
-        includeAssembly: quote.includeAssemblyService === true,
+        includeAssembly:
+          quote.includeAssemblyService === true ||
+          (assemblyPrice != null && assemblyPrice > 0),
+        assemblyPrice,
+        equipmentCount: payload.equipmentCount || 1,
+        deliveries,
+        comments,
         missing,
         lines,
       },
@@ -1216,6 +1291,7 @@ export const markAdminQuoteImported = async (
             payload.equipmentCount,
             payload.assemblyPrice,
             payload.deliveries,
+            payload.comments,
           ),
         },
       });
@@ -1290,6 +1366,7 @@ export const unlinkAdminQuoteImport = async (
             ...(payload.deliveries.length
               ? { deliveries: payload.deliveries }
               : {}),
+            ...(payload.comments ? { comments: payload.comments } : {}),
           } as Prisma.InputJsonValue,
         },
       });
@@ -1493,15 +1570,23 @@ export const getAdminQuoteCostSummary = async (
   res: Response,
 ) => {
   try {
-    const idCotizacion = parsePositiveId(req.params.id);
-    if (!idCotizacion) {
+    const rawId = String(req.params.id || "").trim();
+    const idCotizacion = parsePositiveId(rawId);
+    if (!idCotizacion && !rawId) {
       return res.status(400).json({
         ok: false,
         message: "La cotización no es válida.",
       });
     }
+    // Acepta id interno o número de cotización (el listado muestra ambos).
     const quote = await prisma.cotizaciones.findFirst({
-      where: { idCotizacion, active: 1 },
+      where: {
+        active: 1,
+        OR: [
+          ...(idCotizacion ? [{ idCotizacion }] : []),
+          ...(rawId ? [{ quoteNumber: rawId }] : []),
+        ],
+      },
       select: { linesJson: true, storageKey: true },
     });
     if (!quote) {

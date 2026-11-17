@@ -1255,6 +1255,7 @@ export const getPosQuoteByNumber = async (req: Request, res: Response) => {
         manualItems: prepared.manualItems,
         assembly: prepared.assembly,
         deliveries: prepared.deliveries,
+        comments: stored.comments || "",
         missingProductIds,
         inactiveProducts,
       },

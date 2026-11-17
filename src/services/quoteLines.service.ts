@@ -31,6 +31,8 @@ export type QuoteLinesPayload = {
   assemblyPrice: number | null;
   /** Domicilios de envío. Vacío si la cotización no los trae. */
   deliveries: StoredQuoteDelivery[];
+  /** Notas del PDF. Vacío si no hubo comentarios. */
+  comments: string;
 };
 
 /** Lo que puede verse en el PDF: sin calle ni número. */
@@ -71,6 +73,13 @@ export function normalizeQuoteNumber(raw: unknown): string {
 
 function roundMoney(n: number): number {
   return Math.round((n + Number.EPSILON) * 100) / 100;
+}
+
+/** Vacío si no hay. Null si el valor guardado no es usable. */
+export function parseQuoteComments(raw: unknown): string | null {
+  if (raw == null) return "";
+  if (typeof raw !== "string") return null;
+  return raw.trim().slice(0, 500);
 }
 
 function parseJsonValue(raw: unknown): unknown {
@@ -166,6 +175,7 @@ export function readStoredQuoteLinesPayload(
       equipmentCount: 1,
       assemblyPrice: null,
       deliveries: [],
+      comments: "",
     };
   }
 
@@ -188,6 +198,12 @@ export function readStoredQuoteLinesPayload(
     if (assemblyPrice === undefined) return null;
     const deliveries = parseQuoteDeliveries(obj.deliveries);
     if (!deliveries) return null;
+    const comments = parseQuoteComments(
+      Object.prototype.hasOwnProperty.call(obj, "comments")
+        ? obj.comments
+        : null,
+    );
+    if (comments == null) return null;
 
     return {
       lines,
@@ -196,6 +212,7 @@ export function readStoredQuoteLinesPayload(
       equipmentCount: normalizeEquipmentCount(obj.equipmentCount),
       assemblyPrice,
       deliveries,
+      comments,
     };
   }
 
@@ -216,6 +233,7 @@ export function buildImportedLinesJson(
   equipmentCount = 1,
   assemblyPrice: number | null = null,
   deliveries: StoredQuoteDelivery[] = [],
+  comments = "",
 ): {
   lines: StoredQuoteLine[];
   importedAt: string;
@@ -223,10 +241,12 @@ export function buildImportedLinesJson(
   equipmentCount?: number;
   assemblyPrice?: number;
   deliveries?: StoredQuoteDelivery[];
+  comments?: string;
 } {
   const count = normalizeEquipmentCount(equipmentCount);
   const assembly = readAssemblyPrice(assemblyPrice);
   const saved = parseQuoteDeliveries(deliveries) ?? [];
+  const note = parseQuoteComments(comments) ?? "";
   return {
     lines,
     importedAt: new Date().toISOString(),
@@ -234,6 +254,7 @@ export function buildImportedLinesJson(
     ...(count > 1 ? { equipmentCount: count } : {}),
     ...(assembly ? { assemblyPrice: assembly } : {}),
     ...(saved.length ? { deliveries: saved } : {}),
+    ...(note ? { comments: note } : {}),
   };
 }
 
