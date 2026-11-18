@@ -11,6 +11,14 @@ type TicketSale = {
     subtotal: number;
     discountTotal: number;
     total: number;
+    deliveryAddresses?: Array<{
+        postalCode?: string | null;
+        shippingCost?: number | null;
+    }> | null;
+    deliveryAddress?: {
+        postalCode?: string | null;
+        shippingCost?: number | null;
+    } | null;
     items: Array<{
         productId: number;
         productName: string;
@@ -27,6 +35,17 @@ type TicketSale = {
         serials?: Array<{
             serialNumber: string;
         }>;
+        serviceIntake?: {
+            serviceType?: string;
+            equipment?: Array<{
+                quantity: number;
+                description: string;
+                serialNumber: string;
+                physicalCondition: string;
+            }>;
+            failureOrRequestedService?: string;
+            technicalObservationsOnReceipt?: string;
+        } | null;
     }>;
     payments: Array<{
         method: string;

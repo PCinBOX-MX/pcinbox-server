@@ -118,7 +118,11 @@ export const addAdminQuoteCartLine = async (
   if (!userId) {
     return res.status(401).json({ ok: false, message: "Debes iniciar sesión." });
   }
-  const incoming = normalizeStoredQuoteLine({ ...req.body, quantity: 1 });
+  const requestedQuantity = req.body?.manual === true ? req.body?.quantity : 1;
+  const incoming = normalizeStoredQuoteLine({
+    ...req.body,
+    quantity: requestedQuantity,
+  });
   if (!incoming) {
     return res.status(400).json({ ok: false, message: "El producto no es válido." });
   }

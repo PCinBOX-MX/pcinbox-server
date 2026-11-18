@@ -12,5 +12,6 @@ router.post("/removeAllCart", index_middleware_1.MiddleAuthRoute, cart_controlle
 router.post("/generateCotizacion", index_middleware_1.MiddleAuthRoute, cart_controller_1.generateCotizacion);
 router.post("/changeSucursal", index_middleware_1.MiddleAuthRoute, cart_controller_1.changeSucursal);
 router.post("/changeQuantity", index_middleware_1.MiddleAuthRoute, cart_controller_1.changeQuantity);
+router.post("/importFromQuote", index_middleware_1.MiddleAuthRoute, cart_controller_1.importFromQuote);
 exports.default = router;
 //# sourceMappingURL=cart.route.js.map

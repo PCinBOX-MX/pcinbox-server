@@ -8,6 +8,7 @@ exports.nextPosFolio = nextPosFolio;
 exports.searchPosProducts = searchPosProducts;
 exports.invalidatePosSearchCatalog = invalidatePosSearchCatalog;
 exports.hydratePosProductsByIds = hydratePosProductsByIds;
+const client_1 = require("@prisma/client");
 const prismaClient_1 = require("../../db/prismaClient");
 const pcinbox_branch_display_1 = require("../../constants/pcinbox-branch-display");
 const searchNormalization_1 = require("../../utils/searchNormalization");
@@ -97,7 +98,7 @@ function accentVariants(token) {
     const set = new Set([token, plain].filter((t) => t.length > 0));
     return [...set];
 }
-function scorePosProduct(product, query, tokens) {
+function scorePosProduct(product, query, tokens, specs) {
     let score = 0;
     const q = (0, searchNormalization_1.normalizeMatchText)(query);
     const name = (0, searchNormalization_1.normalizeMatchText)(product.name);
@@ -107,6 +108,7 @@ function scorePosProduct(product, query, tokens) {
     const marcaName = (0, searchNormalization_1.normalizeMatchText)(product.marcaName);
     const categoryName = (0, searchNormalization_1.normalizeMatchText)(product.categoryName);
     const idExt = (0, searchNormalization_1.normalizeMatchText)(product.idProductExt);
+    const specText = (0, searchNormalization_1.normalizeMatchText)(specs);
     if (sku === q || upc === q || idExt === q)
         score += 200;
     if (name === q)
@@ -121,6 +123,8 @@ function scorePosProduct(product, query, tokens) {
         score += 35;
     if (description.includes(q))
         score += 15;
+    if (specText.includes(q))
+        score += 18;
     for (const rawToken of tokens) {
         const token = (0, searchNormalization_1.normalizeMatchText)(rawToken);
         if (token.length < 1)
@@ -135,8 +139,106 @@ function scorePosProduct(product, query, tokens) {
             score += 35;
         if (description.includes(token))
             score += 8;
+        if (specText.includes(token))
+            score += 12;
     }
     return score;
+}
+const PC_TIPO_LABELS = {
+    workstation: "Workstation",
+    pro: "PC Gamer Pro",
+    intermedia: "PC Gamer Intermedia",
+    entrada: "PC Gamer de entrada",
+};
+function specsBlob(raw) {
+    if (raw == null)
+        return "";
+    if (typeof raw === "string")
+        return raw;
+    try {
+        return JSON.stringify(raw);
+    }
+    catch {
+        return "";
+    }
+}
+function pcTipoValue(raw) {
+    let parsed = raw;
+    if (typeof raw === "string") {
+        try {
+            parsed = JSON.parse(raw);
+        }
+        catch {
+            return null;
+        }
+    }
+    if (!Array.isArray(parsed))
+        return null;
+    const row = parsed.find((item) => String(item?.prop ?? "").trim().toLowerCase() === "tipo");
+    const value = String(row?.value ?? "").trim();
+    return value || null;
+}
+function pcTipoLabel(raw) {
+    const tipo = pcTipoValue(raw);
+    if (!tipo)
+        return null;
+    return PC_TIPO_LABELS[tipo.toLowerCase()] || null;
+}
+/** Tipos de PC armada que el cajero está buscando (gamer / workstation). */
+function assembledPcTipos(rawQuery) {
+    const n = (0, searchNormalization_1.normalizeMatchText)(rawQuery);
+    const tipos = new Set();
+    if (/workstation|work station|estacion de trabajo/.test(n)) {
+        tipos.add("workStation");
+    }
+    if (/\bgamer\b/.test(n)) {
+        tipos.add("pro");
+        tipos.add("intermedia");
+        tipos.add("entrada");
+    }
+    return [...tipos];
+}
+function likeTerm(term) {
+    const clean = term.replace(/[%_\\]/g, "").trim();
+    if (clean.length < 3 && !/^\d{2,}$/.test(clean))
+        return null;
+    return `%${clean}%`;
+}
+/** PCs armadas que coinciden por nombre, specs o tipo, aparte del tope de componentes. */
+async function findAssembledPcIds(params) {
+    const likes = [
+        ...new Set(params.terms.map(likeTerm).filter((value) => Boolean(value))),
+    ].slice(0, 4);
+    const tipoLikes = params.tipos.flatMap((tipo) => {
+        const value = tipo.toLowerCase();
+        return [
+            `%"value":"${value}",%`,
+            `%"value":"${value}"}%`,
+            `%"value": "${value}",%`,
+            `%"value": "${value}"}%`,
+        ];
+    });
+    if (likes.length === 0 && tipoLikes.length === 0)
+        return [];
+    const clauses = [
+        ...likes.map((like) => client_1.Prisma.sql `(
+        LOWER(name) LIKE LOWER(${like})
+        OR LOWER(IFNULL(sku, '')) LIKE LOWER(${like})
+        OR LOWER(IFNULL(upc, '')) LIKE LOWER(${like})
+        OR LOWER(IFNULL(description, '')) LIKE LOWER(${like})
+        OR LOWER(CAST(IFNULL(caracteristicas, '') AS CHAR)) LIKE LOWER(${like})
+      )`),
+        ...tipoLikes.map((like) => client_1.Prisma.sql `LOWER(CAST(IFNULL(caracteristicas, '') AS CHAR)) LIKE LOWER(${like})`),
+    ];
+    const rows = await prismaClient_1.prisma.$queryRaw `
+    SELECT idProduct
+    FROM products
+    WHERE active = 1 AND isPC = 1 AND (${client_1.Prisma.join(clauses, " OR ")})
+    LIMIT 24
+  `;
+    return rows
+        .map((row) => Number(row.idProduct))
+        .filter((id) => Number.isFinite(id) && id > 0);
 }
 /** Frases/sinónimos útiles para SQL (además del término ya normalizado). */
 function sqlPhraseHints(raw, normalized) {
@@ -216,6 +318,7 @@ async function searchPosProducts(q, limit = 25) {
         image_url: true,
         providerId: true,
         isPC: true,
+        caracteristicas: true,
         marca: { select: { name: true } },
         categories: { select: { name: true } },
         providers: { select: { companyName: true } },
@@ -236,12 +339,32 @@ async function searchPosProducts(q, limit = 25) {
             take: takeCandidates,
             select: lightSelect,
         });
+    const pcTipos = assembledPcTipos(raw);
+    const extraPcIds = (await findAssembledPcIds({ terms: termBag, tipos: pcTipos }).catch(() => [])).filter((id) => !products.some((p) => Number(p.idProduct) === id));
+    const pcExtra = extraPcIds.length === 0
+        ? []
+        : hasSerialCols
+            ? await prismaClient_1.prisma.products.findMany({
+                where: { active: 1, isPC: 1, idProduct: { in: extraPcIds } },
+                select: {
+                    ...lightSelect,
+                    requiresSerial: true,
+                    warrantyMonths: true,
+                    warrantyMode: true,
+                },
+            })
+            : await prismaClient_1.prisma.products.findMany({
+                where: { active: 1, isPC: 1, idProduct: { in: extraPcIds } },
+                select: lightSelect,
+            });
+    const catalog = [...products, ...pcExtra];
     // Scoring: tokens originales + normalizados (para "tarjeta madre" y "motherboard")
     const scoreTokens = [
         ...new Set([...rawTokens, ...tokens].filter((t) => t.length >= 1)),
     ];
-    const ranked = products
+    const rankedAll = catalog
         .map((p) => {
+        const specs = specsBlob(p.caracteristicas);
         const row = {
             name: p.name,
             sku: p.sku,
@@ -251,14 +374,31 @@ async function searchPosProducts(q, limit = 25) {
             marcaName: p.marca?.name ?? null,
             categoryName: p.categories?.name ?? null,
         };
-        const scoreRaw = scorePosProduct(row, (0, searchNormalization_1.normalizeMatchText)(raw), rawTokens);
-        const scoreNorm = scorePosProduct(row, normalizedQuery, scoreTokens);
-        return { p, score: Math.max(scoreRaw, scoreNorm) };
+        const scoreRaw = scorePosProduct(row, (0, searchNormalization_1.normalizeMatchText)(raw), rawTokens, specs);
+        const scoreNorm = scorePosProduct(row, normalizedQuery, scoreTokens, specs);
+        let score = Math.max(scoreRaw, scoreNorm);
+        const tipo = pcTipoValue(p.caracteristicas);
+        if (Number(p.isPC) === 1 &&
+            tipo &&
+            pcTipos.some((item) => item.toLowerCase() === tipo.toLowerCase())) {
+            score += 120;
+        }
+        return { p, score };
     })
         .filter((r) => r.score > 0)
         .sort((a, b) => b.score - a.score ||
-        String(a.p.name || "").localeCompare(String(b.p.name || "")))
-        .slice(0, Math.min(Math.max(limit, 1), 40));
+        String(a.p.name || "").localeCompare(String(b.p.name || "")));
+    const resultCap = Math.min(Math.max(limit, 1), 40);
+    const top = rankedAll.slice(0, resultCap);
+    const topIds = new Set(top.map((r) => Number(r.p.idProduct)));
+    const extraPcs = rankedAll
+        .filter((r) => Number(r.p.isPC) === 1 &&
+        !topIds.has(Number(r.p.idProduct)))
+        .slice(0, 5);
+    const ranked = extraPcs.length === 0
+        ? top
+        : [...top.slice(0, resultCap - extraPcs.length), ...extraPcs].sort((a, b) => b.score - a.score ||
+            String(a.p.name || "").localeCompare(String(b.p.name || "")));
     if (ranked.length === 0)
         return [];
     const productIds = ranked.map((r) => Number(r.p.idProduct));
@@ -341,6 +481,9 @@ async function searchPosProducts(q, limit = 25) {
                 ? String(p.warrantyMode)
                 : null,
             isPC: Number(p.isPC) === 1,
+            pcLabel: Number(p.isPC) === 1
+                ? pcTipoLabel(p.caracteristicas) || "PC armada"
+                : null,
             providerId,
             providerName,
             stocksByBranch,
@@ -356,7 +499,7 @@ function invalidatePosSearchCatalog() {
     // no-op: ya no hay caché full-catalog
 }
 /** Hidrata productos por id con el mismo shape que search (stock por bodega). */
-async function hydratePosProductsByIds(productIds) {
+async function hydratePosProductsByIds(productIds, options) {
     const ids = [
         ...new Set(productIds
             .map((id) => Number(id))
@@ -381,9 +524,12 @@ async function hydratePosProductsByIds(productIds) {
         categories: { select: { name: true } },
         providers: { select: { companyName: true } },
     };
+    const productWhere = options?.includeInactive
+        ? { idProduct: { in: ids } }
+        : { active: 1, idProduct: { in: ids } };
     const products = hasSerialCols
         ? await prismaClient_1.prisma.products.findMany({
-            where: { active: 1, idProduct: { in: ids } },
+            where: productWhere,
             select: {
                 ...lightSelect,
                 requiresSerial: true,
@@ -392,7 +538,7 @@ async function hydratePosProductsByIds(productIds) {
             },
         })
         : await prismaClient_1.prisma.products.findMany({
-            where: { active: 1, idProduct: { in: ids } },
+            where: productWhere,
             select: lightSelect,
         });
     if (products.length === 0)

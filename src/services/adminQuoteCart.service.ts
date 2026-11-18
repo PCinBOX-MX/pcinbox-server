@@ -24,6 +24,7 @@ export type StoredQuoteLine = {
   stock: number;
   stocksByBranch: StoredQuoteBranch[];
   quantity: number | null;
+  manual?: boolean;
 };
 
 export type QuoteCartPage = {
@@ -106,6 +107,7 @@ export function normalizeStoredQuoteLine(raw: unknown): StoredQuoteLine | null {
     stock: Number.isFinite(Number(line.stock)) ? Number(line.stock) : 0,
     stocksByBranch,
     quantity,
+    manual: line.manual === true,
   };
 }
 

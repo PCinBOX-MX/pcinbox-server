@@ -1,6 +1,13 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.serializeSerial = serializeSerial;
+exports.serialKey = serialKey;
+exports.serialMatchesProductCode = serialMatchesProductCode;
+exports.isSharedBarcodeSerial = isSharedBarcodeSerial;
+exports.serialIsSharedBarcode = serialIsSharedBarcode;
+exports.loadSharedBarcodeKeys = loadSharedBarcodeKeys;
+exports.readSharedSerialGroups = readSharedSerialGroups;
+exports.mergeSharedBarcodeSerials = mergeSharedBarcodeSerials;
 exports.normalizeItemSerials = normalizeItemSerials;
 exports.assertSerialsAvailable = assertSerialsAvailable;
 exports.assignSerialsOnSale = assignSerialsOnSale;
@@ -44,42 +51,152 @@ const serialInclude = {
     branches: { select: { name: true, city: true } },
     pos_sales: { select: { folio: true, status: true, createdAt: true } },
 };
+/** Misma clave para comparar una serie contra un UPC (espacios y guiones no cuentan). */
+function serialKey(value) {
+    return String(value || "")
+        .trim()
+        .toUpperCase()
+        .replace(/[\s-]+/g, "");
+}
+function serialMatchesProductCode(serial, code) {
+    const left = serialKey(serial);
+    const right = serialKey(code);
+    return Boolean(left) && left === right;
+}
+function isSharedBarcodeSerial(serial, codes) {
+    return codes.some((code) => serialMatchesProductCode(serial, code));
+}
+/** La serie es el UPC de esta línea o el UPC de algún producto del catálogo. */
+function serialIsSharedBarcode(serial, productUpc, catalogKeys) {
+    return (isSharedBarcodeSerial(serial, [productUpc]) ||
+        catalogKeys.has(serialKey(serial)));
+}
+async function loadSharedBarcodeKeys(tx, serials) {
+    const list = [
+        ...new Set(serials.map((serial) => String(serial || "").trim()).filter(Boolean)),
+    ];
+    if (list.length === 0)
+        return new Set();
+    const rows = await tx.products.findMany({
+        where: { upc: { in: list } },
+        select: { upc: true },
+    });
+    const keys = new Set();
+    for (const serial of list) {
+        if (rows.some((row) => serialMatchesProductCode(serial, row.upc))) {
+            keys.add(serialKey(serial));
+        }
+    }
+    return keys;
+}
+function readSharedSerialGroups(events) {
+    const created = (events || []).find((event) => event.eventType === "created");
+    const payload = created?.payload;
+    if (!payload || !Array.isArray(payload.sharedSerials))
+        return [];
+    const groups = [];
+    for (const raw of payload.sharedSerials) {
+        if (!raw || typeof raw !== "object")
+            continue;
+        const group = raw;
+        const serials = Array.isArray(group.serials)
+            ? group.serials.map((serial) => String(serial || "").trim()).filter(Boolean)
+            : [];
+        if (!serials.length || !Number.isFinite(Number(group.productId)))
+            continue;
+        groups.push({
+            productId: Number(group.productId),
+            productName: String(group.productName || ""),
+            serials,
+            warrantyMonths: group.warrantyMonths != null && Number.isFinite(Number(group.warrantyMonths))
+                ? Number(group.warrantyMonths)
+                : null,
+            warrantyMode: typeof group.warrantyMode === "string" ? group.warrantyMode : null,
+        });
+    }
+    return groups;
+}
+/** Agrega al ticket y a la garantía las series que son UPC y no viven en product_serials. */
+function mergeSharedBarcodeSerials(items, groups) {
+    if (!groups.length)
+        return items;
+    const queues = new Map();
+    for (const group of groups) {
+        const key = `${group.productId}|${group.productName}`;
+        const queue = queues.get(key) || [];
+        queue.push(group);
+        queues.set(key, queue);
+    }
+    let syntheticId = -1;
+    return items.map((item) => {
+        const key = `${Number(item.productId)}|${item.productName || ""}`;
+        const group = queues.get(key)?.shift();
+        if (!group)
+            return item;
+        const extra = group.serials.map((serialNumber) => ({
+            idProductSerial: syntheticId--,
+            serialNumber,
+            status: "sold",
+            warrantyMonths: group.warrantyMonths,
+            warrantyMode: group.warrantyMode,
+            warrantyExpiresAt: null,
+        }));
+        return { ...item, serials: [...(item.serials || []), ...extra] };
+    });
+}
 /** Valida y normaliza series por línea de venta. */
-function normalizeItemSerials(quantity, requiresSerial, rawSerials, productLabel) {
+function normalizeItemSerials(quantity, requiresSerial, rawSerials, productLabel, productCodes = []) {
     const list = Array.isArray(rawSerials)
         ? rawSerials.map((s) => String(s || "").trim()).filter(Boolean)
         : [];
     if (requiresSerial) {
         if (list.length !== quantity) {
-            throw new Error(`${productLabel}: requiere ${quantity} número(s) de serie`);
+            throw new Error(`${productLabel}: faltan series. Captura ${quantity} número(s), uno por cada pieza, y vuelve a cobrar. Si el campo no aparece, quita el folio, impórtalo de nuevo y, si sigue igual, reporta a soporte el folio y el nombre del producto.`);
         }
     }
     if (list.length > 0 && list.length !== quantity) {
-        throw new Error(`${productLabel}: debes capturar exactamente ${quantity} serie(s) o ninguna`);
+        throw new Error(`${productLabel}: hay ${list.length} serie(s) para ${quantity} pieza(s). Captura una serie por pieza, o déjalas todas vacías si el producto no exige serie.`);
     }
-    const unique = new Set(list.map((s) => s.toUpperCase()));
-    if (unique.size !== list.length) {
-        throw new Error(`${productLabel}: hay números de serie duplicados`);
+    const counts = new Map();
+    for (const serial of list) {
+        const key = serialKey(serial);
+        counts.set(key, (counts.get(key) || 0) + 1);
+    }
+    for (const serial of list) {
+        if ((counts.get(serialKey(serial)) || 0) < 2)
+            continue;
+        if (isSharedBarcodeSerial(serial, productCodes))
+            continue;
+        throw new Error(`${productLabel}: hay series repetidas. Cada pieza necesita una serie distinta. Corrige los campos y vuelve a cobrar.`);
     }
     return list;
 }
-async function assertSerialsAvailable(tx, serials) {
+async function assertSerialsAvailable(tx, serials, productCodes = []) {
     if (serials.length === 0)
+        return;
+    const catalogKeys = await loadSharedBarcodeKeys(tx, serials);
+    const trackable = serials.filter((serial) => !serialIsSharedBarcode(serial, null, catalogKeys) &&
+        !isSharedBarcodeSerial(serial, productCodes));
+    if (trackable.length === 0)
         return;
     const existing = await tx.product_serials.findMany({
         where: {
-            serialNumber: { in: serials },
+            serialNumber: { in: trackable },
         },
         select: { serialNumber: true, status: true },
     });
     for (const row of existing) {
         if (row.status === "sold" || row.status === "rma") {
-            throw new Error(`La serie ${row.serialNumber} ya está registrada como ${row.status}`);
+            throw new Error(`La serie ${row.serialNumber} ya está registrada como ${row.status === "sold" ? "vendida" : "RMA"}. Usa otra serie. Si crees que es un error, reporta a soporte esa serie y el folio de la venta.`);
         }
     }
 }
 async function assignSerialsOnSale(tx, params) {
     if (params.serials.length === 0)
+        return;
+    const catalogKeys = await loadSharedBarcodeKeys(tx, params.serials);
+    const serials = params.serials.filter((serial) => !serialIsSharedBarcode(serial, params.productUpc, catalogKeys));
+    if (serials.length === 0)
         return;
     const soldAt = params.soldAt || new Date();
     const months = params.warrantyMonths != null && params.warrantyMonths > 0
@@ -93,7 +210,7 @@ async function assignSerialsOnSale(tx, params) {
             ? "months"
             : null;
     const warrantyExpiresAt = months != null ? addMonths(soldAt, months) : null;
-    for (const serialNumber of params.serials) {
+    for (const serialNumber of serials) {
         const existing = await tx.product_serials.findFirst({
             where: { serialNumber },
         });
@@ -101,10 +218,13 @@ async function assignSerialsOnSale(tx, params) {
             if (Number(existing.productId) !== params.productId) {
                 throw new Error(`La serie ${serialNumber} pertenece a otro producto`);
             }
+            const claimable = params.allowAlreadySold
+                ? ["available", "returned", "sold", "rma"]
+                : ["available", "returned"];
             const claimed = await tx.product_serials.updateMany({
                 where: {
                     idProductSerial: existing.idProductSerial,
-                    status: { in: ["available", "returned"] },
+                    status: { in: claimable },
                 },
                 data: {
                     status: "sold",
@@ -210,7 +330,7 @@ async function registerAvailableSerial(params) {
     if (!serialNumber)
         throw new Error("Número de serie requerido");
     if (!Number.isSafeInteger(params.productId) || params.productId <= 0) {
-        throw new Error("Producto inválido");
+        throw new Error("No se pudo registrar la serie porque el producto no tiene un identificador válido. Si la línea viene de un folio, quita el folio e impórtalo de nuevo. Si se repite, reporta a soporte el folio y el nombre del producto.");
     }
     const product = await prismaClient_1.prisma.products.findFirst({
         where: { idProduct: params.productId, active: 1 },

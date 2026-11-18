@@ -1343,7 +1343,14 @@ export const importFromQuote = async (
     await prisma.cotizaciones.update({
       where: { idCotizacion: quote.idCotizacion },
       data: {
-        linesJson: buildImportedLinesJson(lines, userId),
+        linesJson: buildImportedLinesJson(
+          lines,
+          userId,
+          payload.equipmentCount,
+          payload.assemblyPrice,
+          payload.deliveries,
+          payload.comments,
+        ),
       },
     });
 

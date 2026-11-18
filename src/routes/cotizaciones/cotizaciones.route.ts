@@ -6,6 +6,7 @@ import {
   archiveAdminQuote,
   getAdminQuoteImport,
   getAdminQuoteProductAvailability,
+  getAdminQuoteCostSummary,
   listAdminQuotes,
   markAdminQuoteImported,
   searchAdminQuoteProducts,
@@ -156,6 +157,12 @@ router.post(
   createAdminQuote,
 );
 router.get("/admin", MiddleAuthRoute, MiddleAdminRoute, listAdminQuotes);
+router.get(
+  "/admin/:id/cost-summary",
+  MiddleAuthRoute,
+  MiddleAdminRoute,
+  getAdminQuoteCostSummary,
+);
 router.get(
   "/admin/:id/content",
   MiddleAuthRoute,

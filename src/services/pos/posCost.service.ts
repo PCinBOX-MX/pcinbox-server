@@ -40,6 +40,28 @@ export function isPosCostProvider(providerId: unknown): boolean {
   );
 }
 
+/** Ids pedidos que son TechSmart o DicoTech, tengan o no fila de costo. */
+export async function loadPosCostProviderProductIds(
+  productIds: number[],
+): Promise<Set<number>> {
+  const ids = [
+    ...new Set(
+      productIds
+        .map((id) => Number(id))
+        .filter((id) => Number.isSafeInteger(id) && id > 0),
+    ),
+  ];
+  if (ids.length === 0) return new Set();
+  const rows = await prisma.products.findMany({
+    where: {
+      idProduct: { in: ids },
+      providerId: { in: [...POS_COST_PROVIDER_IDS] },
+    },
+    select: { idProduct: true },
+  });
+  return new Set(rows.map((row) => Number(row.idProduct)));
+}
+
 /** Costos actuales por idProduct (solo proveedores 2/3 con fila en products_providers). */
 export async function loadPosUnitCostsByProductIds(
   productIds: number[],

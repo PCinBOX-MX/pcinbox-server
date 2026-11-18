@@ -2,8 +2,17 @@ import { Request, Response } from "express";
 import CustomRequestI from "../../interfaces/customrequest.interface";
 export declare const listPosBranches: (_req: Request, res: Response) => Promise<Response<any, Record<string, any>>>;
 export declare const searchPosProductsHandler: (req: Request, res: Response) => Promise<Response<any, Record<string, any>>>;
+/** Venta de este POS, por folio, para rellenar Cobrar (series vacías). */
+export declare const getPosSaleByFolio: (req: Request, res: Response) => Promise<Response<any, Record<string, any>>>;
 /** Carga una cotización web por número para rellenar el carrito POS. */
 export declare const getPosQuoteByNumber: (req: Request, res: Response) => Promise<Response<any, Record<string, any>>>;
+/** Costos internos por producto (proveedores 2/3) para el resumen del carrito. */
+export declare const getPosProductCosts: (req: Request, res: Response) => Promise<Response<any, Record<string, any>>>;
+/**
+ * Estado actual (activo, precio, stock por bodega) de productos del carrito,
+ * incluidos los inactivos. El POS lo consulta justo antes de cobrar.
+ */
+export declare const getPosProductsState: (req: Request, res: Response) => Promise<Response<any, Record<string, any>>>;
 export declare const searchPosCustomers: (req: Request, res: Response) => Promise<Response<any, Record<string, any>>>;
 export declare const createPosSale: (req: CustomRequestI, res: Response) => Promise<Response<any, Record<string, any>>>;
 export declare const listPosSales: (req: Request, res: Response) => Promise<Response<any, Record<string, any>>>;
