@@ -4,7 +4,11 @@ import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
 import CustomRequestI from "../../interfaces/customrequest.interface";
 import { parseBigInts } from "../../services/index.service";
-import { sendEmailResend, sendReservationStatusUpdateEmail, getReservationStatusLabel, getReservationStatusMessage } from "../../services/resend.service";
+import { getReservationStatusLabel, getReservationStatusMessage } from "../../services/resend.service";
+import {
+  dispatchReservationStatusEmail,
+  dispatchTemplateEmail,
+} from "../../services/mail-dispatch.service";
 
 dotenv.config({ path: ".env.prod" });
 
@@ -80,7 +84,7 @@ const notifyReservationStatusChange = async (
 ) => {
   if (!reservation.contactEmail) return;
 
-  await sendReservationStatusUpdateEmail(reservation.contactEmail, {
+  await dispatchReservationStatusEmail(reservation.contactEmail, {
     contactName: reservation.contactName,
     reference: reservation.reference,
     status,
@@ -202,7 +206,7 @@ export const createReservation = async (req: Request, res: Response) => {
         const dateFormatter = new Intl.DateTimeFormat('es-MX', { timeZone: 'UTC', weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
         const formattedDate = newReservation.date ? dateFormatter.format(new Date(newReservation.date)) : newReservation.createdAt?.toDateString()!;
 
-        await sendEmailResend(
+        await dispatchTemplateEmail(
           newReservation.contactEmail,
           "Reservacion de cita para mantenimiento",
           "reservation-client", {
@@ -215,7 +219,7 @@ export const createReservation = async (req: Request, res: Response) => {
           SERVICE: newReservation.service
         })
 
-        await sendEmailResend(
+        await dispatchTemplateEmail(
           "admon@pcinbox.com.mx",
           "Reservacion de cita para mantenimiento",
           "reservation-admin", {
@@ -376,7 +380,7 @@ export const rescheduleReservation = async (req: Request, res: Response) => {
         const formattedDate = updated.date ? dateFormatter.format(new Date(updated.date)) : updated.createdAt?.toDateString()!;
 
         try {
-          await sendEmailResend(
+          await dispatchTemplateEmail(
             updated.contactEmail,
             "Reserva reprogramada con éxito",
             "reservation-client", {
@@ -389,7 +393,7 @@ export const rescheduleReservation = async (req: Request, res: Response) => {
             SERVICE: updated.service
           });
 
-          await sendEmailResend(
+          await dispatchTemplateEmail(
             "admon@pcinbox.com.mx",
             "Reserva reprogramada con éxito",
             "reservation-admin", {
