@@ -8,6 +8,7 @@
     "generate": "npx prisma generate",
     "build": "npm run generate && npx tsc",
     "test:quotes": "tsx --test src/services/quoteStorage.service.test.ts src/controllers/cotizaciones/cotizaciones.controller.test.ts src/services/quotePdfClient.service.test.ts",
+    "test:search": "tsx --test src/services/catalog-search/inverted-index.service.test.ts",
     "dev": "npx kill-port 8000 && dotenv -e .env.local nodemon --exec tsx src/server.ts",
     "dev:prod": "npx kill-port 8000 && dotenv -e .env.prod nodemon --exec tsx src/server.ts",
     "migrate:dev": "npx dotenv -e .env.local -- npx prisma migrate dev --name migraciondev",

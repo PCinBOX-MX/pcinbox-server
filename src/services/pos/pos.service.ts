@@ -12,6 +12,8 @@ import {
   getProductSerialFlags,
   productsHaveSerialColumns,
 } from "./posSerialFlags.service";
+import { getPosCatalogIndex } from "../catalog-search/pos-catalog-index.service";
+import { searchInvertedIndex } from "../catalog-search/inverted-index.service";
 
 const SELLER_MAX_DISCOUNT_PCT = 3;
 
@@ -339,57 +341,7 @@ export async function searchPosProducts(q: string, limit = 25) {
     .split(/\s+/)
     .filter((t) => t.length >= 2);
   const tokens = normalizedQuery.split(/\s+/).filter((t) => t.length >= 1);
-  const phrases = sqlPhraseHints(raw, normalizedQuery);
-  const termBag = [
-    ...new Set(
-      [...phrases, ...tokens.flatMap(accentVariants), ...rawTokens].filter(
-        (t) => t.length >= 2 || /^\d+$/.test(t),
-      ),
-    ),
-  ].slice(0, 6);
-
-  const or: Prisma.productsWhereInput[] = [];
-
-  // Siempre permitir buscar por idProductExt (clave externa / número de parte)
-  if (raw.length >= 2) {
-    or.push(
-      { idProductExt: { equals: raw } },
-      { idProductExt: { startsWith: raw } },
-    );
-  }
-
-  // Código de barras / SKU: exacto + prefijo (aprovecha índices B-tree)
-  if (/^\d{6,}$/.test(raw) || /^[A-Za-z0-9\-_.]{4,}$/.test(raw)) {
-    or.push(
-      { sku: { equals: raw } },
-      { upc: { equals: raw } },
-      { sku: { startsWith: raw } },
-      { upc: { startsWith: raw } },
-    );
-  }
-
-  for (const term of termBag) {
-    // Nombre sigue con contains (texto libre); códigos con prefijo.
-    or.push(
-      { name: { contains: term } },
-      { sku: { startsWith: term } },
-      { upc: { startsWith: term } },
-      { idProductExt: { startsWith: term } },
-    );
-  }
-
-  // Multi-palabra en español: AND de tokens originales sobre name
-  // (evita depender solo de "motherboard" cuando el catálogo dice "Tarjeta Madre").
-  if (rawTokens.length >= 2) {
-    or.push({
-      AND: rawTokens.map((t) => ({ name: { contains: t } })),
-    });
-  }
-
-  if (or.length === 0) return [];
-
   const hasSerialCols = await productsHaveSerialColumns();
-  const takeCandidates = Math.min(Math.max(limit * 3, 30), 60);
 
   const lightSelect = {
     idProduct: true,
@@ -409,10 +361,21 @@ export async function searchPosProducts(q: string, limit = 25) {
     providers: { select: { companyName: true } },
   } as const;
 
+  const catalogIndex = await getPosCatalogIndex();
+  const indexedIds = searchInvertedIndex(catalogIndex, raw, 40).map(
+    (row) => row.idProduct,
+  );
+  const pcTipos = assembledPcTipos(raw);
+  const extraPcIds = await findAssembledPcIds({
+    terms: [raw, normalizedQuery].filter((term) => term.length >= 2),
+    tipos: pcTipos,
+  }).catch(() => [] as number[]);
+  const candidateIds = [...new Set([...indexedIds, ...extraPcIds])];
+  if (candidateIds.length === 0) return [];
+
   const products = hasSerialCols
     ? await prisma.products.findMany({
-        where: { active: 1, OR: or },
-        take: takeCandidates,
+        where: { active: 1, idProduct: { in: candidateIds } },
         select: {
           ...lightSelect,
           requiresSerial: true,
@@ -421,37 +384,11 @@ export async function searchPosProducts(q: string, limit = 25) {
         },
       })
     : await prisma.products.findMany({
-        where: { active: 1, OR: or },
-        take: takeCandidates,
+        where: { active: 1, idProduct: { in: candidateIds } },
         select: lightSelect,
       });
 
-  const pcTipos = assembledPcTipos(raw);
-  const extraPcIds = (
-    await findAssembledPcIds({ terms: termBag, tipos: pcTipos }).catch(
-      () => [] as number[],
-    )
-  ).filter((id) => !products.some((p) => Number(p.idProduct) === id));
-
-  const pcExtra =
-    extraPcIds.length === 0
-      ? []
-      : hasSerialCols
-        ? await prisma.products.findMany({
-            where: { active: 1, isPC: 1, idProduct: { in: extraPcIds } },
-            select: {
-              ...lightSelect,
-              requiresSerial: true,
-              warrantyMonths: true,
-              warrantyMode: true,
-            },
-          })
-        : await prisma.products.findMany({
-            where: { active: 1, isPC: 1, idProduct: { in: extraPcIds } },
-            select: lightSelect,
-          });
-
-  const catalog = [...products, ...pcExtra];
+  const catalog = products;
 
   // Scoring: tokens originales + normalizados (para "tarjeta madre" y "motherboard")
   const scoreTokens = [
@@ -637,7 +574,8 @@ export async function searchPosProducts(q: string, limit = 25) {
 }
 
 export function invalidatePosSearchCatalog() {
-  // no-op: ya no hay caché full-catalog
+  // El stock se consulta al armar la respuesta. El índice de nombres
+  // se renueva solo, o cuando el catálogo cambia.
 }
 
 /** Hidrata productos por id con el mismo shape que search (stock por bodega). */
