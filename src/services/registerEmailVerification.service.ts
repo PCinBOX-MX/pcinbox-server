@@ -7,7 +7,7 @@ import {
   verifyPassword,
   writeErrorLogs,
 } from "./index.service";
-import { sendEmailResend } from "./resend.service";
+import { dispatchTemplateEmail } from "./mail-dispatch.service";
 
 export const REGISTER_CODE_TTL_MINUTES = 15;
 export const REGISTER_MAX_RESENDS = 3;
@@ -40,7 +40,7 @@ async function sendVerificationEmail(params: {
   lastname: string;
   code: string;
 }) {
-  const result = await sendEmailResend(
+  const result = await dispatchTemplateEmail(
     params.email,
     "Código de verificación — PCinBOX",
     REGISTER_VERIFY_TEMPLATE_ID,
@@ -462,7 +462,7 @@ export async function confirmRegisterVerificationCode(params: {
   });
 
   try {
-    await sendEmailResend(email, "Bienvenido a PCinBOX", "welcome-email-1", {
+    await dispatchTemplateEmail(email, "Bienvenido a PCinBOX", "welcome-email-1", {
       NAME: `${pending.name} ${pending.lastname}`,
     });
   } catch (error) {

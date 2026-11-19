@@ -11,7 +11,7 @@ import { DateTime } from "luxon";
 import { uploadPhotoUser, getPhotoUserAWS, deletePhotoUserAWS } from "./../../imagekit/imagekit";
 import "../../config/loadEnv";
 import CustomRequestI from "./../../interfaces/customrequest.interface";
-import { sendEmailResend } from "../../services/resend.service";
+import { dispatchTemplateEmail } from "../../services/mail-dispatch.service";
 import { hasUserPhone, maskUserPhone, buildPhoneReminderState } from "../../utils/phoneMask.util";
 import {
   confirmRegisterVerificationCode,
@@ -223,7 +223,7 @@ export const LoginGoogle = async (req: Request, res: Response) => {
       });
 
       try {
-        await sendEmailResend(
+        await dispatchTemplateEmail(
           email,
           "Bienvenido a PCinBOX",
           "welcome-email-1",
