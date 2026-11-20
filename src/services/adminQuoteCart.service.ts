@@ -281,13 +281,21 @@ function cloneCart(cart: StoredCart): StoredCart {
   };
 }
 
-async function loadCart(userId: number): Promise<StoredCart> {
-  const cached = memoryCarts.get(userId);
-  if (cached) return cloneCart(cached);
+/**
+ * Redis es la fuente de verdad entre workers PM2.
+ * Sin esto, cada proceso guarda un carrito en memoria y al recargar/pegar
+ * otro worker aparecen ítems fantasma o “no se agregó”.
+ */
+async function refreshCartFromRedis(userId: number): Promise<StoredCart> {
   const stored = await cacheGetJson<unknown>(cartKey(userId));
   const parsed = parseStoredCart(stored);
   memoryCarts.set(userId, parsed);
-  return cloneCart(parsed);
+  return parsed;
+}
+
+async function loadCart(userId: number): Promise<StoredCart> {
+  const current = await refreshCartFromRedis(userId);
+  return cloneCart(current);
 }
 
 export type LiveQuoteUpdate = {
@@ -515,10 +523,15 @@ export async function writeAdminQuoteCart(
   userId: number,
   lines: StoredQuoteLine[],
 ): Promise<void> {
-  const current = memoryCarts.get(userId) ?? (await loadCart(userId));
+  // Usar memoria de la mutación en curso (tras refresh al entrar al lock).
+  // No re-leer Redis aquí: borraría imports staged en el mismo request.
+  let current = memoryCarts.get(userId);
+  if (!current) {
+    current = await refreshCartFromRedis(userId);
+  }
   const nextLines = lines.slice(0, QUOTE_CART_MAX_LINES);
   if (nextLines.length === 0) {
-    memoryCarts.delete(userId);
+    memoryCarts.set(userId, { lines: [], importedQuotes: [] });
     await cacheDel(cartKey(userId));
     return;
   }
@@ -546,6 +559,8 @@ export async function withAdminQuoteCartLock<T>(
   cartWriteLocks.set(userId, chained);
   await previous.catch(() => undefined);
   try {
+    // Al tomar el lock, alinear memoria con Redis (otros workers).
+    await refreshCartFromRedis(userId);
     return await fn();
   } finally {
     release();
