@@ -154,9 +154,12 @@ export function upsertQuoteCartLine(
     const current = lines[index];
     if (!current) return { lines, page: 1 };
     const base = current.quantity ?? 0;
+    const add = Math.max(1, incoming.quantity ?? 1);
+    // Conservar la línea existente (precio/notas/manual/importada).
+    // Solo sumar cantidad: no sobrescribir con datos frescos del catálogo.
     next = lines.map((line, lineIndex) =>
       lineIndex === index
-        ? { ...incoming, quantity: Math.min(999, base + 1) }
+        ? { ...current, quantity: Math.min(999, base + add) }
         : line,
     );
   } else {
@@ -369,6 +372,11 @@ function patchStoredLiveLine(
   line: StoredQuoteLine,
   update: LiveQuoteUpdate,
 ): StoredQuoteLine {
+  // Productos manuales: no pisar precio/activo con sync del cron.
+  if (line.manual === true) {
+    return line;
+  }
+
   let price = line.price;
   let stock = line.stock;
   let active = line.active;
@@ -481,4 +489,29 @@ export async function writeAdminQuoteCart(
   };
   memoryCarts.set(userId, next);
   await cacheSetJson(cartKey(userId), next, CART_TTL_SEC);
+}
+
+/** Serializa read→mutate→write del carrito por usuario (evita que 2 adds se pisen). */
+const cartWriteLocks = new Map<number, Promise<unknown>>();
+
+export async function withAdminQuoteCartLock<T>(
+  userId: number,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const previous = cartWriteLocks.get(userId) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const chained = previous.catch(() => undefined).then(() => gate);
+  cartWriteLocks.set(userId, chained);
+  await previous.catch(() => undefined);
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (cartWriteLocks.get(userId) === chained) {
+      cartWriteLocks.delete(userId);
+    }
+  }
 }

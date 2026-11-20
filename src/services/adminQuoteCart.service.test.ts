@@ -50,3 +50,20 @@ test("agregar un producto repetido suma cantidad y abre su página", () => {
   assert.equal(first.lines[0].quantity, 3);
   assert.equal(first.page, 1);
 });
+
+test("re-agregar no sobrescribe precio ni nombre de la línea existente", () => {
+  const existing: StoredQuoteLine = {
+    ...line(1, 99.5, 2),
+    name: "Precio negociado",
+    manual: true,
+  };
+  const fromCatalog = line(1, 10, 1);
+  fromCatalog.name = "Nombre del catálogo";
+  const result = upsertQuoteCartLine([existing], fromCatalog);
+  assert.ok(!("error" in result));
+  if ("error" in result) return;
+  assert.equal(result.lines[0]?.quantity, 3);
+  assert.equal(result.lines[0]?.price, 99.5);
+  assert.equal(result.lines[0]?.name, "Precio negociado");
+  assert.equal(result.lines[0]?.manual, true);
+});
