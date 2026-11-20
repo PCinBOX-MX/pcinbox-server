@@ -472,6 +472,45 @@ export function listAdminImportedQuoteNumbers(userId: number): string[] {
   );
 }
 
+/**
+ * Quita del carrito admin los productos de una cotización importada.
+ * Usa los idProduct staged al importar (incluye manuales con id regenerado),
+ * no solo los productId del JSON de la cotización.
+ */
+export async function unlinkAdminImportedQuoteCart(
+  userId: number,
+  rawQuoteNumber: unknown,
+  fallbackProductIds: number[] = [],
+): Promise<{
+  quoteNumber: string;
+  lines: StoredQuoteLine[];
+  removed: number;
+  productIds: number[];
+}> {
+  const quoteNumber = normalizeQuoteNumber(rawQuoteNumber);
+  const cart = await loadCart(userId);
+  const staged = cart.importedQuotes.find(
+    (quote) => quote.quoteNumber === quoteNumber,
+  );
+  const sourceIds =
+    staged && staged.productIds.length > 0
+      ? staged.productIds
+      : fallbackProductIds;
+  const productIds = [
+    ...new Set(
+      sourceIds.filter((id) => Number.isSafeInteger(id) && id > 0),
+    ),
+  ];
+  const ids = new Set(productIds);
+  const lines = cart.lines.filter((line) => !ids.has(line.idProduct));
+  const removed = cart.lines.length - lines.length;
+  // Asegura el carrito en memoria antes de olvidar el import.
+  memoryCarts.set(userId, cart);
+  forgetAdminQuoteImport(userId, quoteNumber);
+  await writeAdminQuoteCart(userId, lines);
+  return { quoteNumber, lines, removed, productIds };
+}
+
 export async function writeAdminQuoteCart(
   userId: number,
   lines: StoredQuoteLine[],

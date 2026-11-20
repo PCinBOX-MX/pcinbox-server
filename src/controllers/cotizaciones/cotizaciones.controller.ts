@@ -37,9 +37,9 @@ import {
 import {
   readAdminQuoteCart,
   sliceQuoteCart,
-  forgetAdminQuoteImport,
   listAdminImportedQuoteNumbers,
-  writeAdminQuoteCart,
+  unlinkAdminImportedQuoteCart,
+  withAdminQuoteCartLock,
 } from "../../services/adminQuoteCart.service";
 import {
   loadPosCostProviderProductIds,
@@ -1315,25 +1315,22 @@ export const unlinkAdminQuoteImport = async (
       });
     }
     const payload = readStoredQuoteLinesPayload(quote.linesJson);
-    if (!payload?.lines.length) {
-      return res.status(400).json({
-        ok: false,
-        message: "Esa cotización no tiene productos para quitar.",
-      });
-    }
-    const productIds = [
+    const fallbackProductIds = [
       ...new Set(
-        payload.lines
+        (payload?.lines ?? [])
           .map((line) => Number(line.productId))
           .filter((id) => Number.isSafeInteger(id) && id > 0),
       ),
     ];
-    const ids = new Set(productIds);
-    const current = await readAdminQuoteCart(userId);
-    const next = current.filter((line) => !ids.has(line.idProduct));
-    forgetAdminQuoteImport(userId, quote.quoteNumber);
-    await writeAdminQuoteCart(userId, next);
-    if (payload.importedAt) {
+    const page = Math.trunc(Number(req.body?.page));
+    const result = await withAdminQuoteCartLock(userId, () =>
+      unlinkAdminImportedQuoteCart(
+        userId,
+        quote.quoteNumber,
+        fallbackProductIds,
+      ),
+    );
+    if (payload?.importedAt) {
       await prisma.cotizaciones.update({
         where: { idCotizacion: quote.idCotizacion },
         data: {
@@ -1353,14 +1350,16 @@ export const unlinkAdminQuoteImport = async (
         },
       });
     }
-    const page = Math.trunc(Number(req.body?.page));
     return res.status(200).json({
       ok: true,
-      quoteNumber: quote.quoteNumber,
-      removed: current.length - next.length,
-      productIds,
+      quoteNumber: result.quoteNumber,
+      removed: result.removed,
+      productIds: result.productIds,
       importedQuotes: listAdminImportedQuoteNumbers(userId),
-      ...sliceQuoteCart(next, Number.isInteger(page) && page > 0 ? page : 1),
+      ...sliceQuoteCart(
+        result.lines,
+        Number.isInteger(page) && page > 0 ? page : 1,
+      ),
     });
   } catch (error) {
     console.error("[unlinkAdminQuoteImport]", error);
