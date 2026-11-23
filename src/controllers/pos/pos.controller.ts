@@ -48,16 +48,19 @@ import {
 import {
   assignSerialsOnSale,
   assertSerialsAvailable,
+  findPosSaleIdsBySerialQuery,
   getSerialByNumber,
   loadSharedBarcodeKeys,
   markSerialRma,
   mergeSharedBarcodeSerials,
   normalizeItemSerials,
+  normalizeSerialQuery,
   parkAlreadySoldSerials,
   readSharedSerialGroups,
   registerAvailableSerial,
   releaseSerialsOnCancel,
   searchSerials,
+  SERIAL_SEARCH_MIN_CHARS,
   splitRepeatedSerials,
 } from "../../services/pos/posSerial.service";
 import {
@@ -2578,6 +2581,9 @@ export const listPosSales = async (req: Request, res: Response) => {
     const hasSerials =
       String(req.query.hasSerials || "") === "1" ||
       String(req.query.hasSerials || "").toLowerCase() === "true";
+    const serial = String(
+      req.query.serial || req.query.serialNumber || "",
+    ).trim();
 
     const where: Prisma.pos_salesWhereInput = {};
     if (branchId && Number.isSafeInteger(branchId)) where.branchId = branchId;
@@ -2585,9 +2591,8 @@ export const listPosSales = async (req: Request, res: Response) => {
       where.status = status as any;
     }
     const saleId = Number(saleIdRaw.replace(/^#/, ""));
-    if (saleIdRaw && Number.isSafeInteger(saleId) && saleId > 0) {
-      where.idPosSale = saleId;
-    }
+    const hasSaleIdFilter =
+      Boolean(saleIdRaw) && Number.isSafeInteger(saleId) && saleId > 0;
     if (folio) {
       // Búsqueda parcial (sin exigir folio exacto).
       const term = folio.replace(/^#/, "").trim();
@@ -2606,8 +2611,31 @@ export const listPosSales = async (req: Request, res: Response) => {
       if (from && !Number.isNaN(from.getTime())) where.createdAt.gte = from;
       if (to && !Number.isNaN(to.getTime())) where.createdAt.lte = to;
     }
-    if (hasSerials) {
-      where.serials = { some: {} };
+    const serialKeyNorm = normalizeSerialQuery(serial);
+    if (serialKeyNorm.length >= SERIAL_SEARCH_MIN_CHARS) {
+      const saleIds = await findPosSaleIdsBySerialQuery(serial, 200);
+      if (saleIds.length === 0) {
+        return res.json({
+          ok: true,
+          data: [],
+          pagination: { page, limit, total: 0, totalPages: 0 },
+        });
+      }
+      if (hasSaleIdFilter) {
+        if (!saleIds.includes(saleId)) {
+          return res.json({
+            ok: true,
+            data: [],
+            pagination: { page, limit, total: 0, totalPages: 0 },
+          });
+        }
+        where.idPosSale = saleId;
+      } else {
+        where.idPosSale = { in: saleIds };
+      }
+    } else {
+      if (hasSaleIdFilter) where.idPosSale = saleId;
+      if (hasSerials) where.serials = { some: {} };
     }
 
     const [total, rows] = await Promise.all([
