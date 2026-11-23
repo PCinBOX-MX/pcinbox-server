@@ -56,11 +56,11 @@
     "resend": "^6.12.3",
     "tsx": "^4.20.3",
     "typescript": "^5.9.2",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "@types/disposable-email-domains": "^1.0.6"
   },
   "devDependencies": {
     "@types/bcrypt": "^6.0.0",
-    "@types/disposable-email-domains": "^1.0.6",
     "@types/ejs": "^3.1.5",
     "@types/express": "^5.0.3",
     "@types/imagekit": "^3.1.5",

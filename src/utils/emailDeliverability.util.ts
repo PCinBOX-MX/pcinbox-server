@@ -3,11 +3,11 @@ import disposableDomains from "disposable-email-domains";
 import wildcardDomains from "disposable-email-domains/wildcard";
 
 const DISPOSABLE_SET = new Set(
-  disposableDomains.map((d) => String(d).toLowerCase()),
+  (disposableDomains as string[]).map((d: string) => d.toLowerCase()),
 );
 
 const WILDCARD_SET = new Set(
-  wildcardDomains.map((d) => String(d).toLowerCase()),
+  (wildcardDomains as string[]).map((d: string) => d.toLowerCase()),
 );
 
 export const DISPOSABLE_EMAIL_MESSAGE =
