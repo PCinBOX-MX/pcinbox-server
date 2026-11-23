@@ -394,6 +394,27 @@ function readStoredDeliveryAddresses(
   return [];
 }
 
+/** Folio POS de origen cuando la venta se cobró tras «Importar folio». */
+function readStoredSourceFolio(
+  events: Array<{ eventType?: string; payload?: unknown }> | undefined,
+): string | null {
+  if (!Array.isArray(events)) return null;
+  const created = events.find((event) => event.eventType === "created");
+  const candidates = created ? [created, ...events] : events;
+  for (const event of candidates) {
+    const payload =
+      event?.payload && typeof event.payload === "object"
+        ? (event.payload as Record<string, unknown>)
+        : null;
+    if (!payload) continue;
+    const raw = payload.sourceFolio;
+    if (raw == null) continue;
+    const value = String(raw).trim();
+    if (value) return value;
+  }
+  return null;
+}
+
 function parsePosDeliveryAddressesInput(raw: unknown):
   | {
       ok: true;
@@ -459,6 +480,7 @@ function serializeSale(sale: any) {
     readSharedSerialGroups(sale.events),
   );
   const deliveryAddresses = readStoredDeliveryAddresses(sale.events);
+  const sourceFolio = readStoredSourceFolio(sale.events);
   return {
     // Interno (inversión/margen). No usar en ticket ni hoja de garantía.
     costSummary: summarizePosCosts(costLines),
@@ -497,6 +519,8 @@ function serializeSale(sale: any) {
     cashSessionId:
       sale.cashSessionId != null ? Number(sale.cashSessionId) : null,
     quoteNumber: sale.quoteNumber || null,
+    /** Folio importado al cobrar; ticket compacto (nombre/cantidad/serie). */
+    sourceFolio,
     createdAt: sale.createdAt,
     updatedAt: sale.updatedAt,
     items: items.map((it: any, idx: number) => ({
@@ -527,6 +551,11 @@ function serializeSale(sale: any) {
       unitPrice: Number(it.unitPrice),
       discountPct: Number(it.discountPct),
       lineTotal: Number(it.lineTotal),
+      warrantyMonths:
+        it.warrantyMonths != null && Number.isFinite(Number(it.warrantyMonths))
+          ? Number(it.warrantyMonths)
+          : null,
+      warrantyMode: it.warrantyMode ?? null,
       serials: (it.serials || []).map((s: any) => ({
         idProductSerial: Number(s.idProductSerial),
         serialNumber: s.serialNumber,
