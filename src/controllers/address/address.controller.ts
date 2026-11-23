@@ -4,6 +4,11 @@ import { readExcelImageKit } from "./../../services/index.service";
 import "../../config/loadEnv";
 import CustomRequestI from "./../../interfaces/customrequest.interface";
 import { cacheDelByPrefix } from "../../infra/redis/cache.util";
+import {
+  isMaskedOrIncompletePhone,
+  maskUserPhone,
+  normalizeStoredPhone,
+} from "../../utils/phoneMask.util";
 
 function invalidateZoneShippingCache(idAddress: number | string) {
   void cacheDelByPrefix(`shipping:zone:${Number(idAddress)}:`);
@@ -36,7 +41,26 @@ function serializeAddress(item: {
     ...item,
     idAddress: Number(item.idAddress),
     userId: Number(item.userId),
+    // Lecturas: nunca exponer teléfonos en claro.
+    phone1: maskUserPhone(item.phone1) || "",
+    phone2: maskUserPhone(item.phone2) || "",
   };
+}
+
+/** En update: máscara/vacío conserva el actual; vacío en phone2 limpia. */
+function resolveAddressPhoneUpdate(
+  incoming: unknown,
+  current: string | null | undefined,
+  opts?: { allowClear?: boolean },
+): string {
+  const raw = typeof incoming === "string" ? incoming.trim() : "";
+  if (!raw) {
+    return opts?.allowClear ? "" : String(current || "");
+  }
+  if (isMaskedOrIncompletePhone(raw)) {
+    return String(current || "");
+  }
+  return normalizeStoredPhone(raw);
 }
 
 export const hasAddressUser = async (req: CustomRequestI, res: Response) => {
@@ -194,9 +218,24 @@ export const registerAddress = async (req: CustomRequestI, res: Response) => {
       return res.status(200).json({
         ok: true,
         message: "Ya tienes una dirección registrada con los mismos datos.",
-        data: duplicate,
+        data: serializeAddress(duplicate as any),
       });
     }
+
+    if (isMaskedOrIncompletePhone(phone1)) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          "El teléfono debe incluir una LADA válida y 10 dígitos, por ejemplo: +52 4771234567",
+      });
+    }
+
+    const phone1Saved = normalizeStoredPhone(phone1);
+    const phone2Saved =
+      phone2 && !isMaskedOrIncompletePhone(phone2)
+        ? normalizeStoredPhone(phone2)
+        : "";
+
     await prisma.addresses.create({
       data: {
         city,
@@ -208,8 +247,8 @@ export const registerAddress = async (req: CustomRequestI, res: Response) => {
         noExt,
         noInt,
         cologne,
-        phone1,
-        phone2,
+        phone1: phone1Saved,
+        phone2: phone2Saved,
       },
     });
 
@@ -357,6 +396,19 @@ export const updatedAddress = async (req: CustomRequestI, res: Response) => {
       });
     }
 
+    const nextPhone1 = resolveAddressPhoneUpdate(phone1, slcAddress.phone1);
+    const nextPhone2 = resolveAddressPhoneUpdate(phone2, slcAddress.phone2, {
+      allowClear: true,
+    });
+
+    if (!nextPhone1 || isMaskedOrIncompletePhone(nextPhone1)) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          "El teléfono debe incluir una LADA válida y 10 dígitos, o déjalo vacío para conservar el actual.",
+      });
+    }
+
     await prisma.addresses.update({
       data: {
         city,
@@ -365,8 +417,8 @@ export const updatedAddress = async (req: CustomRequestI, res: Response) => {
         country,
         noExt,
         noInt,
-        phone1,
-        phone2,
+        phone1: nextPhone1,
+        phone2: nextPhone2,
         state,
         street,
       },
