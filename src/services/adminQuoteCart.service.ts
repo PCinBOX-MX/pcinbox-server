@@ -154,9 +154,12 @@ export function upsertQuoteCartLine(
     const current = lines[index];
     if (!current) return { lines, page: 1 };
     const base = current.quantity ?? 0;
+    const add = Math.max(1, incoming.quantity ?? 1);
+    // Conservar la línea existente (precio/notas/manual/importada).
+    // Solo sumar cantidad: no sobrescribir con datos frescos del catálogo.
     next = lines.map((line, lineIndex) =>
       lineIndex === index
-        ? { ...incoming, quantity: Math.min(999, base + 1) }
+        ? { ...current, quantity: Math.min(999, base + add) }
         : line,
     );
   } else {
@@ -278,13 +281,21 @@ function cloneCart(cart: StoredCart): StoredCart {
   };
 }
 
-async function loadCart(userId: number): Promise<StoredCart> {
-  const cached = memoryCarts.get(userId);
-  if (cached) return cloneCart(cached);
+/**
+ * Redis es la fuente de verdad entre workers PM2.
+ * Sin esto, cada proceso guarda un carrito en memoria y al recargar/pegar
+ * otro worker aparecen ítems fantasma o “no se agregó”.
+ */
+async function refreshCartFromRedis(userId: number): Promise<StoredCart> {
   const stored = await cacheGetJson<unknown>(cartKey(userId));
   const parsed = parseStoredCart(stored);
   memoryCarts.set(userId, parsed);
-  return cloneCart(parsed);
+  return parsed;
+}
+
+async function loadCart(userId: number): Promise<StoredCart> {
+  const current = await refreshCartFromRedis(userId);
+  return cloneCart(current);
 }
 
 export type LiveQuoteUpdate = {
@@ -369,6 +380,11 @@ function patchStoredLiveLine(
   line: StoredQuoteLine,
   update: LiveQuoteUpdate,
 ): StoredQuoteLine {
+  // Productos manuales: no pisar precio/activo con sync del cron.
+  if (line.manual === true) {
+    return line;
+  }
+
   let price = line.price;
   let stock = line.stock;
   let active = line.active;
@@ -464,14 +480,58 @@ export function listAdminImportedQuoteNumbers(userId: number): string[] {
   );
 }
 
+/**
+ * Quita del carrito admin los productos de una cotización importada.
+ * Usa los idProduct staged al importar (incluye manuales con id regenerado),
+ * no solo los productId del JSON de la cotización.
+ */
+export async function unlinkAdminImportedQuoteCart(
+  userId: number,
+  rawQuoteNumber: unknown,
+  fallbackProductIds: number[] = [],
+): Promise<{
+  quoteNumber: string;
+  lines: StoredQuoteLine[];
+  removed: number;
+  productIds: number[];
+}> {
+  const quoteNumber = normalizeQuoteNumber(rawQuoteNumber);
+  const cart = await loadCart(userId);
+  const staged = cart.importedQuotes.find(
+    (quote) => quote.quoteNumber === quoteNumber,
+  );
+  const sourceIds =
+    staged && staged.productIds.length > 0
+      ? staged.productIds
+      : fallbackProductIds;
+  const productIds = [
+    ...new Set(
+      sourceIds.filter((id) => Number.isSafeInteger(id) && id > 0),
+    ),
+  ];
+  const ids = new Set(productIds);
+  const lines = cart.lines.filter((line) => !ids.has(line.idProduct));
+  const removed = cart.lines.length - lines.length;
+  // Asegura el carrito en memoria antes de olvidar el import.
+  memoryCarts.set(userId, cart);
+  forgetAdminQuoteImport(userId, quoteNumber);
+  await writeAdminQuoteCart(userId, lines);
+  return { quoteNumber, lines, removed, productIds };
+}
+
 export async function writeAdminQuoteCart(
   userId: number,
   lines: StoredQuoteLine[],
 ): Promise<void> {
-  const current = memoryCarts.get(userId) ?? (await loadCart(userId));
+  // Usar memoria de la mutación en curso (tras refresh al entrar al lock).
+  // No re-leer Redis aquí: borraría imports staged en el mismo request.
+  let current = memoryCarts.get(userId);
+  if (!current) {
+    current = await refreshCartFromRedis(userId);
+  }
   const nextLines = lines.slice(0, QUOTE_CART_MAX_LINES);
   if (nextLines.length === 0) {
-    memoryCarts.delete(userId);
+    memoryCarts.set(userId, { lines: [], importedQuotes: [] });
     await cacheDel(cartKey(userId));
     return;
   }
@@ -481,4 +541,31 @@ export async function writeAdminQuoteCart(
   };
   memoryCarts.set(userId, next);
   await cacheSetJson(cartKey(userId), next, CART_TTL_SEC);
+}
+
+/** Serializa read→mutate→write del carrito por usuario (evita que 2 adds se pisen). */
+const cartWriteLocks = new Map<number, Promise<unknown>>();
+
+export async function withAdminQuoteCartLock<T>(
+  userId: number,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const previous = cartWriteLocks.get(userId) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const chained = previous.catch(() => undefined).then(() => gate);
+  cartWriteLocks.set(userId, chained);
+  await previous.catch(() => undefined);
+  try {
+    // Al tomar el lock, alinear memoria con Redis (otros workers).
+    await refreshCartFromRedis(userId);
+    return await fn();
+  } finally {
+    release();
+    if (cartWriteLocks.get(userId) === chained) {
+      cartWriteLocks.delete(userId);
+    }
+  }
 }

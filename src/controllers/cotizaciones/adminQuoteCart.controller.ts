@@ -15,6 +15,7 @@ import {
   StoredQuoteLine,
   upsertQuoteCartLine,
   writeAdminQuoteCart,
+  withAdminQuoteCartLock,
 } from "../../services/adminQuoteCart.service";
 
 function userIdOf(req: CustomRequestI): number | null {
@@ -74,8 +75,10 @@ export const replaceAdminQuoteCart = async (
   const lines = rawLines
     .map(normalizeStoredQuoteLine)
     .filter((line: StoredQuoteLine | null): line is StoredQuoteLine => Boolean(line));
-  await writeAdminQuoteCart(userId, lines);
-  return sendCart(res, userId, lines, requestedPage(req.body?.page));
+  return withAdminQuoteCartLock(userId, async () => {
+    await writeAdminQuoteCart(userId, lines);
+    return sendCart(res, userId, lines, requestedPage(req.body?.page));
+  });
 };
 
 export const mergeAdminQuoteCart = async (
@@ -93,21 +96,24 @@ export const mergeAdminQuoteCart = async (
   const incoming = rawLines
     .map(normalizeStoredQuoteLine)
     .filter((line: StoredQuoteLine | null): line is StoredQuoteLine => Boolean(line));
-  const current = await readAdminQuoteCart(userId);
-  const merged = mergeQuoteCartLines(current, incoming);
-  if ("error" in merged) {
-    return res.status(400).json({
-      ok: false,
-      message: "El carrito admite como máximo 100 productos.",
-    });
-  }
-  stageAdminQuoteImport(
-    userId,
-    req.body?.quoteNumber,
-    incoming.map((line: StoredQuoteLine) => line.idProduct),
-  );
-  await writeAdminQuoteCart(userId, merged.lines);
-  return sendCart(res, userId, merged.lines, merged.page);
+
+  return withAdminQuoteCartLock(userId, async () => {
+    const current = await readAdminQuoteCart(userId);
+    const merged = mergeQuoteCartLines(current, incoming);
+    if ("error" in merged) {
+      return res.status(400).json({
+        ok: false,
+        message: "El carrito admite como máximo 100 productos.",
+      });
+    }
+    stageAdminQuoteImport(
+      userId,
+      req.body?.quoteNumber,
+      incoming.map((line: StoredQuoteLine) => line.idProduct),
+    );
+    await writeAdminQuoteCart(userId, merged.lines);
+    return sendCart(res, userId, merged.lines, merged.page);
+  });
 };
 
 export const addAdminQuoteCartLine = async (
@@ -126,16 +132,19 @@ export const addAdminQuoteCartLine = async (
   if (!incoming) {
     return res.status(400).json({ ok: false, message: "El producto no es válido." });
   }
-  const current = await readAdminQuoteCart(userId);
-  const result = upsertQuoteCartLine(current, incoming);
-  if ("error" in result) {
-    return res.status(400).json({
-      ok: false,
-      message: "El carrito admite como máximo 100 productos.",
-    });
-  }
-  await writeAdminQuoteCart(userId, result.lines);
-  return sendCart(res, userId, result.lines, result.page);
+
+  return withAdminQuoteCartLock(userId, async () => {
+    const current = await readAdminQuoteCart(userId);
+    const result = upsertQuoteCartLine(current, incoming);
+    if ("error" in result) {
+      return res.status(400).json({
+        ok: false,
+        message: "El carrito admite como máximo 100 productos.",
+      });
+    }
+    await writeAdminQuoteCart(userId, result.lines);
+    return sendCart(res, userId, result.lines, result.page);
+  });
 };
 
 export const updateAdminQuoteCartQuantity = async (
@@ -161,13 +170,18 @@ export const updateAdminQuoteCartQuantity = async (
   ) {
     return res.status(400).json({ ok: false, message: "La cantidad no es válida." });
   }
-  const current = await readAdminQuoteCart(userId);
-  const next = setQuoteCartQuantity(current, idProduct, quantity);
-  if (!next) {
-    return res.status(404).json({ ok: false, message: "El producto ya no está en el carrito." });
-  }
-  await writeAdminQuoteCart(userId, next);
-  return sendCart(res, userId, next, requestedPage(req.body?.page));
+
+  return withAdminQuoteCartLock(userId, async () => {
+    const current = await readAdminQuoteCart(userId);
+    const next = setQuoteCartQuantity(current, idProduct, quantity);
+    if (!next) {
+      return res
+        .status(404)
+        .json({ ok: false, message: "El producto ya no está en el carrito." });
+    }
+    await writeAdminQuoteCart(userId, next);
+    return sendCart(res, userId, next, requestedPage(req.body?.page));
+  });
 };
 
 export const removeAdminQuoteCartLine = async (
@@ -182,9 +196,12 @@ export const removeAdminQuoteCartLine = async (
   if (!Number.isSafeInteger(idProduct) || idProduct <= 0) {
     return res.status(400).json({ ok: false, message: "El producto no es válido." });
   }
-  const next = removeQuoteCartLine(await readAdminQuoteCart(userId), idProduct);
-  await writeAdminQuoteCart(userId, next);
-  return sendCart(res, userId, next, requestedPage(req.query.page));
+
+  return withAdminQuoteCartLock(userId, async () => {
+    const next = removeQuoteCartLine(await readAdminQuoteCart(userId), idProduct);
+    await writeAdminQuoteCart(userId, next);
+    return sendCart(res, userId, next, requestedPage(req.query.page));
+  });
 };
 
 export const syncAdminQuoteCartLive = async (
@@ -196,16 +213,19 @@ export const syncAdminQuoteCartLive = async (
     return res.status(401).json({ ok: false, message: "Debes iniciar sesión." });
   }
   const updates = normalizeLiveQuoteUpdates(req.body?.updates);
-  const current = await readAdminQuoteCart(userId);
-  const patched = applyLiveQuoteUpdates(current, updates);
-  if (patched.changed) {
-    await writeAdminQuoteCart(userId, patched.lines);
-  }
-  return res.status(200).json({
-    ok: true,
-    ...sliceQuoteCart(patched.lines, requestedPage(req.body?.page)),
-    importedQuotes: listAdminImportedQuoteNumbers(userId),
-    changed: patched.changed,
+
+  return withAdminQuoteCartLock(userId, async () => {
+    const current = await readAdminQuoteCart(userId);
+    const patched = applyLiveQuoteUpdates(current, updates);
+    if (patched.changed) {
+      await writeAdminQuoteCart(userId, patched.lines);
+    }
+    return res.status(200).json({
+      ok: true,
+      ...sliceQuoteCart(patched.lines, requestedPage(req.body?.page)),
+      importedQuotes: listAdminImportedQuoteNumbers(userId),
+      changed: patched.changed,
+    });
   });
 };
 
@@ -217,6 +237,8 @@ export const clearAdminQuoteCart = async (
   if (!userId) {
     return res.status(401).json({ ok: false, message: "Debes iniciar sesión." });
   }
-  await writeAdminQuoteCart(userId, []);
-  return sendCart(res, userId, [], 1);
+  return withAdminQuoteCartLock(userId, async () => {
+    await writeAdminQuoteCart(userId, []);
+    return sendCart(res, userId, [], 1);
+  });
 };

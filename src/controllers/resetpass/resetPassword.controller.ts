@@ -10,7 +10,7 @@ import {
 import path from "path";
 import fs from "fs";
 import { fromZonedTime } from "date-fns-tz";
-import { sendEmailResend } from "../../services/resend.service";
+import { dispatchTemplateEmail } from "../../services/mail-dispatch.service";
 
 const RESET_TZ = "America/Mexico_City";
 const RESET_MAX_ATTEMPTS_24H = 3;
@@ -169,7 +169,7 @@ export const forgotPassword = async (req: Request, res: Response) => {
     const resetLink = `${process.env.SERVER}/api/v1/resetpassword/resFileLinkResetPass?token=${encodeURIComponent(gnrResetToken)}`;
 
     try {
-      await sendEmailResend(
+      await dispatchTemplateEmail(
         slcUser.email,
         "Recuperar contraseña",
         "password-reset",

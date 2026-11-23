@@ -32,6 +32,9 @@ import {
   globalRateLimiter,
 } from "./middleware/security.middleware";
 import { closeRedisClient, redisPing } from "./infra/redis/redis.client";
+import { closeMailQueue } from "./queues/mail.queue";
+import { startMailWorker, stopMailWorker } from "./workers/mail.worker";
+import { isQueueEnabled } from "./config/queue-redis";
 
 const server = express();
 
@@ -130,9 +133,13 @@ const startServer = async () => {
   console.log(
     `[pcinbox-server] Redis: ${redisOk ? "conectado" : "no disponible (fallback memoria)"}`,
   );
+  console.log(
+    `[pcinbox-server] Cola mail (BullMQ): ${isQueueEnabled() ? "habilitada" : "deshabilitada (fallback sync)"}`,
+  );
   await startCatalogInvalidationSubscriber(() => {
     invalidatePosCatalogIndex();
   });
+  await startMailWorker();
   server.listen(Number(process.env.PORT) || 8000, () => {
     console.log(`Server running in the por ${process.env.SERVER_PORT || 8000}`);
     console.log(`Access front end ${allowedOrigins}`);
@@ -140,11 +147,17 @@ const startServer = async () => {
   });
 };
 
+const shutdownQueues = async () => {
+  await stopMailWorker();
+  await closeMailQueue();
+  await closeRedisClient();
+};
+
 process.on("SIGTERM", () => {
-  void closeRedisClient();
+  void shutdownQueues();
 });
 process.on("SIGINT", () => {
-  void closeRedisClient();
+  void shutdownQueues();
 });
 
 void startServer().catch((error) => {

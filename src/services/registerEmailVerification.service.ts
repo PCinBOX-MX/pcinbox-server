@@ -52,7 +52,7 @@ async function sendVerificationEmail(params: {
   lastname: string;
   code: string;
 }) {
-  const result = await sendEmailResend(
+  const result = await dispatchTemplateEmail(
     params.email,
     "Código de verificación — PCinBOX",
     REGISTER_VERIFY_TEMPLATE_ID,
@@ -600,7 +600,7 @@ export async function confirmRegisterVerificationCode(params: {
   });
 
   try {
-    await sendEmailResend(email, "Bienvenido a PCinBOX", "welcome-email-1", {
+    await dispatchTemplateEmail(email, "Bienvenido a PCinBOX", "welcome-email-1", {
       NAME: `${pending.name} ${pending.lastname}`,
     });
   } catch (error) {
