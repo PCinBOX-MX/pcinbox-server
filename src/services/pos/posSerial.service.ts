@@ -39,12 +39,76 @@ const serialInclude = {
   pos_sales: { select: { folio: true, status: true, createdAt: true } },
 };
 
+/** Mínimo de caracteres normalizados para buscar ventas por serie (evita ruido). */
+export const SERIAL_SEARCH_MIN_CHARS = 3;
+
 /** Misma clave para comparar una serie contra un UPC (espacios y guiones no cuentan). */
 export function serialKey(value: string | null | undefined): string {
   return String(value || "")
     .trim()
     .toUpperCase()
     .replace(/[\s-]+/g, "");
+}
+
+/**
+ * Normaliza una consulta de serie: mayúsculas, sin acentos ni signos.
+ * Así "ab-12 3" y "AB123" matchean lo mismo.
+ */
+export function normalizeSerialQuery(value: string | null | undefined): string {
+  return String(value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+}
+
+/**
+ * IDs de venta POS ligados a series que coinciden con el término (prefijo normalizado).
+ * Consulta acotada: no hace LIKE %x% sobre la columna cruda.
+ */
+export async function findPosSaleIdsBySerialQuery(
+  raw: string,
+  limit = 200,
+): Promise<number[]> {
+  const key = normalizeSerialQuery(raw);
+  if (key.length < SERIAL_SEARCH_MIN_CHARS) return [];
+
+  const take = Math.min(Math.max(Math.trunc(limit) || 200, 1), 500);
+  const likePrefix = `${key}%`;
+  // Misma limpieza que normalizeSerialQuery para -, espacio, _ y punto (lo más común).
+  const rows = await prisma.$queryRaw<
+    Array<{ posSaleId: bigint | number | null }>
+  >`
+    SELECT DISTINCT posSaleId
+    FROM product_serials
+    WHERE posSaleId IS NOT NULL
+      AND REPLACE(
+            REPLACE(
+              REPLACE(
+                REPLACE(UPPER(serialNumber), '-', ''),
+                ' ',
+                ''
+              ),
+              '_',
+              ''
+            ),
+            '.',
+            ''
+          ) LIKE ${likePrefix}
+    ORDER BY posSaleId DESC
+    LIMIT ${take}
+  `;
+
+  const ids: number[] = [];
+  const seen = new Set<number>();
+  for (const row of rows) {
+    const id = Number(row.posSaleId);
+    if (!Number.isSafeInteger(id) || id <= 0 || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
 }
 
 export function serialMatchesProductCode(
