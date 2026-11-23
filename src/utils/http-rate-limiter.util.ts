@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from "express";
 import { ensureRedisConnected } from "../infra/redis/redis.client";
+import { formatRetryAfterHuman } from "./registerFakeAbuse.util";
 
 type RateBucket = {
   timestamps: number[];
@@ -121,10 +122,16 @@ export class HttpRateLimiter {
 
     if (!decision.allowed) {
       res.setHeader("Retry-After", String(decision.retryAfterSec));
+      const when = formatRetryAfterHuman(decision.retryAfterSec);
       res.status(429).json({
         ok: false,
-        message: "Demasiadas solicitudes. Intenta de nuevo en unos momentos.",
+        message: `Demasiadas solicitudes. Espera ${when} para volver a intentarlo.`,
         retryAfterSeconds: decision.retryAfterSec,
+        data: {
+          retryAfterSeconds: decision.retryAfterSec,
+          locked: true,
+          reason: "rate_limit",
+        },
       });
       return;
     }
@@ -133,15 +140,21 @@ export class HttpRateLimiter {
   };
 }
 
+/** Match por prefijo con límite de segmento: `/login` no matchea `/loginGoogle`. */
+export function pathMatchesPrefix(path: string, prefix: string): boolean {
+  const normalizedPath = path.toLowerCase();
+  const normalizedPrefix = prefix.toLowerCase();
+  if (normalizedPath === normalizedPrefix) return true;
+  return normalizedPath.startsWith(`${normalizedPrefix}/`);
+}
+
 export function createPathPrefixRateLimiter(
   prefixes: string[],
   limiter: HttpRateLimiter,
 ) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const path = req.path.toLowerCase();
-    const matches = prefixes.some((prefix) =>
-      path.startsWith(prefix.toLowerCase()),
-    );
+    const matches = prefixes.some((prefix) => pathMatchesPrefix(path, prefix));
 
     if (!matches) {
       next();
