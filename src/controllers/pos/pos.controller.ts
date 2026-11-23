@@ -48,16 +48,19 @@ import {
 import {
   assignSerialsOnSale,
   assertSerialsAvailable,
+  findPosSaleIdsBySerialQuery,
   getSerialByNumber,
   loadSharedBarcodeKeys,
   markSerialRma,
   mergeSharedBarcodeSerials,
   normalizeItemSerials,
+  normalizeSerialQuery,
   parkAlreadySoldSerials,
   readSharedSerialGroups,
   registerAvailableSerial,
   releaseSerialsOnCancel,
   searchSerials,
+  SERIAL_SEARCH_MIN_CHARS,
   splitRepeatedSerials,
 } from "../../services/pos/posSerial.service";
 import {
@@ -394,6 +397,27 @@ function readStoredDeliveryAddresses(
   return [];
 }
 
+/** Folio POS de origen cuando la venta se cobró tras «Importar folio». */
+function readStoredSourceFolio(
+  events: Array<{ eventType?: string; payload?: unknown }> | undefined,
+): string | null {
+  if (!Array.isArray(events)) return null;
+  const created = events.find((event) => event.eventType === "created");
+  const candidates = created ? [created, ...events] : events;
+  for (const event of candidates) {
+    const payload =
+      event?.payload && typeof event.payload === "object"
+        ? (event.payload as Record<string, unknown>)
+        : null;
+    if (!payload) continue;
+    const raw = payload.sourceFolio;
+    if (raw == null) continue;
+    const value = String(raw).trim();
+    if (value) return value;
+  }
+  return null;
+}
+
 function parsePosDeliveryAddressesInput(raw: unknown):
   | {
       ok: true;
@@ -459,6 +483,7 @@ function serializeSale(sale: any) {
     readSharedSerialGroups(sale.events),
   );
   const deliveryAddresses = readStoredDeliveryAddresses(sale.events);
+  const sourceFolio = readStoredSourceFolio(sale.events);
   return {
     // Interno (inversión/margen). No usar en ticket ni hoja de garantía.
     costSummary: summarizePosCosts(costLines),
@@ -497,6 +522,8 @@ function serializeSale(sale: any) {
     cashSessionId:
       sale.cashSessionId != null ? Number(sale.cashSessionId) : null,
     quoteNumber: sale.quoteNumber || null,
+    /** Folio importado al cobrar; ticket compacto (nombre/cantidad/serie). */
+    sourceFolio,
     createdAt: sale.createdAt,
     updatedAt: sale.updatedAt,
     items: items.map((it: any, idx: number) => ({
@@ -527,6 +554,11 @@ function serializeSale(sale: any) {
       unitPrice: Number(it.unitPrice),
       discountPct: Number(it.discountPct),
       lineTotal: Number(it.lineTotal),
+      warrantyMonths:
+        it.warrantyMonths != null && Number.isFinite(Number(it.warrantyMonths))
+          ? Number(it.warrantyMonths)
+          : null,
+      warrantyMode: it.warrantyMode ?? null,
       serials: (it.serials || []).map((s: any) => ({
         idProductSerial: Number(s.idProductSerial),
         serialNumber: s.serialNumber,
@@ -2549,6 +2581,9 @@ export const listPosSales = async (req: Request, res: Response) => {
     const hasSerials =
       String(req.query.hasSerials || "") === "1" ||
       String(req.query.hasSerials || "").toLowerCase() === "true";
+    const serial = String(
+      req.query.serial || req.query.serialNumber || "",
+    ).trim();
 
     const where: Prisma.pos_salesWhereInput = {};
     if (branchId && Number.isSafeInteger(branchId)) where.branchId = branchId;
@@ -2556,9 +2591,8 @@ export const listPosSales = async (req: Request, res: Response) => {
       where.status = status as any;
     }
     const saleId = Number(saleIdRaw.replace(/^#/, ""));
-    if (saleIdRaw && Number.isSafeInteger(saleId) && saleId > 0) {
-      where.idPosSale = saleId;
-    }
+    const hasSaleIdFilter =
+      Boolean(saleIdRaw) && Number.isSafeInteger(saleId) && saleId > 0;
     if (folio) {
       // Búsqueda parcial (sin exigir folio exacto).
       const term = folio.replace(/^#/, "").trim();
@@ -2577,8 +2611,31 @@ export const listPosSales = async (req: Request, res: Response) => {
       if (from && !Number.isNaN(from.getTime())) where.createdAt.gte = from;
       if (to && !Number.isNaN(to.getTime())) where.createdAt.lte = to;
     }
-    if (hasSerials) {
-      where.serials = { some: {} };
+    const serialKeyNorm = normalizeSerialQuery(serial);
+    if (serialKeyNorm.length >= SERIAL_SEARCH_MIN_CHARS) {
+      const saleIds = await findPosSaleIdsBySerialQuery(serial, 200);
+      if (saleIds.length === 0) {
+        return res.json({
+          ok: true,
+          data: [],
+          pagination: { page, limit, total: 0, totalPages: 0 },
+        });
+      }
+      if (hasSaleIdFilter) {
+        if (!saleIds.includes(saleId)) {
+          return res.json({
+            ok: true,
+            data: [],
+            pagination: { page, limit, total: 0, totalPages: 0 },
+          });
+        }
+        where.idPosSale = saleId;
+      } else {
+        where.idPosSale = { in: saleIds };
+      }
+    } else {
+      if (hasSaleIdFilter) where.idPosSale = saleId;
+      if (hasSerials) where.serials = { some: {} };
     }
 
     const [total, rows] = await Promise.all([

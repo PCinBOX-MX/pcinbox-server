@@ -25,6 +25,8 @@ export type StoredQuoteLine = {
   stocksByBranch: StoredQuoteBranch[];
   quantity: number | null;
   manual?: boolean;
+  warrantyMonths?: number | null;
+  warrantyMode?: string | null;
 };
 
 export type QuoteCartPage = {
@@ -94,6 +96,16 @@ export function normalizeStoredQuoteLine(raw: unknown): StoredQuoteLine | null {
         .slice(0, 20)
     : [];
 
+  const warrantyMonthsRaw = Number(line.warrantyMonths);
+  const warrantyMonths =
+    line.warrantyMonths != null &&
+    Number.isFinite(warrantyMonthsRaw) &&
+    warrantyMonthsRaw > 0
+      ? Math.round(warrantyMonthsRaw)
+      : null;
+  const warrantyModeRaw = String(line.warrantyMode || "").trim();
+  const warrantyMode = warrantyModeRaw ? warrantyModeRaw.slice(0, 32) : null;
+
   return {
     idProduct,
     name: name.slice(0, 180),
@@ -108,6 +120,8 @@ export function normalizeStoredQuoteLine(raw: unknown): StoredQuoteLine | null {
     stocksByBranch,
     quantity,
     manual: line.manual === true,
+    warrantyMonths,
+    warrantyMode,
   };
 }
 

@@ -926,6 +926,8 @@ export const searchAdminQuoteProducts = async (
       active: true,
       providerId: true,
       isPC: true,
+      warrantyMonths: true,
+      warrantyMode: true,
     } as const;
     const catalogIndex = await getPosCatalogIndex();
     const indexedIds = searchInvertedIndex(catalogIndex, q, 18).map(
@@ -985,6 +987,15 @@ export const searchAdminQuoteProducts = async (
           stock: snapshot?.stock ?? Number(product.stock ?? 0),
           stocksByBranch: snapshot?.stocksByBranch ?? [],
           kind: isPc ? quotePcKind(product.caracteristicas) : null,
+          warrantyMonths:
+            product.warrantyMonths != null &&
+            Number.isFinite(Number(product.warrantyMonths)) &&
+            Number(product.warrantyMonths) > 0
+              ? Number(product.warrantyMonths)
+              : null,
+          warrantyMode: product.warrantyMode
+            ? String(product.warrantyMode)
+            : null,
         };
       }),
     });

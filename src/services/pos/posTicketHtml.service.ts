@@ -37,6 +37,8 @@ type TicketSale = {
   notes?: string | null;
   cancelReason?: string | null;
   quoteNumber?: string | null;
+  /** Si viene de «Importar folio», líneas solo con nombre / cantidad / serie. */
+  sourceFolio?: string | null;
   subtotal: number;
   discountTotal: number;
   total: number;
@@ -153,14 +155,16 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
     (s, it) => s + Number(it.quantity || 0),
     0,
   );
+  const compactLines = Boolean(String(data.sourceFolio || "").trim());
 
   const itemsHtml = data.items
     .map((it) => {
       const qty = Number(it.quantity) || 0;
       const unit = Number(it.unitPrice) || 0;
       const lineTotal = Number(it.lineTotal) || 0;
-      const qtyLine =
-        qty > 1
+      const qtyLine = compactLines
+        ? `<div>Cantidad: ${qty || 1}</div>`
+        : qty > 1
           ? `<div>Cant: ${qty} x ${formatMoney(unit)}</div>`
           : `<div>Cantidad: ${qty || 1}</div>`;
       const intake = it.serviceIntake;
@@ -186,7 +190,9 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
         !bodega || /^pcinbox$/i.test(bodega.trim())
           ? POS_TICKET_BRANCH_FALLBACK
           : bodega;
-      const bodegaLine = `<div>Bodega: ${escapeHtml(bodegaShown)}</div>`;
+      const bodegaLine = compactLines
+        ? ""
+        : `<div>Bodega: ${escapeHtml(bodegaShown)}</div>`;
       const serialLine =
         it.serials && it.serials.length
           ? `<div class="muted">S/N: ${it.serials
@@ -197,12 +203,12 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
       if (intake && Array.isArray(intake.equipment) && intake.equipment.length) {
         const equipLines = intake.equipment
           .map((eq) => {
-            const qty = Number(eq.quantity) || 1;
+            const eqQty = Number(eq.quantity) || 1;
             const desc = escapeHtml(String(eq.description || "").trim() || "—");
             const sn = String(eq.serialNumber || "").trim();
             return `
             <div class="equip-item">
-              <div class="equip-item-title">${desc}${qty > 1 ? ` (×${qty})` : ""}</div>
+              <div class="equip-item-title">${desc}${eqQty > 1 ? ` (×${eqQty})` : ""}</div>
               ${sn ? `<div class="muted">Nº serie: ${escapeHtml(sn)}</div>` : ""}
             </div>`;
           })
@@ -216,12 +222,12 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
           <div class="service-title">Datos del Equipo y/o componente</div>
           ${equipLines}
           ${
-            failure
+            !compactLines && failure
               ? `<div class="equip-note"><strong>Falla o Servicio solicitado:</strong> ${escapeHtml(failure)}</div>`
               : ""
           }
           ${
-            obs
+            !compactLines && obs
               ? `<div class="equip-note"><strong>Observaciones Técnicas al Recibir:</strong> ${escapeHtml(obs)}</div>`
               : ""
           }
@@ -233,6 +239,15 @@ export function buildPosSaleTicketHtml(data: TicketSale): string {
       const nameHtml = isServiceLine
         ? `Servicio: ${escapeHtml(truncateProductName(serviceLabel || it.productName))}`
         : escapeHtml(truncateProductName(it.productName));
+      if (compactLines) {
+        return `
+      <div class="item">
+        <div class="item-name">${nameHtml}</div>
+        ${qtyLine}
+        ${serialLine}
+        ${serviceBlock}
+      </div>`;
+      }
       return `
       <div class="item">
         <div class="item-name">${nameHtml}</div>
