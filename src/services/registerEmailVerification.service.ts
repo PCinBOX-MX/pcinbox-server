@@ -7,7 +7,7 @@ import {
   verifyPassword,
   writeErrorLogs,
 } from "./index.service";
-import { sendEmailResend } from "./resend.service";
+import { dispatchTemplateEmail } from "./mail-dispatch.service";
 import { assertEmailDeliverable } from "../utils/emailDeliverability.util";
 import {
   buildRegisterLockMessage,
