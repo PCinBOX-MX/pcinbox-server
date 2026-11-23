@@ -68,10 +68,11 @@ export function blockMaliciousProbePaths(
   next();
 }
 
+// loginGoogle queda fuera a propósito: OAuth de Google ya valida la identidad
+// y no debe heredar el “espera” de intentos fallidos de registro email.
 export const authPathRateLimiter = createPathPrefixRateLimiter(
   [
     "/api/v1/user/login",
-    "/api/v1/user/logingoogle",
     "/api/v1/user/register",
     "/api/v1/resetpassword",
   ],
