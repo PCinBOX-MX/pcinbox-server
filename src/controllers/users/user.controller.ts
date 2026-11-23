@@ -18,6 +18,7 @@ import {
   requestRegisterVerificationCode,
   resendRegisterVerificationCode,
 } from "../../services/registerEmailVerification.service";
+import { resolveClientIp } from "../../utils/http-rate-limiter.util";
 
 const fechaLocal = DateTime.now().setZone("America/Mexico_City");
 
@@ -115,16 +116,39 @@ export const Login = async (req: Request, res: Response) => {
  * Paso 1 del registro: valida datos, NO crea la cuenta, envía código al correo.
  * (Reemplaza la creación directa anterior.)
  */
+function setRetryAfterHeader(
+  res: Response,
+  data: unknown,
+): void {
+  if (
+    data &&
+    typeof data === "object" &&
+    typeof (data as { retryAfterSeconds?: number }).retryAfterSeconds ===
+      "number"
+  ) {
+    res.setHeader(
+      "Retry-After",
+      String((data as { retryAfterSeconds: number }).retryAfterSeconds),
+    );
+  }
+}
+
 export const Register = async (req: Request, res: Response) => {
   try {
-    const { name, lastname, email, password, phone } = req.body || {};
+    const { name, lastname, email, password, phone, deviceId } = req.body || {};
     const result = await requestRegisterVerificationCode({
       name,
       lastname,
       email,
       password,
       phone,
+      clientIp: resolveClientIp(req),
+      deviceId,
     });
+
+    if (result.status === 429) {
+      setRetryAfterHeader(res, result.data);
+    }
 
     return res.status(result.status).json({
       ok: result.ok,
@@ -143,8 +167,16 @@ export const Register = async (req: Request, res: Response) => {
 
 export const ResendRegisterCode = async (req: Request, res: Response) => {
   try {
-    const { email } = req.body || {};
-    const result = await resendRegisterVerificationCode(email);
+    const { email, deviceId } = req.body || {};
+    const result = await resendRegisterVerificationCode(email, {
+      clientIp: resolveClientIp(req),
+      deviceId,
+    });
+
+    if (result.status === 429) {
+      setRetryAfterHeader(res, result.data);
+    }
+
     return res.status(result.status).json({
       ok: result.ok,
       message: result.message,

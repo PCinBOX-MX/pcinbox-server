@@ -7,7 +7,19 @@ import {
   verifyPassword,
   writeErrorLogs,
 } from "./index.service";
-import { dispatchTemplateEmail } from "./mail-dispatch.service";
+import { sendEmailResend } from "./resend.service";
+import { assertEmailDeliverable } from "../utils/emailDeliverability.util";
+import {
+  buildRegisterLockMessage,
+  clearRegisterFakeStrikes,
+  getRegisterFakeAbuseStatus,
+  recordRegisterFakeFailure,
+} from "../utils/registerFakeAbuse.util";
+import {
+  buildRegisterCodeSendLockMessage,
+  getRegisterCodeSendAbuseStatus,
+  recordRegisterCodeSend,
+} from "../utils/registerCodeSendAbuse.util";
 
 export const REGISTER_CODE_TTL_MINUTES = 15;
 export const REGISTER_MAX_RESENDS = 3;
@@ -66,6 +78,8 @@ export type RegisterDraftInput = {
   email: string;
   phone: string;
   password: string;
+  clientIp?: string;
+  deviceId?: string;
 };
 
 export async function requestRegisterVerificationCode(
@@ -76,12 +90,45 @@ export async function requestRegisterVerificationCode(
   const email = normalizeEmail(input.email);
   const phone = String(input.phone || "").trim();
   const password = String(input.password || "");
+  const clientIp = String(input.clientIp || "").trim() || "unknown";
+  const deviceId = String(input.deviceId || "").trim();
 
   if (!name || !lastname || !email || !phone || !password) {
     return {
       ok: false as const,
       status: 400,
       message: "Completa los campos",
+    };
+  }
+
+  const abuseStatus = await getRegisterFakeAbuseStatus(clientIp);
+  if (abuseStatus.locked) {
+    return {
+      ok: false as const,
+      status: 429,
+      message: buildRegisterLockMessage(abuseStatus.retryAfterSec),
+      data: {
+        retryAfterSeconds: abuseStatus.retryAfterSec,
+        locked: true,
+        reason: "fake_email_abuse",
+      },
+    };
+  }
+
+  const codeSendStatus = await getRegisterCodeSendAbuseStatus(
+    clientIp,
+    deviceId,
+  );
+  if (codeSendStatus.locked) {
+    return {
+      ok: false as const,
+      status: 429,
+      message: buildRegisterCodeSendLockMessage(codeSendStatus.retryAfterSec),
+      data: {
+        retryAfterSeconds: codeSendStatus.retryAfterSec,
+        locked: true,
+        reason: "code_send_abuse",
+      },
     };
   }
 
@@ -93,6 +140,41 @@ export async function requestRegisterVerificationCode(
       message: `El correo ${email} no tiene el formato correcto`,
     };
   }
+
+  const deliverability = await assertEmailDeliverable(email);
+  if (!deliverability.ok) {
+    const afterFail = await recordRegisterFakeFailure(clientIp);
+    if (afterFail.locked) {
+      return {
+        ok: false as const,
+        status: 429,
+        message: `${deliverability.message} ${buildRegisterLockMessage(afterFail.retryAfterSec)}`,
+        data: {
+          retryAfterSeconds: afterFail.retryAfterSec,
+          locked: true,
+          reason: "fake_email_abuse",
+        },
+      };
+    }
+
+    const remaining = afterFail.remainingAttempts;
+    const hint =
+      remaining > 0
+        ? ` Te quedan ${remaining} intento${remaining === 1 ? "" : "s"} antes de un bloqueo temporal.`
+        : "";
+
+    return {
+      ok: false as const,
+      status: 400,
+      message: `${deliverability.message}${hint}`,
+      data: {
+        remainingAttempts: remaining,
+        reason: "fake_or_undeliverable_email",
+      },
+    };
+  }
+
+  await clearRegisterFakeStrikes(clientIp);
 
   if (password.length < 6) {
     return {
@@ -210,6 +292,7 @@ export async function requestRegisterVerificationCode(
     };
   }
 
+  const afterSend = await recordRegisterCodeSend(clientIp, deviceId);
   const resendsRemaining = Math.max(
     0,
     REGISTER_MAX_RESENDS - 0, // nuevo registro: aún puede reenviar MAX veces
@@ -218,24 +301,67 @@ export async function requestRegisterVerificationCode(
   return {
     ok: true as const,
     status: 200,
-    message: `Enviamos un código de verificación a ${email}`,
+    message: afterSend.locked
+      ? `Enviamos un código de verificación a ${email}. ${buildRegisterCodeSendLockMessage(afterSend.retryAfterSec)}`
+      : `Enviamos un código de verificación a ${email}`,
     data: {
       email,
       expiresInMinutes: REGISTER_CODE_TTL_MINUTES,
       resendsRemaining,
       maxResends: REGISTER_MAX_RESENDS,
       cooldownSeconds: REGISTER_RESEND_COOLDOWN_SECONDS,
+      ...(afterSend.locked
+        ? {
+            locked: true,
+            retryAfterSeconds: afterSend.retryAfterSec,
+            reason: "code_send_abuse",
+          }
+        : {
+            remainingCodeSends: afterSend.remainingSends,
+          }),
     },
   };
 }
 
-export async function resendRegisterVerificationCode(emailRaw: string) {
+export async function resendRegisterVerificationCode(
+  emailRaw: string,
+  opts?: { clientIp?: string; deviceId?: string },
+) {
   const email = normalizeEmail(emailRaw);
+  const clientIp = String(opts?.clientIp || "").trim() || "unknown";
+  const deviceId = String(opts?.deviceId || "").trim();
+
   if (!email) {
     return {
       ok: false as const,
       status: 400,
       message: "Falta el correo",
+    };
+  }
+
+  const codeSendStatus = await getRegisterCodeSendAbuseStatus(
+    clientIp,
+    deviceId,
+  );
+  if (codeSendStatus.locked) {
+    return {
+      ok: false as const,
+      status: 429,
+      message: buildRegisterCodeSendLockMessage(codeSendStatus.retryAfterSec),
+      data: {
+        retryAfterSeconds: codeSendStatus.retryAfterSec,
+        locked: true,
+        reason: "code_send_abuse",
+      },
+    };
+  }
+
+  const deliverability = await assertEmailDeliverable(email);
+  if (!deliverability.ok) {
+    return {
+      ok: false as const,
+      status: 400,
+      message: deliverability.message,
     };
   }
 
@@ -314,6 +440,7 @@ export async function resendRegisterVerificationCode(emailRaw: string) {
     };
   }
 
+  const afterSend = await recordRegisterCodeSend(clientIp, deviceId);
   const resendsRemaining = Math.max(
     0,
     REGISTER_MAX_RESENDS - (Number(pending.resendCount) + 1),
@@ -322,13 +449,24 @@ export async function resendRegisterVerificationCode(emailRaw: string) {
   return {
     ok: true as const,
     status: 200,
-    message: `Código reenviado a ${email}`,
+    message: afterSend.locked
+      ? `Código reenviado a ${email}. ${buildRegisterCodeSendLockMessage(afterSend.retryAfterSec)}`
+      : `Código reenviado a ${email}`,
     data: {
       email,
       expiresInMinutes: REGISTER_CODE_TTL_MINUTES,
       resendsRemaining,
       maxResends: REGISTER_MAX_RESENDS,
       cooldownSeconds: REGISTER_RESEND_COOLDOWN_SECONDS,
+      ...(afterSend.locked
+        ? {
+            locked: true,
+            retryAfterSeconds: afterSend.retryAfterSec,
+            reason: "code_send_abuse",
+          }
+        : {
+            remainingCodeSends: afterSend.remainingSends,
+          }),
     },
   };
 }
