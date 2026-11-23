@@ -365,8 +365,7 @@ export const getPhone = async (req: CustomRequestI, res: Response) => {
       message: "Teléfono obtenido correctamente",
       data: {
         hasPhone,
-        /** Teléfono completo (solo del usuario autenticado) para cotizaciones / perfil. */
-        phone: hasPhone ? phone : null,
+        // Nunca devolver el teléfono en claro en lecturas (solo máscara).
         phoneMasked: maskUserPhone(phone),
         isGoogleAccount,
         reminderDue: reminder.reminderDue,
@@ -484,7 +483,7 @@ export const updatePhone = async (req: CustomRequestI, res: Response) => {
       message: "Teléfono actualizado correctamente",
       data: {
         hasPhone: true,
-        phone: saved,
+        // El cliente ya conoce el valor que envió; no lo re-exponemos en claro.
         phoneMasked: maskUserPhone(saved),
         reminderDue: false,
         reminderAvailableAt: null,
