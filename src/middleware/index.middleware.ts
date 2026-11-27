@@ -1,63 +1,86 @@
-import { NextFunction, Request, Response } from "express";
+import { NextFunction, Response } from "express";
 import jwt from "jsonwebtoken";
 import "../config/loadEnv";
 import CustomRequestI from "../interfaces/customrequest.interface";
 import { prisma } from "./../db/prismaClient";
+import { extractAuthToken } from "../utils/authCookie.util";
+
+async function resolveIdUserFromToken(
+  token: string,
+): Promise<number | string | null> {
+  const secret = process.env.KEY_JWT || "";
+  const decoded: any = jwt.verify(token, secret);
+
+  if (!decoded) return null;
+
+  if (!decoded.idUser) {
+    const slcUser = await prisma.users.findFirst({
+      where: {
+        email: decoded.email,
+      },
+      select: {
+        idUser: true,
+      },
+    });
+    return slcUser?.idUser ?? null;
+  }
+
+  return decoded.idUser;
+}
+
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+const CLIENT_HEADER = "x-pcinbox-client";
+
+function hasBearerHeader(req: CustomRequestI): boolean {
+  const auth = req.headers.authorization;
+  return Boolean(auth && auth.startsWith("Bearer ") && auth.length > 8);
+}
+
+/**
+ * Cookie httpOnly + SameSite=None: exige cabecera custom en mutaciones
+ * autenticadas solo por cookie (mitiga CSRF de formularios cross-site).
+ * Bearer sigue siendo suficiente (no se envía automáticamente en CSRF clásico).
+ */
+function rejectCookieOnlyCsrf(req: CustomRequestI, res: Response): boolean {
+  const method = String(req.method || "GET").toUpperCase();
+  if (SAFE_METHODS.has(method)) return false;
+  if (hasBearerHeader(req)) return false;
+  const marker = String(req.headers[CLIENT_HEADER] || "").trim();
+  if (marker === "1") return false;
+  res.status(403).json({
+    ok: false,
+    message: "Solicitud rechazada (falta cabecera anti-CSRF).",
+  });
+  return true;
+}
 
 export const MiddleAuthRoute = async (
   req: CustomRequestI,
   res: Response,
-  next: NextFunction
+  next: NextFunction,
 ) => {
-  const authHeader = req.headers.authorization;
+  const token = extractAuthToken(req);
 
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+  if (!token) {
     return res.status(401).json({ message: "Token no proporcionado" });
   }
 
-  const token = authHeader.split(" ")[1];
+  if (rejectCookieOnlyCsrf(req, res)) {
+    return;
+  }
 
   try {
-    if (
-      !token ||
-      token === "null" ||
-      token === "undefined" ||
-      token === "false"
-    ) {
-      return res.status(401).json({ message: "Token no proporcionado" });
+    const idUser = await resolveIdUserFromToken(token);
+    if (!idUser) {
+      return res.status(401).json({ message: "Usuario no encontrado" });
     }
-
-    const secret = process.env.KEY_JWT || "";
-    const decoded: any = jwt.verify(token!, secret);
-
-    if (decoded) {
-      if (!decoded.idUser) {
-        const slcUser = await prisma.users.findFirst({
-          where: {
-            email: decoded.email,
-          },
-          select: {
-            idUser: true,
-          },
-        });
-
-        if (!slcUser?.idUser) {
-          return res.status(401).json({ message: "Usuario no encontrado" });
-        }
-        req.idUser = slcUser.idUser;
-        next();
-        return;
-      }
-      req.idUser = decoded.idUser;
-      next();
-      return;
-    } else {
-      return res.status(401).json({ message: "Token expirado o invalido" });
-    }
-  } catch (err) {
+    req.idUser = idUser;
+    next();
+  } catch {
     return res.status(401).json({ message: "Token inválido o expirado" });
   }
 };
+
 export const MiddleAdminRoute = async (
   req: CustomRequestI,
   res: Response,

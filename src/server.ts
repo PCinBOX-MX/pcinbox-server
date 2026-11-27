@@ -79,6 +79,7 @@ server.use(
     origin: allowedOrigins,
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    // Reflect request headers (incl. X-PCINBOX-Client, Idempotency-Key, Authorization).
   }),
 );
 

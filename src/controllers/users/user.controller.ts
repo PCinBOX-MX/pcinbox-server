@@ -1,5 +1,6 @@
 import { prisma } from "../../db/prismaClient";
 import { Request, Response } from "express";
+import jwt from "jsonwebtoken";
 import {
   hasPassword,
   signPayload,
@@ -19,6 +20,10 @@ import {
   resendRegisterVerificationCode,
 } from "../../services/registerEmailVerification.service";
 import { resolveClientIp } from "../../utils/http-rate-limiter.util";
+import {
+  clearAuthCookie,
+  setAuthCookie,
+} from "../../utils/authCookie.util";
 
 const fechaLocal = DateTime.now().setZone("America/Mexico_City");
 
@@ -89,6 +94,8 @@ export const Login = async (req: Request, res: Response) => {
         active: 1,
       },
     });
+
+    setAuthCookie(res, sendToken);
 
     return res.status(200).json({
       ok: true,
@@ -298,6 +305,8 @@ export const LoginGoogle = async (req: Request, res: Response) => {
         active: 1,
       },
     });
+
+    setAuthCookie(res, sendToken);
 
     return res
       .status(200)
@@ -643,6 +652,129 @@ export const deletePhoto = async (req: CustomRequestI, res: Response) => {
   }
 };
 
+/**
+ * Emite un JWT corto en JSON para Bearer en APIs cross-origin (pasarela).
+ * Requiere cookie/Bearer ya válidos (MiddleAuthRoute). No usar localStorage.
+ */
+export const mintAccessToken = async (req: CustomRequestI, res: Response) => {
+  try {
+    const userId = Number(req.idUser);
+    if (!Number.isSafeInteger(userId) || userId <= 0) {
+      return res.status(401).json({ ok: false, message: "Sesión inválida" });
+    }
+
+    const user = await prisma.users.findFirst({
+      where: { idUser: userId, active: 1 },
+      select: { idUser: true, email: true, role: true },
+    });
+    if (!user?.email) {
+      return res.status(401).json({ ok: false, message: "Usuario no encontrado" });
+    }
+
+    const token = signPayload(
+      {
+        email: user.email,
+        idUser: user.idUser.toString(),
+        rol: user.role,
+      },
+      "2h",
+    );
+
+    return res.status(200).json({
+      ok: true,
+      data: { token },
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      message: "Error interno del servidor",
+      error: error?.message,
+    });
+  }
+};
+
+/**
+ * Intercambia un JWT válido (p. ej. tras Google/NextAuth) por cookie httpOnly.
+ * El token del body no debe persistirse en localStorage del cliente.
+ */
+export const establishAuthCookie = async (req: Request, res: Response) => {
+  try {
+    const token = String(req.body?.token || "").trim();
+    if (!token || token === "null" || token === "undefined") {
+      return res.status(400).json({ ok: false, message: "Token requerido" });
+    }
+
+    const secret = process.env.KEY_JWT || "";
+    const decoded: any = jwt.verify(token, secret);
+    if (!decoded?.idUser && !decoded?.email) {
+      return res.status(401).json({ ok: false, message: "Token inválido" });
+    }
+
+    setAuthCookie(res, token);
+    return res.status(200).json({ ok: true, message: "Cookie de sesión establecida" });
+  } catch (error: any) {
+    return res.status(401).json({
+      ok: false,
+      message: "Token inválido o expirado",
+      error: error?.message,
+    });
+  }
+};
+
+/**
+ * Sesión actual desde JWT/cookie + rol fresco de DB.
+ * No confiar en `adminRole` / `idUser` del localStorage del cliente.
+ */
+export const getSession = async (req: CustomRequestI, res: Response) => {
+  try {
+    const userId = Number(req.idUser);
+    if (!Number.isSafeInteger(userId) || userId <= 0) {
+      return res.status(401).json({ ok: false, message: "Sesión inválida" });
+    }
+
+    const user = await prisma.users.findFirst({
+      where: { idUser: userId, active: 1 },
+      select: {
+        idUser: true,
+        email: true,
+        name: true,
+        lastname: true,
+        role: true,
+        password: true,
+      },
+    });
+
+    if (!user) {
+      return res.status(401).json({ ok: false, message: "Usuario no encontrado" });
+    }
+
+    return res.status(200).json({
+      ok: true,
+      data: {
+        idUser: user.idUser.toString(),
+        email: user.email,
+        name: user.name,
+        lastname: user.lastname,
+        role: user.role,
+        // Cuentas Google no tienen password local.
+        authGoogle: !user.password,
+      },
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      ok: false,
+      message: "Error interno del servidor",
+      error: error.message,
+    });
+  }
+};
+
+/** Limpia cookie httpOnly (el cliente también debe borrar localStorage). */
+export const Logout = async (_req: Request, res: Response) => {
+  clearAuthCookie(res);
+  return res.status(200).json({ ok: true, message: "Sesión cerrada" });
+};
+
 export const removeAccount = async (req: CustomRequestI, res: Response) => {
   try {
     const { pass } = req.body;
@@ -685,6 +817,7 @@ export const removeAccount = async (req: CustomRequestI, res: Response) => {
         },
       });
 
+      clearAuthCookie(res);
       return res.status(200).json({
         ok: true,
         message: "Cuenta eliminada correctamente",
@@ -699,6 +832,7 @@ export const removeAccount = async (req: CustomRequestI, res: Response) => {
         },
       });
 
+      clearAuthCookie(res);
       return res.status(200).json({
         ok: true,
         message: "Cuenta eliminada correctamente",

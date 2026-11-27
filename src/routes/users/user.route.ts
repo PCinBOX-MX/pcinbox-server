@@ -13,6 +13,10 @@ import {
   getPhone,
   updatePhone,
   dismissPhonePrompt,
+  getSession,
+  Logout,
+  establishAuthCookie,
+  mintAccessToken,
 } from "../../controllers/users/user.controller";
 
 import { MiddleAuthRoute } from "../../middleware/index.middleware";
@@ -23,6 +27,8 @@ const router = Router();
 
 router.post("/login", Login);
 router.post("/loginGoogle", LoginGoogle);
+router.post("/establishAuthCookie", establishAuthCookie);
+router.post("/logout", Logout);
 router.post("/register", Register);
 router.post("/register/resend-code", ResendRegisterCode);
 router.post("/register/confirm", ConfirmRegister);
@@ -33,6 +39,8 @@ router.post(
   uploadPhoto
 );
 router.post("/changePassword", MiddleAuthRoute, ChangePassword);
+router.get("/session", MiddleAuthRoute, getSession);
+router.get("/accessToken", MiddleAuthRoute, mintAccessToken);
 router.get("/getPhone", MiddleAuthRoute, getPhone);
 router.post("/updatePhone", MiddleAuthRoute, updatePhone);
 router.post("/dismissPhonePrompt", MiddleAuthRoute, dismissPhonePrompt);
